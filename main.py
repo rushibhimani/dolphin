@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import create_engine, and_, or_
 from sqlalchemy.orm import sessionmaker
+from pydantic import BaseModel
+from sqlalchemy import func
+from typing import List, Optional
 from datetime import datetime, timedelta, date
 from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
                     Customer, Routing, Operation, Job, ScheduledOp, JobCounter, now_ist)
@@ -626,16 +629,67 @@ def delete_customer(customer_id: int):
     return {"ok": True, "soft_deleted": False}
 
 # ── ROUTINGS ──
-def routing_dict(r):
-    ops = [{"id": o.id, "sequence": o.sequence, "name": o.name,
-            "work_center_id": o.work_center_id,
-            "work_center_name": o.work_center.name if o.work_center else "",
-            "machine_type": o.work_center.machine_type if o.work_center else "",
-            "setup_time_mins": o.setup_time_mins, "work_time_hrs": o.work_time_hrs,
-            "is_optional": o.is_optional} for o in r.operations]
-    return {"id": r.id, "name": r.name, "product_type": r.product_type,
-            "description": r.description, "material_lead_days": r.material_lead_days,
-            "operations": ops}
+def _normalize_product_type(pt):
+    """Normalize product type: trim + Title Case so 'punch ', 'Punch', 'PUNCH' all match."""
+    if not pt: return ""
+    return pt.strip().title()
+
+def _op_estimated_hours(o):
+    """Estimated hours for an operation (setup + work)."""
+    return (float(o.setup_time_mins or 0) / 60.0) + float(o.work_time_hrs or 0)
+
+def _op_actual_stats(db, op_id):
+    """Returns dict {sample_count, avg_actual_hours, variance_pct} for completed scheduled_ops of this operation."""
+    completed = db.query(ScheduledOp).filter(
+        ScheduledOp.operation_id == op_id,
+        ScheduledOp.actual_start.isnot(None),
+        ScheduledOp.actual_end.isnot(None),
+    ).all()
+    if not completed:
+        return {"sample_count": 0, "avg_actual_hours": None, "variance_pct": None}
+    actuals = [(s.actual_end - s.actual_start).total_seconds() / 3600.0 for s in completed]
+    avg = sum(actuals) / len(actuals)
+    return {"sample_count": len(actuals), "avg_actual_hours": round(avg, 2),
+            "variance_pct": None}  # variance computed by caller (needs estimated)
+
+def routing_dict(r, db=None, with_stats=False):
+    """Serialize a Routing. If db and with_stats provided, includes per-op actual-time stats."""
+    ops = []
+    for o in r.operations:
+        est = _op_estimated_hours(o)
+        op_data = {"id": o.id, "sequence": o.sequence, "name": o.name,
+                   "work_center_id": o.work_center_id,
+                   "work_center_name": o.work_center.name if o.work_center else "",
+                   "machine_type": o.work_center.machine_type if o.work_center else "",
+                   "setup_time_mins": o.setup_time_mins, "work_time_hrs": o.work_time_hrs,
+                   "estimated_hours": round(est, 2),
+                   "is_optional": o.is_optional}
+        if with_stats and db:
+            stats = _op_actual_stats(db, o.id)
+            if stats["avg_actual_hours"] is not None and est > 0:
+                stats["variance_pct"] = round(((stats["avg_actual_hours"] - est) / est * 100), 1)
+            op_data["stats"] = stats
+        ops.append(op_data)
+
+    total_est = sum(_op_estimated_hours(o) for o in r.operations)
+    result = {"id": r.id, "name": r.name, "product_type": r.product_type,
+              "description": r.description, "material_lead_days": r.material_lead_days,
+              "is_active": r.is_active,
+              "operations": ops,
+              "operation_count": len(r.operations),
+              "total_estimated_hours": round(total_est, 2)}
+
+    if db is not None:
+        # Job counts for safety/UX
+        job_count = db.query(Job).filter(Job.routing_id == r.id).count()
+        active_job_count = db.query(Job).filter(
+            Job.routing_id == r.id,
+            Job.status.in_(["pending", "scheduled", "in_progress"])
+        ).count()
+        result["job_count"] = job_count
+        result["active_job_count"] = active_job_count
+
+    return result
 
 
 @app.get("/api/workers/{worker_id}")
@@ -868,59 +922,250 @@ def reschedule_after_leave(worker_id: int):
 
 
 @app.get("/api/routings")
-def list_routings():
+def list_routings(include_inactive: bool = False):
+    """List routings. Set include_inactive=true to also return inactive ones."""
     db = SessionLocal()
-    rs = db.query(Routing).filter(Routing.is_active == True).all()
-    result = [routing_dict(r) for r in rs]; db.close(); return result
+    q = db.query(Routing)
+    if not include_inactive:
+        q = q.filter(Routing.is_active == True)
+    rs = q.order_by(Routing.product_type, Routing.name).all()
+    result = [routing_dict(r, db) for r in rs]
+    db.close(); return result
 
 @app.get("/api/routings/{rid}")
 def get_routing(rid: int):
     db = SessionLocal()
     r = db.query(Routing).filter(Routing.id == rid).first()
-    if not r: raise HTTPException(404, "Not found")
-    result = routing_dict(r); db.close(); return result
+    if not r:
+        db.close(); raise HTTPException(404, "Not found")
+    result = routing_dict(r, db, with_stats=True)
+    db.close(); return result
 
 @app.post("/api/routings")
 def create_routing(data: dict):
     db = SessionLocal()
-    r = Routing(name=data["name"], product_type=data["product_type"],
-                description=data.get("description", ""),
-                material_lead_days=float(data.get("material_lead_days", 2.0)))
+    name = (data.get("name") or "").strip()
+    if not name:
+        db.close(); raise HTTPException(400, "Routing name is required")
+    ptype = _normalize_product_type(data.get("product_type") or "")
+    if not ptype:
+        db.close(); raise HTTPException(400, "Product type is required")
+
+    # Check duplicate name within same product_type
+    existing = db.query(Routing).filter(
+        func.lower(Routing.name) == name.lower(),
+        Routing.product_type == ptype,
+    ).first()
+    if existing:
+        db.close()
+        raise HTTPException(400, f"A routing named '{name}' already exists for {ptype}")
+
+    r = Routing(name=name, product_type=ptype,
+                description=(data.get("description") or "").strip() or None,
+                material_lead_days=float(data.get("material_lead_days", 2.0)),
+                is_active=bool(data.get("is_active", True)))
     db.add(r); db.flush()
-    for i, op in enumerate(data.get("operations", [])):
-        db.add(Operation(routing_id=r.id, sequence=i+1, name=op["name"],
-                         work_center_id=int(op["work_center_id"]),
-                         setup_time_mins=float(op.get("setup_time_mins", 0)),
-                         work_time_hrs=float(op.get("work_time_hrs", 0)),
+
+    ops_in = data.get("operations", []) or []
+    for i, op in enumerate(ops_in):
+        wc_id = int(op["work_center_id"])
+        wc = db.query(WorkCenter).filter(WorkCenter.id == wc_id).first()
+        if not wc:
+            db.rollback(); db.close()
+            raise HTTPException(400, f"Step {i+1}: machine id {wc_id} not found")
+        setup = float(op.get("setup_time_mins", 0) or 0)
+        work = float(op.get("work_time_hrs", 0) or 0)
+        db.add(Operation(routing_id=r.id, sequence=i+1, name=(op.get("name") or "").strip(),
+                         work_center_id=wc_id,
+                         setup_time_mins=setup,
+                         work_time_hrs=work,
+                         # New split fields (used by scheduler if present, else fall back to setup_time_mins)
+                         machine_setup_mins=float(op.get("machine_setup_mins", setup) or 0),
+                         job_setup_mins=float(op.get("job_setup_mins", 0) or 0),
                          is_optional=bool(op.get("is_optional", False))))
-    db.commit(); db.refresh(r); result = routing_dict(r); db.close(); return result
+    db.commit(); db.refresh(r)
+    result = routing_dict(r, db); db.close(); return result
 
 @app.put("/api/routings/{rid}")
 def update_routing(rid: int, data: dict):
     db = SessionLocal()
     r = db.query(Routing).filter(Routing.id == rid).first()
-    if not r: raise HTTPException(404, "Not found")
-    r.name = data.get("name", r.name)
-    r.product_type = data.get("product_type", r.product_type)
-    r.description = data.get("description", r.description)
-    r.material_lead_days = float(data.get("material_lead_days", r.material_lead_days))
+    if not r:
+        db.close(); raise HTTPException(404, "Not found")
+
+    # Block edit if any active jobs use this routing (prevents schedule corruption)
+    active_jobs = db.query(Job).filter(
+        Job.routing_id == rid,
+        Job.status.in_(["pending", "scheduled", "in_progress"])
+    ).count()
+    if active_jobs > 0:
+        db.close()
+        raise HTTPException(400,
+            f"Cannot edit: {active_jobs} active job(s) use this routing. "
+            f"Either complete those jobs first, or duplicate this routing and edit the copy.")
+
+    new_name = (data.get("name") or r.name).strip()
+    new_ptype = _normalize_product_type(data.get("product_type") or r.product_type)
+
+    # Check duplicate name (excluding self)
+    if new_name and new_ptype:
+        existing = db.query(Routing).filter(
+            func.lower(Routing.name) == new_name.lower(),
+            Routing.product_type == new_ptype,
+            Routing.id != rid,
+        ).first()
+        if existing:
+            db.close()
+            raise HTTPException(400, f"Another routing named '{new_name}' already exists for {new_ptype}")
+
+    r.name = new_name
+    r.product_type = new_ptype
+    r.description = (data.get("description") if "description" in data else r.description) or None
+    if "material_lead_days" in data:
+        r.material_lead_days = float(data["material_lead_days"])
+    if "is_active" in data:
+        r.is_active = bool(data["is_active"])
+
     if "operations" in data:
-        for op in r.operations: db.delete(op)
+        for op in list(r.operations): db.delete(op)
         db.flush()
         for i, op in enumerate(data["operations"]):
-            db.add(Operation(routing_id=r.id, sequence=i+1, name=op["name"],
-                             work_center_id=int(op["work_center_id"]),
-                             setup_time_mins=float(op.get("setup_time_mins", 0)),
-                             work_time_hrs=float(op.get("work_time_hrs", 0)),
+            wc_id = int(op["work_center_id"])
+            wc = db.query(WorkCenter).filter(WorkCenter.id == wc_id).first()
+            if not wc:
+                db.rollback(); db.close()
+                raise HTTPException(400, f"Step {i+1}: machine id {wc_id} not found")
+            setup = float(op.get("setup_time_mins", 0) or 0)
+            work = float(op.get("work_time_hrs", 0) or 0)
+            db.add(Operation(routing_id=r.id, sequence=i+1, name=(op.get("name") or "").strip(),
+                             work_center_id=wc_id,
+                             setup_time_mins=setup,
+                             work_time_hrs=work,
+                             machine_setup_mins=float(op.get("machine_setup_mins", setup) or 0),
+                             job_setup_mins=float(op.get("job_setup_mins", 0) or 0),
                              is_optional=bool(op.get("is_optional", False))))
-    db.commit(); result = routing_dict(r); db.close(); return result
+    db.commit()
+    result = routing_dict(r, db); db.close(); return result
 
 @app.delete("/api/routings/{rid}")
 def delete_routing(rid: int):
+    """Soft-delete: marks routing inactive if any jobs reference it (preserves history).
+    Hard-deletes only if zero jobs ever used it."""
     db = SessionLocal()
     r = db.query(Routing).filter(Routing.id == rid).first()
-    if not r: raise HTTPException(404, "Not found")
-    r.is_active = False; db.commit(); db.close(); return {"ok": True}
+    if not r:
+        db.close(); raise HTTPException(404, "Not found")
+    job_count = db.query(Job).filter(Job.routing_id == rid).count()
+    if job_count > 0:
+        r.is_active = False
+        db.commit(); db.close()
+        return {"ok": True, "soft_deleted": True, "job_count": job_count}
+    db.delete(r); db.commit(); db.close()
+    return {"ok": True, "soft_deleted": False}
+
+@app.post("/api/routings/{rid}/duplicate")
+def duplicate_routing(rid: int):
+    """Clone routing with all operations. Used when active jobs block editing."""
+    db = SessionLocal()
+    r = db.query(Routing).filter(Routing.id == rid).first()
+    if not r:
+        db.close(); raise HTTPException(404, "Not found")
+
+    base = f"{r.name} (Copy)"
+    new_name = base; n = 2
+    while db.query(Routing).filter(
+        Routing.name == new_name,
+        Routing.product_type == r.product_type,
+    ).first():
+        new_name = f"{base} {n}"; n += 1
+
+    new_r = Routing(name=new_name, product_type=r.product_type,
+                    description=r.description, material_lead_days=r.material_lead_days,
+                    is_active=True)
+    db.add(new_r); db.flush()
+    for op in r.operations:
+        db.add(Operation(routing_id=new_r.id, sequence=op.sequence, name=op.name,
+                         work_center_id=op.work_center_id,
+                         setup_time_mins=op.setup_time_mins,
+                         work_time_hrs=op.work_time_hrs,
+                         machine_setup_mins=getattr(op, "machine_setup_mins", op.setup_time_mins) or op.setup_time_mins,
+                         job_setup_mins=getattr(op, "job_setup_mins", 0) or 0,
+                         is_optional=op.is_optional))
+    db.commit(); db.refresh(new_r)
+    result = {"id": new_r.id, "name": new_r.name,
+              "msg": f"Duplicated as '{new_r.name}'"}
+    db.close(); return result
+
+@app.get("/api/routings/stats/all")
+def routings_stats_all():
+    """Per-routing comparison: estimated vs avg actual hours across all completed jobs."""
+    db = SessionLocal()
+    rs = db.query(Routing).filter(Routing.is_active == True).order_by(
+        Routing.product_type, Routing.name
+    ).all()
+    results = []
+    for r in rs:
+        est_total = sum(_op_estimated_hours(op) for op in r.operations)
+
+        # Find completed jobs that used this routing
+        completed_jobs = db.query(Job).filter(
+            Job.routing_id == r.id, Job.status == "completed",
+        ).all()
+
+        actual_totals = []
+        for j in completed_jobs:
+            sops = db.query(ScheduledOp).filter(
+                ScheduledOp.job_id == j.id,
+                ScheduledOp.actual_start.isnot(None),
+                ScheduledOp.actual_end.isnot(None),
+            ).all()
+            if sops:
+                total = sum((s.actual_end - s.actual_start).total_seconds() / 3600.0 for s in sops)
+                actual_totals.append(total)
+
+        op_breakdown = []
+        for op in r.operations:
+            est_op = _op_estimated_hours(op)
+            stats = _op_actual_stats(db, op.id)
+            if stats["avg_actual_hours"] is not None and est_op > 0:
+                stats["variance_pct"] = round(((stats["avg_actual_hours"] - est_op) / est_op * 100), 1)
+            op_breakdown.append({
+                "sequence": op.sequence, "name": op.name,
+                "estimated_hours": round(est_op, 2),
+                "avg_actual_hours": stats["avg_actual_hours"],
+                "sample_count": stats["sample_count"],
+                "variance_pct": stats["variance_pct"],
+            })
+
+        avg_actual_total = sum(actual_totals) / len(actual_totals) if actual_totals else None
+        variance_pct = None
+        if avg_actual_total and est_total > 0:
+            variance_pct = round(((avg_actual_total - est_total) / est_total * 100), 1)
+
+        results.append({
+            "id": r.id, "name": r.name, "product_type": r.product_type,
+            "operation_count": len(r.operations),
+            "estimated_total_hours": round(est_total, 2),
+            "avg_actual_total_hours": round(avg_actual_total, 2) if avg_actual_total else None,
+            "sample_count": len(actual_totals),
+            "variance_pct": variance_pct,
+            "operations": op_breakdown,
+        })
+    db.close()
+    return {"routings": results}
+
+@app.get("/api/product-types")
+def list_product_types():
+    """Distinct product types from existing routings + safe defaults for autocomplete."""
+    db = SessionLocal()
+    rows = db.query(Routing.product_type).distinct().all()
+    in_use = sorted({r[0] for r in rows if r[0]})
+    defaults = ["Punch", "Die Frame", "Liner Set", "Entry Mould", "SFS Mould",
+                "Custom Plate", "Base Plate", "Ejector Plate", "Addon Plate",
+                "Complete Mould", "SFS Lower", "SFS Upper"]
+    all_types = sorted(set(in_use + defaults))
+    db.close()
+    return {"product_types": all_types, "in_use": in_use}
 
 # ── JOBS ──
 def job_dict(j, db):
@@ -1689,6 +1934,7 @@ def seed():
     db.commit()
     db.close()
     return {"msg": "Seeded", "machines": len(machines), "routings": 3, "workers": len(workers_data)}
+
 
 if __name__ == "__main__":
     import uvicorn
