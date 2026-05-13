@@ -1933,6 +1933,7 @@ async function renderRoutings(){
     <input type="text" id="routingSearchInput" placeholder="Search routings..." value="${_routingSearch.replace(/"/g,'&quot;')}"
        oninput="_routingSearch=this.value;_renderRoutingList()"
        style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);color:var(--text);font-size:13px;width:220px;margin-right:8px">
+    <button class="btn btn-secondary" onclick="seedPunchRoutings()" title="Create 4 Punch routings from Yukeng Excel calculations">📋 Seed Punch Routings</button>
     <button class="btn btn-primary" onclick="openRoutingModal()">+ New Routing</button>`;
   document.getElementById('content').innerHTML=`
     <div class="card">
@@ -1943,6 +1944,23 @@ async function renderRoutings(){
       <div id="routingList"></div>
     </div>`;
   _renderRoutingList();
+}
+
+async function seedPunchRoutings(){
+  const ok = await confirm2('Create 4 Punch routings (Plain Small, Plain Big, Iso Small, Iso Big) based on Yukeng Excel calculations? They will be created INACTIVE so you can review them first.', 'Create 4 Routings');
+  if(!ok) return;
+  try {
+    const r = await api('POST', '/api/seed-punch-routings');
+    let msg = r.msg || 'Seeded';
+    if(r.skipped_existing && r.skipped_existing.length){
+      msg += ` (${r.skipped_existing.length} already existed)`;
+    }
+    toast(msg);
+    await loadAll();
+    showPage('routings');
+  } catch(e) {
+    toast(e.message, 'error');
+  }
 }
 
 function _renderRoutingList(){
@@ -1963,7 +1981,6 @@ function _renderRoutingList(){
     container.innerHTML = `<div class="empty">${search ? 'No routings match your search.' : 'No routings. Create one or load demo data.'}</div>`;
     return;
   }
-  // Group by product_type
   const groups = {};
   filtered.forEach(r => {
     const k = r.product_type || 'Uncategorized';
@@ -2031,6 +2048,11 @@ function escHtml(s){
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+function escAttr(s){
+  if(s==null) return '';
+  return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 function buildMachineOpts(selId){
   const byType={};
   allMachines.forEach(m=>{if(!byType[m.machine_type])byType[m.machine_type]=[];byType[m.machine_type].push(m);});
@@ -2038,7 +2060,6 @@ function buildMachineOpts(selId){
 }
 
 async function openRoutingModal(editId){
-  // For edit, fetch full detail (includes per-op stats and active_job_count)
   let r = null;
   let detail = null;
   if(editId){
@@ -2058,7 +2079,6 @@ async function openRoutingModal(editId){
     stats: o.stats || {}
   })) : [];
 
-  // Fetch product type suggestions for autocomplete
   let pTypes = [];
   try {
     const pt = await api('GET', '/api/product-types');
@@ -2130,18 +2150,12 @@ async function openRoutingModal(editId){
   },50);
 }
 
-function escAttr(s){
-  if(s==null) return '';
-  return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-
 async function duplicateRouting(id){
   try {
     const r = await api('POST', `/api/routings/${id}/duplicate`);
     toast(r.msg || 'Duplicated');
     await loadAll();
     showPage('routings');
-    // Open the copy for editing
     setTimeout(()=>openRoutingModal(r.id), 200);
   } catch(e) {
     toast(e.message, 'error');
@@ -2273,12 +2287,10 @@ function _renderRoutingStatsContent(routings){
     c.innerHTML = `<div class="empty">No active routings yet.</div>`;
     return;
   }
-  // Group by product type
   const groups = {};
   routings.forEach(r => { (groups[r.product_type||'Uncategorized'] = groups[r.product_type||'Uncategorized'] || []).push(r); });
   const keys = Object.keys(groups).sort();
 
-  // Summary stats at top
   const totalRoutings = routings.length;
   const withData = routings.filter(r => r.sample_count > 0).length;
   const totalSamples = routings.reduce((s,r)=>s+(r.sample_count||0), 0);

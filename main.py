@@ -1,11 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from sqlalchemy import create_engine, and_, or_
+from sqlalchemy import create_engine, and_, or_, func
 from sqlalchemy.orm import sessionmaker
-from pydantic import BaseModel
-from sqlalchemy import func
-from typing import List, Optional
 from datetime import datetime, timedelta, date
 from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
                     Customer, Routing, Operation, Job, ScheduledOp, JobCounter, now_ist)
@@ -124,10 +121,8 @@ def get_worker_blocked_periods(db, worker_id: int, from_dt: datetime, to_dt: dat
         if lv.leave_type == "full":
             blocked.append((shift_s, shift_e))
         elif lv.leave_type == "morning":
-            # Morning = 8 AM to 12 PM
             blocked.append((shift_s, datetime(d.year, d.month, d.day, 12, 0)))
         elif lv.leave_type == "afternoon":
-            # Afternoon = 2 PM to shift end
             blocked.append((datetime(d.year, d.month, d.day, 14, 0), shift_e))
         elif lv.leave_type == "hours" and lv.start_time and lv.end_time:
             sh, sm = map(int, lv.start_time.split(":"))
@@ -140,13 +135,11 @@ def get_worker_blocked_periods(db, worker_id: int, from_dt: datetime, to_dt: dat
 
 def is_worker_available(db, worker_id: int, start: datetime, end: datetime) -> bool:
     """Check if a worker is free (no leave, no other scheduled op) during start→end."""
-    # Check leave blocks
     blocks = get_worker_blocked_periods(db, worker_id, start, end)
     for bs, be in blocks:
-        if bs < end and be > start:  # overlap
+        if bs < end and be > start:
             return False
 
-    # Check already assigned scheduled ops
     conflict = db.query(ScheduledOp).filter(
         ScheduledOp.worker_id == worker_id,
         ScheduledOp.scheduled_end > start,
@@ -173,23 +166,17 @@ def find_qualified_workers(db, work_center_id: int, for_start: datetime = None) 
     now = for_start or now_ist()
     today_start = datetime(now.year, now.month, now.day, 0, 0)
     today_end   = datetime(now.year, now.month, now.day, 23, 59)
-    shift_hours = 10.0  # Standard shift hours
+    shift_hours = 10.0
 
     def worker_score(w):
         w_level = getattr(w, 'skill_level', 1) or 1
-
-        # 1. Skill match score (0-100, lower = better fit)
         if machine_level >= 3:
-            # Specialist machine: prefer highest skill
             skill_score = (3 - w_level) * 30
         elif machine_level == 2:
-            # Trained machine: prefer exact match
             skill_score = abs(w_level - 2) * 25
         else:
-            # General machine: prefer lowest skill (preserve specialists)
             skill_score = w_level * 20
 
-        # 2. Load balance (0-50, lower = less loaded = better)
         booked_today = db.query(ScheduledOp).filter(
             ScheduledOp.worker_id == w.id,
             ScheduledOp.scheduled_start >= today_start,
@@ -202,8 +189,6 @@ def find_qualified_workers(db, work_center_id: int, for_start: datetime = None) 
         )
         load_score = min(50, (load_hours / shift_hours) * 50)
 
-        # 3. Machine continuity bonus (0 = already on this machine = great)
-        # Check if worker's last op was on this machine
         last_op = db.query(ScheduledOp).filter(
             ScheduledOp.worker_id == w.id,
             ScheduledOp.work_center_id == work_center_id,
@@ -216,7 +201,7 @@ def find_qualified_workers(db, work_center_id: int, for_start: datetime = None) 
             gap_hours = (now - last_op.scheduled_end).total_seconds() / 3600
             threshold = getattr(wc, 'continuity_hours', 2.0) or 2.0
             if gap_hours < threshold:
-                continuity_bonus = -40  # Strong bonus for staying on machine
+                continuity_bonus = -40
 
         return skill_score + load_score + continuity_bonus
 
@@ -226,12 +211,6 @@ def find_qualified_workers(db, work_center_id: int, for_start: datetime = None) 
 
 def should_waive_machine_setup(db, worker_id: int, work_center_id: int,
                                  start_time: datetime, threshold_hours: float = 2.0) -> bool:
-    """
-    Returns True if machine setup should be waived.
-    Condition: same worker did their LAST op on this SAME machine
-    and the gap is less than threshold_hours.
-    Job setup is ALWAYS required regardless.
-    """
     if not worker_id:
         return False
     last_op = db.query(ScheduledOp).filter(
@@ -252,11 +231,6 @@ def should_waive_machine_setup(db, worker_id: int, work_center_id: int,
 def find_next_slot_with_worker(db, work_center_id: int, duration_hrs: float,
                                 start_after: datetime, job_setup_hrs: float = 0,
                                 machine_setup_hrs: float = 0):
-    """
-    Find next slot where BOTH machine AND qualified worker are free.
-    Returns (start, end, worker, machine_setup_waived).
-    Accounts for machine continuity and load balancing.
-    """
     wc = db.query(WorkCenter).filter(WorkCenter.id == work_center_id).first()
     if wc and getattr(wc, 'status', 'active') not in ('active', None, ''):
         raise ValueError(f"Machine '{wc.name}' is currently {wc.status} — cannot schedule")
@@ -264,7 +238,6 @@ def find_next_slot_with_worker(db, work_center_id: int, duration_hrs: float,
     qualified = find_qualified_workers(db, work_center_id, start_after)
 
     if not qualified:
-        # No workers — schedule machine-only
         current = snap_to_shift(start_after)
         booked = db.query(ScheduledOp).filter(
             ScheduledOp.work_center_id == work_center_id,
@@ -301,7 +274,6 @@ def find_next_slot_with_worker(db, work_center_id: int, duration_hrs: float,
             break
         candidate = snap_to_shift(candidate)
 
-        # Check machine free
         machine_conflict = any(
             (b.actual_start if (b.status=="in_progress" and b.actual_start) else b.scheduled_start) < add_working_hours(candidate, duration_hrs)
             and b.scheduled_end > candidate
@@ -311,21 +283,18 @@ def find_next_slot_with_worker(db, work_center_id: int, duration_hrs: float,
         if machine_conflict:
             continue
 
-        # Try each worker (already sorted by composite score)
         for worker in qualified:
             waive_setup = should_waive_machine_setup(
                 db, worker.id, work_center_id, candidate
             )
-            # If setup waived, actual duration is shorter
             actual_dur = job_setup_hrs + (0 if waive_setup else machine_setup_hrs) + (duration_hrs - job_setup_hrs - machine_setup_hrs)
-            actual_dur = max(actual_dur, job_setup_hrs + 0.1)  # minimum job setup
+            actual_dur = max(actual_dur, job_setup_hrs + 0.1)
 
             cend = add_working_hours(candidate, actual_dur)
 
             if is_worker_available(db, worker.id, candidate, cend):
                 return candidate, cend, worker, waive_setup
 
-        # No worker free — try next machine slot
         next_free = None
         for b in machine_booked:
             if b.scheduled_end and b.scheduled_end > candidate:
@@ -339,22 +308,13 @@ def find_next_slot_with_worker(db, work_center_id: int, duration_hrs: float,
         ))
         candidates = sorted(set(candidates))
 
-    # Fallback
     current = snap_to_shift(start_after)
     return current, add_working_hours(current, duration_hrs), None, False
 
 
 def check_preemption(db, new_job: 'Job') -> list:
-    """
-    Check if a high-priority job (CR < 0.5) can preempt lower-priority work.
-    Returns list of (scheduled_op, reason) that should be paused.
-    Only preempts if:
-    1. New job CR < 0.5 (genuinely urgent)
-    2. Worker is occupied on a job with CR > 2.0 (not urgent at all)
-    3. New job cannot be scheduled within 4 hours without preemption
-    """
     cr = critical_ratio(new_job, db)
-    if cr >= 0.5:  # Not urgent enough to preempt
+    if cr >= 0.5:
         return []
 
     preempt_list = []
@@ -369,10 +329,9 @@ def check_preemption(db, new_job: 'Job') -> list:
     now = now_ist()
     four_hours_later = now + timedelta(hours=4)
 
-    for op in ops[:1]:  # Check just first operation
+    for op in ops[:1]:
         qualified = find_qualified_workers(db, op.work_center_id, now)
         for worker in qualified:
-            # Is this worker currently on a low-priority job?
             current_op = db.query(ScheduledOp).filter(
                 ScheduledOp.worker_id == worker.id,
                 ScheduledOp.status == "in_progress"
@@ -381,7 +340,7 @@ def check_preemption(db, new_job: 'Job') -> list:
                 continue
             other_job = current_op.job
             other_cr = critical_ratio(other_job, db)
-            if other_cr > 2.0:  # Other job is not urgent
+            if other_cr > 2.0:
                 preempt_list.append({
                     "op_id": current_op.id,
                     "worker_name": worker.name,
@@ -435,13 +394,11 @@ def list_wc():
 @app.post("/api/workcenters")
 def create_wc(data: dict):
     db = SessionLocal()
-    # Auto-generate machine code if not provided (M1, M2, ...)
     code = (data.get("code") or "").strip()
     if not code:
         last = db.query(WorkCenter).order_by(WorkCenter.id.desc()).first()
         next_num = (last.id + 1) if last else 1
         code = f"M{next_num}"
-        # Ensure uniqueness
         while db.query(WorkCenter).filter(WorkCenter.code == code).first():
             next_num += 1
             code = f"M{next_num}"
@@ -498,7 +455,6 @@ def list_workers():
 
 @app.get("/api/workers/availability")
 def worker_availability():
-    """Get worker availability summary for next 14 days."""
     db = SessionLocal()
     workers = db.query(Worker).filter(Worker.is_active == True).all()
     today = now_ist().date()
@@ -510,14 +466,12 @@ def worker_availability():
             WorkerLeave.leave_date <= today + timedelta(days=14)
         ).all()
         leave_dates = [lv.leave_date.isoformat() for lv in leaves_next14]
-        # Count assigned ops next 7 days
         ops_count = db.query(ScheduledOp).filter(
             ScheduledOp.worker_id == w.id,
             ScheduledOp.scheduled_start >= datetime.combine(today, datetime.min.time()),
             ScheduledOp.scheduled_start <= datetime.combine(today + timedelta(days=7), datetime.max.time()),
             ScheduledOp.status.in_(["scheduled", "in_progress"])
         ).count()
-        # Is on leave today
         on_leave_today = any(lv.leave_date == today for lv in leaves_next14)
         result.append({
             "id": w.id, "name": w.name, "role": w.role,
@@ -567,7 +521,6 @@ def get_customer(customer_id: int):
     c = db.query(Customer).filter(Customer.id == customer_id).first()
     if not c: raise HTTPException(404, "Customer not found")
     data = customer_dict(c, db)
-    # Include job list
     jobs = db.query(Job).filter(Job.customer_id == customer_id).order_by(Job.created_at.desc()).all()
     fmt = lambda dt: dt.isoformat() if dt else None
     data["jobs"] = [{
@@ -606,7 +559,6 @@ def update_customer(customer_id: int, data: dict):
         existing = db.query(Customer).filter(Customer.name == new_name, Customer.id != customer_id).first()
         if existing:
             db.close(); raise HTTPException(400, f"Customer '{new_name}' already exists")
-        # Update all jobs that referenced old name
         db.query(Job).filter(Job.customer_id == customer_id).update({"customer_name": new_name})
         c.name = new_name
     c.phone = data.get("phone", c.phone)
@@ -622,7 +574,7 @@ def delete_customer(customer_id: int):
     if not c: raise HTTPException(404, "Customer not found")
     job_count = db.query(Job).filter(Job.customer_id == customer_id).count()
     if job_count > 0:
-        c.is_active = False  # soft delete to preserve job history
+        c.is_active = False
         db.commit(); db.close()
         return {"ok": True, "soft_deleted": True, "job_count": job_count}
     db.delete(c); db.commit(); db.close()
@@ -650,7 +602,7 @@ def _op_actual_stats(db, op_id):
     actuals = [(s.actual_end - s.actual_start).total_seconds() / 3600.0 for s in completed]
     avg = sum(actuals) / len(actuals)
     return {"sample_count": len(actuals), "avg_actual_hours": round(avg, 2),
-            "variance_pct": None}  # variance computed by caller (needs estimated)
+            "variance_pct": None}
 
 def routing_dict(r, db=None, with_stats=False):
     """Serialize a Routing. If db and with_stats provided, includes per-op actual-time stats."""
@@ -680,7 +632,6 @@ def routing_dict(r, db=None, with_stats=False):
               "total_estimated_hours": round(total_est, 2)}
 
     if db is not None:
-        # Job counts for safety/UX
         job_count = db.query(Job).filter(Job.routing_id == r.id).count()
         active_job_count = db.query(Job).filter(
             Job.routing_id == r.id,
@@ -698,7 +649,6 @@ def get_worker(worker_id: int):
     w = db.query(Worker).filter(Worker.id == worker_id).first()
     if not w: raise HTTPException(404, "Not found")
     data = worker_dict(w, db)
-    # Add leave info
     today = now_ist().date()
     leaves = db.query(WorkerLeave).filter(
         WorkerLeave.worker_id == worker_id,
@@ -708,7 +658,6 @@ def get_worker(worker_id: int):
                                  "type": lv.leave_type, "start_time": lv.start_time,
                                  "end_time": lv.end_time, "reason": lv.reason}
                                 for lv in leaves]
-    # Add current assignments
     ops = db.query(ScheduledOp).filter(
         ScheduledOp.worker_id == worker_id,
         ScheduledOp.scheduled_end >= now_ist(),
@@ -725,7 +674,6 @@ def get_worker(worker_id: int):
 @app.post("/api/workers")
 def create_worker(data: dict):
     db = SessionLocal()
-    # Auto-generate worker code if not provided (W01, W02, ...)
     wcode = (data.get("code") or "").strip()
     if not wcode:
         last = db.query(Worker).order_by(Worker.id.desc()).first()
@@ -739,7 +687,6 @@ def create_worker(data: dict):
                code=wcode,
                skill_level=int(data.get("skill_level", 1)))
     db.add(w); db.flush()
-    # Assign skills
     for wc_id in data.get("skill_ids", []):
         wc = db.query(WorkCenter).filter(WorkCenter.id == wc_id).first()
         if wc: w.skills.append(wc)
@@ -770,7 +717,7 @@ def delete_worker(worker_id: int):
     db = SessionLocal()
     w = db.query(Worker).filter(Worker.id == worker_id).first()
     if not w: raise HTTPException(404, "Not found")
-    w.is_active = False  # soft delete
+    w.is_active = False
     db.commit(); db.close(); return {"ok": True}
 
 # ── WORKER LEAVE ──
@@ -813,7 +760,6 @@ def delete_leave(leave_id: int):
 
 @app.get("/api/leaves/today")
 def get_today_leaves():
-    """Get all workers on leave today."""
     db = SessionLocal()
     today = now_ist().date()
     leaves = db.query(WorkerLeave).filter(WorkerLeave.leave_date == today).all()
@@ -826,16 +772,11 @@ def get_today_leaves():
 
 @app.post("/api/workers/{worker_id}/absent-today")
 def mark_absent_today(worker_id: int):
-    """
-    Mark worker absent for today and reschedule all their today's operations
-    to other qualified available workers.
-    """
     db = SessionLocal()
     w = db.query(Worker).filter(Worker.id == worker_id).first()
     if not w: raise HTTPException(404, "Worker not found")
 
     today = now_ist().date()
-    # Add full day leave if not already there
     existing = db.query(WorkerLeave).filter(
         WorkerLeave.worker_id == worker_id,
         WorkerLeave.leave_date == today
@@ -845,7 +786,6 @@ def mark_absent_today(worker_id: int):
                          leave_type="full", reason="Absent today")
         db.add(lv); db.flush()
 
-    # Find all their ops scheduled for today that aren't done
     today_start = datetime(today.year, today.month, today.day, 0, 0)
     today_end   = datetime(today.year, today.month, today.day, 23, 59)
     ops = db.query(ScheduledOp).filter(
@@ -857,7 +797,6 @@ def mark_absent_today(worker_id: int):
 
     reassigned = 0; unassigned = 0
     for op in ops:
-        # Try to find another qualified worker
         qualified = find_qualified_workers(db, op.work_center_id)
         qualified = [q for q in qualified if q.id != worker_id]
         replaced = False
@@ -877,16 +816,11 @@ def mark_absent_today(worker_id: int):
 
 @app.post("/api/workers/{worker_id}/reschedule-after-leave")
 def reschedule_after_leave(worker_id: int):
-    """
-    After adding future leave for a worker, reschedule all their future ops
-    that conflict with leave dates.
-    """
     db = SessionLocal()
     w = db.query(Worker).filter(Worker.id == worker_id).first()
     if not w: raise HTTPException(404, "Worker not found")
 
     now = now_ist()
-    # Get all future ops assigned to this worker
     future_ops = db.query(ScheduledOp).filter(
         ScheduledOp.worker_id == worker_id,
         ScheduledOp.scheduled_start > now,
@@ -895,13 +829,11 @@ def reschedule_after_leave(worker_id: int):
 
     rescheduled = 0
     for op in future_ops:
-        # Check if this op overlaps with any leave
         blocks = get_worker_blocked_periods(db, worker_id, op.scheduled_start, op.scheduled_end)
         conflict = any(bs < op.scheduled_end and be > op.scheduled_start for bs, be in blocks)
         if not conflict:
             continue
 
-        # Try other qualified workers
         qualified = find_qualified_workers(db, op.work_center_id)
         qualified = [q for q in qualified if q.id != worker_id]
         replaced = False
@@ -912,7 +844,6 @@ def reschedule_after_leave(worker_id: int):
                 replaced = True; rescheduled += 1; break
 
         if not replaced:
-            # No alternative worker — unassign, flag job
             op.worker_id = None
             op.worker_name = None
             rescheduled += 1
@@ -920,6 +851,8 @@ def reschedule_after_leave(worker_id: int):
     db.commit(); db.close()
     return {"rescheduled": rescheduled}
 
+
+# ── ROUTING ENDPOINTS (enhanced) ──
 
 @app.get("/api/routings")
 def list_routings(include_inactive: bool = False):
@@ -951,7 +884,6 @@ def create_routing(data: dict):
     if not ptype:
         db.close(); raise HTTPException(400, "Product type is required")
 
-    # Check duplicate name within same product_type
     existing = db.query(Routing).filter(
         func.lower(Routing.name) == name.lower(),
         Routing.product_type == ptype,
@@ -979,7 +911,6 @@ def create_routing(data: dict):
                          work_center_id=wc_id,
                          setup_time_mins=setup,
                          work_time_hrs=work,
-                         # New split fields (used by scheduler if present, else fall back to setup_time_mins)
                          machine_setup_mins=float(op.get("machine_setup_mins", setup) or 0),
                          job_setup_mins=float(op.get("job_setup_mins", 0) or 0),
                          is_optional=bool(op.get("is_optional", False))))
@@ -993,7 +924,7 @@ def update_routing(rid: int, data: dict):
     if not r:
         db.close(); raise HTTPException(404, "Not found")
 
-    # Block edit if any active jobs use this routing (prevents schedule corruption)
+    # Block edit if any active jobs use this routing
     active_jobs = db.query(Job).filter(
         Job.routing_id == rid,
         Job.status.in_(["pending", "scheduled", "in_progress"])
@@ -1007,7 +938,6 @@ def update_routing(rid: int, data: dict):
     new_name = (data.get("name") or r.name).strip()
     new_ptype = _normalize_product_type(data.get("product_type") or r.product_type)
 
-    # Check duplicate name (excluding self)
     if new_name and new_ptype:
         existing = db.query(Routing).filter(
             func.lower(Routing.name) == new_name.lower(),
@@ -1107,7 +1037,6 @@ def routings_stats_all():
     for r in rs:
         est_total = sum(_op_estimated_hours(op) for op in r.operations)
 
-        # Find completed jobs that used this routing
         completed_jobs = db.query(Job).filter(
             Job.routing_id == r.id, Job.status == "completed",
         ).all()
@@ -1234,14 +1163,12 @@ def create_job(data: dict):
     due_date = parse_dt(data.get("due_date"))
     if due_date is None:
         db.close(); raise HTTPException(400, "Due date is required and must be a valid date")
-    # Resolve customer: by id or by name (auto-create if needed)
     customer_id = data.get("customer_id")
     customer_name = data.get("customer_name", "").strip()
     if customer_id:
         c = db.query(Customer).filter(Customer.id == customer_id).first()
         if c: customer_name = c.name
     elif customer_name:
-        # Auto-create customer if not exists
         c = db.query(Customer).filter(Customer.name == customer_name).first()
         if not c:
             c = Customer(name=customer_name, is_active=True)
@@ -1268,7 +1195,6 @@ def update_job(job_id: int, data: dict):
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j: raise HTTPException(404, "Not found")
     dt_fields = {"due_date", "not_before", "material_ready_date"}
-    # Handle customer change
     if "customer_id" in data and data["customer_id"]:
         c = db.query(Customer).filter(Customer.id == data["customer_id"]).first()
         if c:
@@ -1297,7 +1223,6 @@ def update_job(job_id: int, data: dict):
 
 @app.post("/api/jobs/{job_id}/duplicate")
 def duplicate_job(job_id: int):
-    """Duplicate a job with a new job number, resetting status to pending."""
     db = SessionLocal()
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j: raise HTTPException(404, "Job not found")
@@ -1329,13 +1254,7 @@ def delete_job(job_id: int):
 
 # ── SCHEDULING ──
 def _reactive_reschedule(db, work_center_id: int, worker_id: int, freed_at: datetime):
-    """
-    Called when an operation completes. Checks if any scheduled future ops
-    on this machine/worker can be pulled earlier now that a slot opened up.
-    Pulls the next pending job forward if it improves schedule.
-    """
     try:
-        # Find next scheduled op on this machine that hasn't started yet
         next_ops = db.query(ScheduledOp).filter(
             ScheduledOp.work_center_id == work_center_id,
             ScheduledOp.scheduled_start > freed_at,
@@ -1347,15 +1266,12 @@ def _reactive_reschedule(db, work_center_id: int, worker_id: int, freed_at: date
                 continue
             gap = (next_op.scheduled_start - freed_at).total_seconds() / 3600
             if gap < 0.5:
-                # Already very close — no benefit
                 continue
 
-            # Can this op start now (at freed_at)?
             duration = (next_op.scheduled_end - next_op.scheduled_start).total_seconds() / 3600
             new_start = snap_to_shift(freed_at)
             new_end   = add_working_hours(new_start, duration)
 
-            # Check machine is free in new slot
             conflict = db.query(ScheduledOp).filter(
                 ScheduledOp.work_center_id == work_center_id,
                 ScheduledOp.scheduled_start < new_end,
@@ -1366,7 +1282,6 @@ def _reactive_reschedule(db, work_center_id: int, worker_id: int, freed_at: date
             if conflict:
                 continue
 
-            # Check worker is free
             if next_op.worker_id:
                 w_conflict = db.query(ScheduledOp).filter(
                     ScheduledOp.worker_id == next_op.worker_id,
@@ -1378,14 +1293,13 @@ def _reactive_reschedule(db, work_center_id: int, worker_id: int, freed_at: date
                 if w_conflict:
                     continue
 
-            # Pull it forward
             next_op.scheduled_start = new_start
             next_op.scheduled_end   = new_end
-            break  # Only pull one op forward per reactive trigger
+            break
 
         db.commit()
     except Exception:
-        pass  # Reactive scheduling is best-effort, never crash main flow
+        pass
 
 
 def _do_schedule(db, j):
@@ -1415,11 +1329,10 @@ def _do_schedule(db, j):
         if duration <= 0: continue
 
         try:
-            start, end, worker = find_next_slot_with_worker(
+            start, end, worker, waive = find_next_slot_with_worker(
                 db, op.work_center_id, duration, current_start
             )
         except ValueError as e:
-            # Machine unavailable (maintenance/breakdown) — skip this op
             db.add(ScheduledOp(
                 job_id=j.id, operation_id=op.id,
                 work_center_id=op.work_center_id,
@@ -1428,9 +1341,9 @@ def _do_schedule(db, j):
                 wc_name=op.work_center.name if op.work_center else "",
                 setup_time_mins=setup, work_time_hrs=work,
                 scheduled_start=None, scheduled_end=None,
-                status="pending",  # left unscheduled
+                status="pending",
             ))
-            current_start = current_start  # don't advance time
+            current_start = current_start
             continue
         db.add(ScheduledOp(
             job_id=j.id, operation_id=op.id,
@@ -1512,13 +1425,11 @@ def get_gantt():
 
 @app.get("/api/debug/today")
 def debug_today():
-    """Debug endpoint - shows what the today query sees."""
     db = SessionLocal()
     today = now_ist().date()
     t_start = datetime(today.year, today.month, today.day, 0, 0)
     t_end   = datetime(today.year, today.month, today.day, 23, 59)
     
-    # Get ALL scheduled ops regardless of date
     all_ops = db.query(ScheduledOp).filter(
         ScheduledOp.status.in_(["scheduled", "in_progress"])
     ).order_by(ScheduledOp.scheduled_start).all()
@@ -1546,7 +1457,6 @@ def get_today():
     today = now_ist().date()
     t_start = datetime(today.year, today.month, today.day, 0, 0)
     t_end   = datetime(today.year, today.month, today.day, 23, 59)
-    # Get all ops and filter in Python to avoid SQLite datetime comparison issues
     all_ops = db.query(ScheduledOp).filter(
         ScheduledOp.status.in_(["scheduled", "in_progress"]),
         ScheduledOp.scheduled_start != None,
@@ -1598,14 +1508,12 @@ def update_op_status(op_id: int, data: dict):
             j.status = "in_progress"
 
     elif data["status"] == "paused":
-        # Paused — record when paused, don't clear actual_start
         s.paused_at = now if hasattr(s, 'paused_at') else now
         if j.status == "in_progress":
-            # Job is paused only if ALL in_progress ops are now paused
             all_paused = all(op.status in ("paused","completed","pending","scheduled")
                              for op in j.scheduled_ops)
             if all_paused:
-                j.status = "scheduled"  # back to scheduled until resumed
+                j.status = "scheduled"
 
     elif data["status"] == "completed":
         s.actual_end = now
@@ -1616,9 +1524,6 @@ def update_op_status(op_id: int, data: dict):
         elif not any_inprog:
             j.status = "in_progress"
 
-        # ── REACTIVE SCHEDULING ──
-        # When an op completes, pull forward the next pending op on this machine/worker
-        # if it was scheduled with a gap (i.e. it can start now)
         _reactive_reschedule(db, s.work_center_id, s.worker_id, now)
 
     db.commit(); db.close()
@@ -1626,7 +1531,6 @@ def update_op_status(op_id: int, data: dict):
 
 @app.put("/api/ops/{op_id}/assign-worker")
 def assign_worker_to_op(op_id: int, data: dict):
-    """Manually reassign a worker to a specific operation."""
     db = SessionLocal()
     s = db.query(ScheduledOp).filter(ScheduledOp.id == op_id).first()
     if not s: raise HTTPException(404, "Not found")
@@ -1643,12 +1547,10 @@ def assign_worker_to_op(op_id: int, data: dict):
 # ── REPORTS ──
 @app.get("/api/reports/summary")
 def reports_summary():
-    """Summary stats for reports dashboard."""
     db = SessionLocal()
     from datetime import timedelta
     now = now_ist()
 
-    # All-time
     all_jobs = db.query(Job).all()
     completed = [j for j in all_jobs if j.status == "completed"]
 
@@ -1658,15 +1560,12 @@ def reports_summary():
     total_revenue = sum(j.total_price or 0 for j in all_jobs)
     completed_revenue = sum(j.total_price or 0 for j in completed)
 
-    # Last 30 days
     last_30 = now - timedelta(days=30)
     recent_completed = [j for j in completed if j.completed_at and j.completed_at >= last_30]
     recent_revenue = sum(j.total_price or 0 for j in recent_completed)
 
-    # On-time rate
     on_time_rate = round(len(on_time) / len(completed) * 100, 1) if completed else 0
 
-    # Monthly breakdown (last 6 months)
     monthly = {}
     for j in all_jobs:
         if not j.created_at: continue
@@ -1692,7 +1591,6 @@ def reports_summary():
     monthly_list = sorted(monthly.values(), key=lambda x: x["month"], reverse=True)[:12]
     monthly_list.reverse()
 
-    # Top customers by revenue
     customer_stats = {}
     for j in all_jobs:
         if not j.customer_id: continue
@@ -1711,7 +1609,6 @@ def reports_summary():
 
     top_customers = sorted(customer_stats.values(), key=lambda x: x["revenue"], reverse=True)[:10]
 
-    # Currently late jobs (overdue, not completed)
     late_jobs = [j for j in all_jobs
                  if j.status not in ("completed",)
                  and j.due_date < now
@@ -1723,7 +1620,6 @@ def reports_summary():
         "status": j.status,
     } for j in late_jobs]
 
-    # Machine utilization (top loaded next 30 days)
     upcoming_end = now + timedelta(days=30)
     wcs = db.query(WorkCenter).all()
     machine_load = []
@@ -1761,16 +1657,13 @@ def reports_summary():
 
 @app.post("/api/backfill-codes")
 def backfill_codes():
-    """Assign codes to existing machines/workers that don't have one."""
     db = SessionLocal()
     updated = 0
-    # Machines
     machines = db.query(WorkCenter).order_by(WorkCenter.id).all()
     for wc in machines:
         if not wc.code:
             wc.code = f"M{wc.id}"
             updated += 1
-    # Workers
     workers = db.query(Worker).order_by(Worker.id).all()
     for w in workers:
         if not w.code:
@@ -1786,7 +1679,6 @@ def seed_real():
     if db.query(Worker).count() > 0 or db.query(WorkCenter).count() > 0:
         db.close(); return {"msg": "Already has data — clear first"}
 
-    # Workers with codes
     workers_data = [
         ("W01","Shreyans",   "Operator",       "+91"),
         ("W02","Sonu",       "Operator",       "+91"),
@@ -1804,7 +1696,6 @@ def seed_real():
         w = Worker(code=code,name=name,role=role,phone=phone,is_active=True)
         db.add(w); db.flush(); wmap[name]=w
 
-    # Machines with codes and types
     machines_data = [
         ("M1", "Edge Grinder",       "Grinder",         True,  "active",  ["Rajkumar","Atul","Sonu"]),
         ("M2", "DC Surface Grinder", "Grinder",         True,  "active",  ["Atul","Sonu","Shreyans"]),
@@ -1839,9 +1730,188 @@ def seed_real():
     return {"msg":"Real data seeded","workers":len(workers_data),"machines":len(machines_data)}
 
 
+# ── SEED PUNCH ROUTINGS ──
+# Creates 4 Punch routings based on Yukeng Excel calculations:
+#   1. Punch — Plain Small (≤ 600x600) — 660 min total
+#   2. Punch — Plain Big (> 600x600)   — 1195 min total
+#   3. Punch — Iso Small (≤ 600x600)   — 765 min total
+#   4. Punch — Iso Big (> 600x600)     — 1210 min total
+# All routings are created with is_active=False so user can review before activating.
+# Idempotent: safe to call multiple times — won't duplicate routings.
+
+@app.post("/api/seed-punch-routings")
+def seed_punch_routings():
+    db = SessionLocal()
+
+    def find_machine(name_keywords):
+        """Find machine by matching keyword(s) in name (case-insensitive). Returns None if not found."""
+        for kw in name_keywords:
+            wc = db.query(WorkCenter).filter(
+                func.lower(WorkCenter.name).contains(kw.lower())
+            ).first()
+            if wc:
+                return wc
+        return None
+
+    # Map operation name → machine name keywords (mapped to user's M-codes)
+    M = {
+        "M1":  find_machine(["Edge Grinder", "Edge Grinding"]),         # Edge Grinder (not Edge Grinder 2)
+        "M2":  find_machine(["DC Surface Grinder", "Surface Grinder"]),  # DC Surface Grinder
+        "M8":  find_machine(["KAFO VMC", "KAFO"]),                       # KAFO VMC
+        "M9":  find_machine(["DC VMC"]),                                  # DC VMC (NOT KAFO)
+        "M10": find_machine(["Radial Drill"]),                            # Radial Drill
+        "M14": find_machine(["Big Edge Mill", "Edge Mill"]),              # Big Edge Mill (or Edge Mill)
+        "M15": find_machine(["Rubberizing"]),                             # Rubberizing
+        "M16": find_machine(["Welding"]),                                 # Welding
+        "M18": find_machine(["Mould Assembly", "Assembly"]),              # Mould Assembly
+        "M19": find_machine(["Oil Station", "Oil Filling"]),              # Oil Station
+        "M22": find_machine(["Sand Blasting"]),                           # Sand Blasting
+    }
+
+    # If M1 matched "Edge Grinder 2" by mistake (it has "Edge Grinder" in it), prefer exact match
+    exact_m1 = db.query(WorkCenter).filter(
+        func.lower(WorkCenter.name) == "edge grinder"
+    ).first()
+    if exact_m1:
+        M["M1"] = exact_m1
+    exact_m9 = db.query(WorkCenter).filter(
+        func.lower(WorkCenter.name) == "dc vmc"
+    ).first()
+    if exact_m9:
+        M["M9"] = exact_m9
+
+    # Validate required machines
+    required = ["M1","M2","M8","M9","M10","M14","M15","M16","M18","M19","M22"]
+    missing = [k for k in required if M[k] is None]
+    if missing:
+        db.close()
+        raise HTTPException(400,
+            f"Required machines not found: {', '.join(missing)}. "
+            f"Click 'Load Real Setup' first to create your machine list.")
+
+    # Routing definitions: (name, description, lead_days, [(seq, op_name, machine_key, setup_min, work_hrs), ...])
+    # Times rounded to nearest 5 min as per user preference
+    # Work hours = (work_time_min from Excel) / 60, rounded to nearest 0.25h for cleanliness
+    routings_def = [
+        {
+            "name": "Punch — Plain Small (≤ 600x600)",
+            "description": "Plain Punch, dimensions up to 600x600. Total ~11 hrs.",
+            "lead_days": 2.0,
+            "steps": [
+                # (seq, op_name, machine, setup_min, work_hrs)
+                (1, "Lifting Holes",       "M10", 20,  0.33),
+                (2, "Facing",              "M9",  15,  2.00),
+                (3, "Side Cutting",        "M14", 40,  1.25),
+                (4, "Welding",             "M16", 30,  0.08),
+                (5, "Surface Grinding",    "M2",  15,  0.42),
+                (6, "Edge Grinding",       "M1",  60,  0.17),
+                (7, "Rubber Depth Milling","M8",  15,  1.00),
+                (8, "Sand Blasting",       "M22",  5,  0.67),
+                (9, "Rubberizing",         "M15", 30,  1.00),
+                (10, "Packing",            "M18",  5,  0.25),
+            ],
+        },
+        {
+            "name": "Punch — Plain Big (> 600x600)",
+            "description": "Plain Punch, dimensions larger than 600x600. Total ~20 hrs.",
+            "lead_days": 3.0,
+            "steps": [
+                (1, "Lifting Holes",       "M10", 20,  0.33),
+                (2, "Facing",              "M9",  15,  3.92),
+                (3, "Side Cutting",        "M14", 40,  1.83),
+                (4, "Welding",             "M16", 30,  0.17),
+                (5, "Surface Grinding",    "M2",  15,  0.83),
+                (6, "Edge Sizing",         "M8",  30,  5.33),
+                (7, "Rubber Depth Milling","M8",  15,  1.67),
+                (8, "Sand Blasting",       "M22",  5,  1.25),
+                (9, "Rubberizing",         "M15", 30,  1.00),
+                (10, "Packing",            "M18",  5,  0.25),
+            ],
+        },
+        {
+            "name": "Punch — Iso Small (≤ 600x600)",
+            "description": "Isostatic Punch, dimensions up to 600x600. Total ~13 hrs.",
+            "lead_days": 2.0,
+            "steps": [
+                (1, "Lifting Holes",       "M10", 20,  0.33),
+                (2, "Facing",              "M9",  15,  2.00),
+                (3, "Side Cutting",        "M14", 40,  1.25),
+                (4, "Iso Depth Milling",   "M9",  15,  1.67),
+                (5, "Welding",             "M16", 30,  0.08),
+                (6, "Surface Grinding",    "M2",  15,  0.42),
+                (7, "Edge Grinding",       "M1",  60,  0.17),
+                (8, "Radius Milling",      "M8",  15,  0.58),
+                (9, "Sand Blasting",       "M22",  5,  0.67),
+                (10, "Rubberizing",        "M15", 30,  1.00),
+                (11, "Oil Filling",        "M19",  5,  0.08),
+                (12, "Packing",            "M18",  5,  0.25),
+            ],
+        },
+        {
+            "name": "Punch — Iso Big (> 600x600)",
+            "description": "Isostatic Punch, dimensions larger than 600x600. Total ~20 hrs.",
+            "lead_days": 3.0,
+            "steps": [
+                (1, "Lifting Holes",       "M10", 20,  0.33),
+                (2, "Facing",              "M9",  15,  3.92),
+                (3, "Side Cutting",        "M14", 40,  1.83),
+                (4, "Iso Depth Milling",   "M9",  15,  3.25),
+                (5, "Welding",             "M16", 30,  0.17),
+                (6, "Surface Grinding",    "M2",  15,  0.83),
+                (7, "Edge Sizing",         "M8",  30,  2.67),
+                (8, "Radius Milling",      "M8",  15,  0.92),
+                (9, "Sand Blasting",       "M22",  5,  1.25),
+                (10, "Rubberizing",        "M15", 30,  1.00),
+                (11, "Oil Filling",        "M19",  5,  0.08),
+                (12, "Packing",            "M18",  5,  0.25),
+            ],
+        },
+    ]
+
+    created = []
+    skipped = []
+    for rdef in routings_def:
+        # Skip if already exists (idempotent)
+        existing = db.query(Routing).filter(Routing.name == rdef["name"]).first()
+        if existing:
+            skipped.append(rdef["name"])
+            continue
+
+        r = Routing(
+            name=rdef["name"],
+            product_type="Punch",
+            description=rdef["description"],
+            material_lead_days=rdef["lead_days"],
+            is_active=False,  # inactive on creation per user request
+        )
+        db.add(r); db.flush()
+
+        for seq, op_name, machine_key, setup_min, work_hrs in rdef["steps"]:
+            wc = M[machine_key]
+            db.add(Operation(
+                routing_id=r.id,
+                sequence=seq,
+                name=op_name,
+                work_center_id=wc.id,
+                setup_time_mins=setup_min,
+                work_time_hrs=work_hrs,
+                machine_setup_mins=setup_min,
+                job_setup_mins=0,
+                is_optional=False,
+            ))
+        created.append(rdef["name"])
+
+    db.commit(); db.close()
+    return {
+        "msg": f"Seeded {len(created)} Punch routings (inactive — review & activate when ready)",
+        "created": created,
+        "skipped_existing": skipped,
+        "machine_mapping": {k: (v.code + " " + v.name) if v else None for k, v in M.items()},
+    }
+
+
 @app.get("/api/preemption-alerts")
 def get_preemption_alerts():
-    """Returns jobs that could be preempted to free workers for urgent jobs."""
     db = SessionLocal()
     urgent_jobs = db.query(Job).filter(
         Job.status.in_(["pending","scheduled"]),
@@ -1907,7 +1977,6 @@ def seed():
         (6,"Liner Assembly","Assembly Station",30,5,False)])
     db.commit()
 
-    # Seed example workers
     vmc_wc  = db.query(WorkCenter).filter(WorkCenter.name == "Double Column VMC").first()
     kafo_wc = db.query(WorkCenter).filter(WorkCenter.name == "KAFO VMC").first()
     grind_wc= db.query(WorkCenter).filter(WorkCenter.name == "Big Surface Grinder").first()
@@ -1934,7 +2003,6 @@ def seed():
     db.commit()
     db.close()
     return {"msg": "Seeded", "machines": len(machines), "routings": 3, "workers": len(workers_data)}
-
 
 if __name__ == "__main__":
     import uvicorn
