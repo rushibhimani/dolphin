@@ -657,6 +657,9 @@ input.valid,select.valid{border-color:var(--green)}
     <div class="nav-item" onclick="showPage('jobs')">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>Jobs
     </div>
+    <div class="nav-item" onclick="showPage('orders')">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>Orders
+    </div>
     <div class="nav-item" onclick="showPage('schedule')">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Gantt Schedule
     </div>
@@ -666,9 +669,6 @@ input.valid,select.valid{border-color:var(--green)}
     <div class="nav-group">Setup</div>
     <div class="nav-item" onclick="showPage('routings')">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>Routings
-    </div>
-    <div class="nav-item" onclick="showPage('routing-stats')">
-      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2"/></svg>Routing Stats
     </div>
     <div class="nav-item" onclick="showPage('machines')">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Machines
@@ -738,7 +738,7 @@ input.valid,select.valid{border-color:var(--green)}
 
 <script>
 const API='http://localhost:8000';
-let allMachines=[],allRoutings=[],allJobs=[],allCustomers=[],allWorkers=[];
+let allMachines=[],allRoutings=[],allJobs=[],allCustomers=[],allWorkers=[],allOrders=[];
 let currentPage='dashboard';
 let routingOps=[],jobFormOps=[];
 let confirmResolve=()=>{};
@@ -949,8 +949,8 @@ function sBadge(s){const m={pending:'badge-pending',scheduled:'badge-scheduled',
 function navActive(p){document.querySelectorAll('.nav-item').forEach(el=>el.classList.toggle('active',!!(el.getAttribute('onclick')?.includes(`'${p}'`))))}
 function showPage(p){
   currentPage=p;navActive(p);
-  document.getElementById('pageTitle').textContent={dashboard:'Dashboard',today:"Today's Work",jobs:'Jobs',schedule:'Gantt Schedule',capacity:'Capacity Heatmap',routings:'Routing Templates','routing-stats':'Routing Stats — Estimated vs Actual',machines:'Machines',workers:'Workers & Leave',customers:'Customers',reports:'Reports',settings:'Settings'}[p]||p;
-  const pageRenderer = ({dashboard:renderDashboard,today:renderToday,jobs:renderJobs,schedule:renderSchedule,capacity:renderCapacity,routings:renderRoutings,'routing-stats':renderRoutingStats,machines:renderMachines,workers:renderWorkers,customers:renderCustomers,reports:renderReports,settings:renderSettings})[p];
+  document.getElementById('pageTitle').textContent={dashboard:'Dashboard',today:"Today's Work",jobs:'Jobs',orders:'Orders',schedule:'Gantt Schedule',capacity:'Capacity Heatmap',routings:'Routing Templates','routing-stats':'Routing Stats — Estimated vs Actual',machines:'Machines',workers:'Workers & Leave',customers:'Customers',reports:'Reports',settings:'Settings'}[p]||p;
+  const pageRenderer = ({dashboard:renderDashboard,today:renderToday,jobs:renderJobs,orders:renderOrders,schedule:renderSchedule,capacity:renderCapacity,routings:renderRoutings,'routing-stats':renderRoutingStats,machines:renderMachines,workers:renderWorkers,customers:renderCustomers,reports:renderReports,settings:renderSettings})[p];
   if(pageRenderer) pageRenderer().catch(e=>{
     console.error('Page render error:', e);
     document.getElementById('content').innerHTML=`<div style="padding:40px;text-align:center;color:var(--muted)"><div style="font-size:14px;margin-bottom:8px">Error loading page</div><div style="font-size:12px">${e.message}</div><button class="btn btn-secondary" style="margin-top:12px" onclick="showPage('${p}')">↻ Retry</button></div>`;
@@ -966,6 +966,7 @@ async function loadAll(){
     allMachines=wc; allRoutings=rt; allJobs=jb;
     try{ allWorkers=await api('GET','/api/workers'); }catch{ allWorkers=[]; }
     try{ allCustomers=await api('GET','/api/customers'); }catch{ allCustomers=[]; }
+    try{ allOrders=await api('GET','/api/orders'); }catch{ allOrders=[]; }
     document.getElementById('serverStatus').textContent='Connected';
     document.getElementById('statusDot').style.background='var(--green)';
   }catch(e){
@@ -1079,6 +1080,7 @@ async function renderDashboard(){
       <div class="card-hdr"><div class="card-title">Quick Actions</div></div>
       <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary" onclick="openJobModal()">+ New Job</button>
+        <button class="btn btn-secondary" onclick="openOrderModal()">+ New Order</button>
         <button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button>
         <button class="btn btn-secondary" onclick="showPage('today')">🕐 Today</button>
         <button class="btn btn-secondary" onclick="showPage('schedule')">📅 Gantt</button>
@@ -1926,131 +1928,37 @@ async function renderCapacity(){
 }
 
 // ── ROUTINGS ──
-let _routingSearch = '';
 async function renderRoutings(){
   await loadAll();
-  document.getElementById('topbarActions').innerHTML=`
-    <input type="text" id="routingSearchInput" placeholder="Search routings..." value="${_routingSearch.replace(/"/g,'&quot;')}"
-       oninput="_routingSearch=this.value;_renderRoutingList()"
-       style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);color:var(--text);font-size:13px;width:220px;margin-right:8px">
-    <button class="btn btn-secondary" onclick="seedPunchRoutings()" title="Create 4 Punch routings from Yukeng Excel calculations">📋 Seed Punch Routings</button>
-    <button class="btn btn-primary" onclick="openRoutingModal()">+ New Routing</button>`;
-  document.getElementById('content').innerHTML=`
-    <div class="card">
-      <div class="card-hdr">
-        <div class="card-title">Routing Templates (<span id="routingCount">${allRoutings.length}</span>)</div>
-        <div style="font-size:12px;color:var(--muted)">Active routings only · grouped by product type</div>
+  document.getElementById('topbarActions').innerHTML=`<button class="btn btn-primary" onclick="openRoutingModal()">+ New Routing</button>`;
+  document.getElementById('content').innerHTML=`<div class="card"><div class="card-hdr"><div class="card-title">Routing Templates (${allRoutings.length})</div></div><div id="routingList"></div></div>`;
+  if(!allRoutings.length){document.getElementById('routingList').innerHTML=`<div class="empty">No routings. Create one or load demo data.</div>`;return;}
+  document.getElementById('routingList').innerHTML=allRoutings.map(r=>{
+    const totalHrs=r.operations.reduce((s,o)=>s+(o.setup_time_mins/60)+o.work_time_hrs,0);
+    return`<div style="padding:14px 18px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <div style="font-weight:600;margin-bottom:2px">${r.name}</div>
+          <div style="font-size:11px;color:var(--muted)">${r.product_type}${r.description?' · '+r.description:''} · ${r.operations.length} operations · ${totalHrs.toFixed(1)}h total · ${r.material_lead_days}d material lead</div>
+          ${r.operations.length===0?`<div style="font-size:11px;color:var(--red);margin-top:3px">⚠ No operations defined — add at least one</div>`:''}
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button class="btn btn-ghost" onclick="openRoutingModal(${r.id})">Edit</button>
+          <button class="btn btn-danger" onclick="delRouting(${r.id})">Delete</button>
+        </div>
       </div>
-      <div id="routingList"></div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+        ${r.operations.map((op,i)=>`${i>0?`<span style="color:var(--border2)">→</span>`:''}
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:11px">
+            <span style="color:var(--muted)">${op.sequence}.</span>
+            <strong style="margin-left:2px">${op.name}</strong>
+            <span style="color:var(--accent2);margin-left:4px">${op.work_center_name}</span>
+            <span style="color:var(--muted);margin-left:4px">${((op.setup_time_mins/60)+op.work_time_hrs).toFixed(1)}h${op.is_optional?' opt':''}</span>
+          </div>`).join('')}
+        ${r.operations.length===0?`<span style="color:var(--muted);font-size:12px;font-style:italic">No operations yet</span>`:''}
+      </div>
     </div>`;
-  _renderRoutingList();
-}
-
-async function seedPunchRoutings(){
-  const ok = await confirm2('Create 4 Punch routings (Plain Small, Plain Big, Iso Small, Iso Big) based on Yukeng Excel calculations? They will be created INACTIVE so you can review them first.', 'Create 4 Routings');
-  if(!ok) return;
-  try {
-    const r = await api('POST', '/api/seed-punch-routings');
-    let msg = r.msg || 'Seeded';
-    if(r.skipped_existing && r.skipped_existing.length){
-      msg += ` (${r.skipped_existing.length} already existed)`;
-    }
-    toast(msg);
-    await loadAll();
-    showPage('routings');
-  } catch(e) {
-    toast(e.message, 'error');
-  }
-}
-
-function _renderRoutingList(){
-  const container = document.getElementById('routingList');
-  if(!container) return;
-  const search = _routingSearch.toLowerCase().trim();
-  let filtered = allRoutings;
-  if(search){
-    filtered = allRoutings.filter(r =>
-      (r.name||'').toLowerCase().includes(search) ||
-      (r.product_type||'').toLowerCase().includes(search) ||
-      (r.description||'').toLowerCase().includes(search)
-    );
-  }
-  document.getElementById('routingCount').textContent = filtered.length;
-
-  if(!filtered.length){
-    container.innerHTML = `<div class="empty">${search ? 'No routings match your search.' : 'No routings. Create one or load demo data.'}</div>`;
-    return;
-  }
-  const groups = {};
-  filtered.forEach(r => {
-    const k = r.product_type || 'Uncategorized';
-    (groups[k] = groups[k] || []).push(r);
-  });
-  const sortedKeys = Object.keys(groups).sort();
-  container.innerHTML = sortedKeys.map(pt => {
-    const items = groups[pt];
-    return `
-      <div style="border-bottom:1px solid var(--border)">
-        <div style="padding:12px 18px 6px;display:flex;align-items:center;gap:8px;background:var(--row-hover)">
-          <div style="font-weight:600;color:var(--accent);font-size:13px;text-transform:uppercase;letter-spacing:.05em">${escHtml(pt)}</div>
-          <div style="font-size:11px;color:var(--muted)">${items.length} routing${items.length===1?'':'s'}</div>
-        </div>
-        ${items.map(r => _routingRowHtml(r)).join('')}
-      </div>`;
   }).join('');
-}
-
-function _routingRowHtml(r){
-  const totalHrs = (r.total_estimated_hours != null) ? r.total_estimated_hours :
-    r.operations.reduce((s,o)=>s+(o.setup_time_mins/60)+o.work_time_hrs, 0);
-  const opCount = r.operation_count != null ? r.operation_count : r.operations.length;
-  const activeJobs = r.active_job_count || 0;
-  const totalJobs = r.job_count || 0;
-  const badges = [];
-  if(activeJobs > 0) badges.push(`<span class="badge badge-inprog" style="font-size:10px">${activeJobs} active job${activeJobs===1?'':'s'}</span>`);
-  if(r.is_active === false) badges.push(`<span class="badge badge-pending" style="font-size:10px">Inactive</span>`);
-  const editLabel = activeJobs > 0 ? 'View / Duplicate' : 'Edit';
-
-  return `<div style="padding:14px 18px;border-top:1px solid var(--border)">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:12px">
-      <div style="min-width:0;flex:1">
-        <div style="font-weight:600;margin-bottom:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          ${escHtml(r.name)}
-          ${badges.join('')}
-        </div>
-        <div style="font-size:11px;color:var(--muted)">
-          ${r.description ? escHtml(r.description) + ' · ' : ''}${opCount} operation${opCount===1?'':'s'} · ${totalHrs.toFixed(1)}h total · ${r.material_lead_days}d material lead${totalJobs > 0 ? ' · ' + totalJobs + ' job' + (totalJobs===1?'':'s') + ' total' : ''}
-        </div>
-        ${opCount===0?`<div style="font-size:11px;color:var(--red);margin-top:3px">⚠ No operations defined — add at least one</div>`:''}
-      </div>
-      <div style="display:flex;gap:6px;flex-shrink:0">
-        <button class="btn btn-ghost" onclick="openRoutingModal(${r.id})">${editLabel}</button>
-        <button class="btn btn-ghost" onclick="duplicateRouting(${r.id})">Duplicate</button>
-        <button class="btn btn-danger" onclick="delRouting(${r.id})">Delete</button>
-      </div>
-    </div>
-    <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
-      ${r.operations.map((op,i)=>`${i>0?`<span style="color:var(--border2)">→</span>`:''}
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:11px">
-          <span style="color:var(--muted)">${op.sequence}.</span>
-          <strong style="margin-left:2px">${escHtml(op.name)}</strong>
-          <span style="color:var(--accent2);margin-left:4px">${escHtml(op.work_center_name||'')}</span>
-          <span style="color:var(--muted);margin-left:4px">${((op.setup_time_mins/60)+op.work_time_hrs).toFixed(1)}h${op.is_optional?' opt':''}</span>
-        </div>`).join('')}
-      ${r.operations.length===0?`<span style="color:var(--muted);font-size:12px;font-style:italic">No operations yet</span>`:''}
-    </div>
-  </div>`;
-}
-
-function escHtml(s){
-  if(s==null) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-
-function escAttr(s){
-  if(s==null) return '';
-  return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function buildMachineOpts(selId){
@@ -2059,65 +1967,31 @@ function buildMachineOpts(selId){
   return Object.entries(byType).map(([t,ms])=>`<optgroup label="${t}">${ms.map(m=>`<option value="${m.id}"${parseInt(selId)===m.id?' selected':''}>${m.name}</option>`).join('')}</optgroup>`).join('');
 }
 
-async function openRoutingModal(editId){
-  let r = null;
-  let detail = null;
-  if(editId){
-    try {
-      detail = await api('GET', `/api/routings/${editId}`);
-      r = detail;
-    } catch(e) {
-      toast('Could not load routing: ' + e.message, 'error');
-      return;
-    }
-  }
-  routingOps = r ? r.operations.map(o=>({
-    ...o,
-    setup_time_mins: o.setup_time_mins,
-    work_time_hrs: o.work_time_hrs,
-    is_optional: o.is_optional,
-    stats: o.stats || {}
-  })) : [];
-
-  let pTypes = [];
-  try {
-    const pt = await api('GET', '/api/product-types');
-    pTypes = pt.product_types || [];
-  } catch {
-    pTypes = ['Punch','Die Frame','Liner Set','Entry Mould','SFS Mould','Custom Plate','Base Plate','Ejector Plate','Addon Plate','Complete Mould','SFS Lower','SFS Upper'];
-  }
-
-  const isLocked = r && r.active_job_count > 0;
-  const lockedBanner = isLocked ? `
-    <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.3);border-radius:var(--r-md);padding:10px 12px;margin-bottom:12px;font-size:12px;color:var(--red)">
-      <strong>⚠ Edit blocked.</strong> ${r.active_job_count} active job(s) use this routing. Editing is disabled to protect their schedules.
-      <button class="btn btn-secondary" style="margin-top:6px;font-size:11px;padding:4px 10px" onclick="duplicateRouting(${r.id});closeModal()">Duplicate this routing & edit the copy</button>
-    </div>` : '';
-
-  showModal(r?(isLocked?'View Routing':'Edit Routing'):'New Routing',
-    lockedBanner +
+function openRoutingModal(editId){
+  const r=editId?allRoutings.find(x=>x.id===editId):null;
+  routingOps=r?r.operations.map(o=>({...o})):[];
+  const PTYPES=['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate','Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
+  showModal(r?'Edit Routing':'New Routing',
     `<div class="form-section">Routing Details</div>
     <div class="form-row cols-2">
       <div class="form-group">
         <div class="fld-label">Name <span style="color:var(--red)">*</span></div>
-        <input id="r_name" value="${escAttr(r?.name||'')}" placeholder="e.g. Punch Routing (600x600)" ${isLocked?'disabled':''}>
+        <input id="r_name" value="${r?.name||''}" placeholder="e.g. Punch Routing (600x600)">
         <div class="field-err" id="r_name_err"></div>
       </div>
       <div class="form-group">
         <div class="fld-label">Product Type <span style="color:var(--red)">*</span></div>
-        <input id="r_ptype" list="ptypeList" value="${escAttr(r?.product_type||'')}" placeholder="e.g. Punch, Die Frame, Custom..." ${isLocked?'disabled':''}>
-        <datalist id="ptypeList">${pTypes.map(p=>`<option value="${escAttr(p)}">`).join('')}</datalist>
-        <div class="info-hint" style="font-size:10px;margin-top:3px">Type any name. Suggestions from existing routings.</div>
+        <select id="r_ptype">${PTYPES.map(p=>`<option ${r?.product_type===p?'selected':''}>${p}</option>`).join('')}</select>
       </div>
     </div>
     <div class="form-row cols-2">
       <div class="form-group">
-        <div class="fld-label">Description / Variant Tags</div>
-        <input id="r_desc" value="${escAttr(r?.description||'')}" placeholder="e.g. 600x600, Plain, Upper" ${isLocked?'disabled':''}>
+        <div class="fld-label">Description</div>
+        <input id="r_desc" value="${r?.description||''}" placeholder="Brief description">
       </div>
       <div class="form-group">
         <div class="fld-label">Material Lead Time (days)</div>
-        <input id="r_lead" type="number" min="0" step="0.5" value="${r?.material_lead_days??2}" ${isLocked?'disabled':''}>
+        <input id="r_lead" type="number" min="0" step="0.5" value="${r?.material_lead_days??2}">
         <div class="field-err" id="r_lead_err"></div>
       </div>
     </div>
@@ -2125,89 +1999,44 @@ async function openRoutingModal(editId){
     <div class="form-section" style="margin-top:16px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <span>Operations</span>
-        ${isLocked?'':'<button class="btn btn-secondary" style="font-size:11px;padding:4px 9px;text-transform:none;letter-spacing:0" onclick="addOpRow()">+ Add Step</button>'}
+        <button class="btn btn-secondary" style="font-size:11px;padding:4px 9px;text-transform:none;letter-spacing:0" onclick="addOpRow()">+ Add Step</button>
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:52px 28px 1fr 170px 72px 72px 40px 100px 28px;gap:5px;padding:4px 0 8px;font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">
-      <span>Move</span><span style="text-align:center">#</span><span>Operation Name</span><span>Machine</span><span>Setup(m)</span><span>Work(h)</span><span style="text-align:center">Opt</span><span title="Avg actual time from completed jobs">Actual</span><span></span>
+    <div style="display:grid;grid-template-columns:52px 28px 1fr 170px 72px 72px 40px 28px;gap:5px;padding:4px 0 8px;font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">
+      <span>Move</span><span style="text-align:center">#</span><span>Operation Name</span><span>Machine</span><span>Setup(m)</span><span>Work(h)</span><span style="text-align:center">Opt</span><span></span>
     </div>
     <div id="opsContainer"></div>
-    <div id="opsEmpty" style="${routingOps.length?'display:none':''}color:var(--muted);font-size:12px;padding:8px 0">No operations yet. Click "+ Add Step".</div>
-    <div id="opsTotalRow" style="margin-top:8px;padding:8px 0;border-top:1px solid var(--border);font-size:12px;color:var(--muted);display:flex;justify-content:space-between">
-      <span>Total estimated time</span><span id="opsTotalHrs" style="font-weight:600;color:var(--text)">0.0h</span>
-    </div>`,
+    <div id="opsEmpty" style="${routingOps.length?'display:none':''}color:var(--muted);font-size:12px;padding:8px 0">No operations yet. Click "+ Add Step".</div>`,
     `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-     ${isLocked ? '' :
-        `<button class="btn btn-primary" id="saveRoutingBtn" onclick="saveRouting(${r?.id??'null'})">Save Routing</button>`}`,
+     <button class="btn btn-primary" id="saveRoutingBtn" onclick="saveRouting(${r?.id??'null'})">Save Routing</button>`,
     true
   );
   setTimeout(()=>{
-    if(!isLocked){
-      attachValidation('r_name',[{test:v=>v.length>0,msg:'Routing name is required'}],'r_name_err');
-      attachValidation('r_lead',[{test:v=>!isNaN(parseFloat(v))&&parseFloat(v)>=0,msg:'Must be 0 or more days'}],'r_lead_err');
-    }
-    renderOpRows(isLocked);
+    attachValidation('r_name',[{test:v=>v.length>0,msg:'Routing name is required'}],'r_name_err');
+    attachValidation('r_lead',[{test:v=>!isNaN(parseFloat(v))&&parseFloat(v)>=0,msg:'Must be 0 or more days'}],'r_lead_err');
+    renderOpRows();
   },50);
 }
 
-async function duplicateRouting(id){
-  try {
-    const r = await api('POST', `/api/routings/${id}/duplicate`);
-    toast(r.msg || 'Duplicated');
-    await loadAll();
-    showPage('routings');
-    setTimeout(()=>openRoutingModal(r.id), 200);
-  } catch(e) {
-    toast(e.message, 'error');
-  }
-}
-
-function renderOpRows(readonly){
+function renderOpRows(){
   const c=document.getElementById('opsContainer');
   const e=document.getElementById('opsEmpty');
   if(e) e.style.display=routingOps.length?'none':'';
   if(!c) return;
-  c.innerHTML=routingOps.map((op,i)=>{
-    let statsCell = '<span style="color:var(--muted);font-size:10px">no data</span>';
-    if(op.stats && op.stats.sample_count > 0){
-      const v = op.stats.variance_pct;
-      let color = 'var(--green)';
-      if(v != null && v > 50) color = 'var(--red)';
-      else if(v != null && v > 20) color = 'var(--orange)';
-      else if(v != null && v < -20) color = 'var(--accent)';
-      const sign = (v != null && v > 0) ? '+' : '';
-      const vText = (v != null) ? ` (${sign}${v}%)` : '';
-      statsCell = `<span style="color:${color};font-size:11px" title="Avg from ${op.stats.sample_count} job${op.stats.sample_count===1?'':'s'}">${op.stats.avg_actual_hours}h${vText}</span>`;
-    }
-    const dis = readonly ? 'disabled' : '';
-    return `
-    <div class="op-ed-row" id="opedrow_${i}" style="display:grid;grid-template-columns:52px 28px 1fr 170px 72px 72px 40px 100px 28px;gap:5px;align-items:center;padding:4px 0">
-      <div class="op-ed-arrows" style="display:flex;gap:2px">
-        <button onclick="moveOp(${i},-1)" ${i===0||readonly?'disabled':''} title="Move up" style="padding:2px 6px;font-size:10px">▲</button>
-        <button onclick="moveOp(${i},1)" ${i===routingOps.length-1||readonly?'disabled':''} title="Move down" style="padding:2px 6px;font-size:10px">▼</button>
+  c.innerHTML=routingOps.map((op,i)=>`
+    <div class="op-ed-row" id="opedrow_${i}">
+      <div class="op-ed-arrows">
+        <button onclick="moveOp(${i},-1)" ${i===0?'disabled':''} title="Move up">▲</button>
+        <button onclick="moveOp(${i},1)" ${i===routingOps.length-1?'disabled':''} title="Move down">▼</button>
       </div>
-      <span class="op-ed-seq" style="text-align:center;color:var(--muted);font-size:11px">${i+1}</span>
-      <input id="oped_name_${i}" value="${escAttr(op.name||'')}" placeholder="e.g. Facing" ${dis} oninput="_recalcOpsTotal()">
-      <select id="oped_wc_${i}" ${dis} onchange="_recalcOpsTotal()">${buildMachineOpts(op.work_center_id)}</select>
-      <input type="number" id="oped_setup_${i}" value="${op.setup_time_mins??0}" min="0" step="5" ${dis} oninput="_recalcOpsTotal()">
-      <input type="number" id="oped_work_${i}" value="${op.work_time_hrs??0}" min="0" step="0.5" ${dis} oninput="_recalcOpsTotal()">
-      <input type="checkbox" id="oped_opt_${i}" ${op.is_optional?'checked':''} ${dis} style="width:14px;height:14px;accent-color:var(--accent);margin:auto;display:block">
-      <div style="font-size:11px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${statsCell}</div>
-      ${readonly ? '<span></span>' : `<button class="op-rm" onclick="removeOp(${i})" title="Remove" style="padding:2px 6px">✕</button>`}
-    </div>`;
-  }).join('');
-  _recalcOpsTotal();
-}
-
-function _recalcOpsTotal(){
-  let total = 0;
-  routingOps.forEach((op,i)=>{
-    const setup = parseFloat(document.getElementById(`oped_setup_${i}`)?.value) || 0;
-    const work = parseFloat(document.getElementById(`oped_work_${i}`)?.value) || 0;
-    total += (setup/60) + work;
-  });
-  const el = document.getElementById('opsTotalHrs');
-  if(el) el.textContent = total.toFixed(1) + 'h';
+      <span class="op-ed-seq">${i+1}</span>
+      <input id="oped_name_${i}" value="${op.name||''}" placeholder="e.g. Facing">
+      <select id="oped_wc_${i}">${buildMachineOpts(op.work_center_id)}</select>
+      <input type="number" id="oped_setup_${i}" value="${op.setup_time_mins??0}" min="0" step="5">
+      <input type="number" id="oped_work_${i}" value="${op.work_time_hrs??0}" min="0" step="0.5">
+      <input type="checkbox" id="oped_opt_${i}" ${op.is_optional?'checked':''} style="width:14px;height:14px;accent-color:var(--accent);margin:auto;display:block">
+      <button class="op-rm" onclick="removeOp(${i})" title="Remove">✕</button>
+    </div>`).join('');
 }
 
 function syncRoutingOps(){
@@ -2248,124 +2077,8 @@ async function saveRouting(editId){
 }
 
 async function delRouting(id){
-  const r = allRoutings.find(x=>x.id===id);
-  const totalJobs = r ? (r.job_count || 0) : 0;
-  const msg = totalJobs > 0
-    ? `This routing is referenced by ${totalJobs} job${totalJobs===1?'':'s'}. It will be marked Inactive (history preserved). Continue?`
-    : 'Delete this routing? This cannot be undone.';
-  const ok = await confirm2(msg);
-  if(!ok) return;
-  try {
-    const res = await api('DELETE',`/api/routings/${id}`);
-    toast(res.soft_deleted ? 'Marked inactive (history kept)' : 'Deleted');
-    await loadAll(); showPage('routings');
-  } catch(e) { toast(e.message,'error'); }
-}
-
-// ── ROUTING STATS PAGE ──
-async function renderRoutingStats(){
-  document.getElementById('topbarActions').innerHTML = `<button class="btn btn-secondary" onclick="renderRoutingStats()">↻ Refresh</button>`;
-  document.getElementById('content').innerHTML = `
-    <div class="card">
-      <div class="card-hdr">
-        <div class="card-title">Estimated vs Actual</div>
-        <div style="font-size:12px;color:var(--muted)">Compare estimates against completed jobs. Refine routings as data grows.</div>
-      </div>
-      <div id="rsContent" style="padding:16px"><div class="empty">Loading...</div></div>
-    </div>`;
-  try {
-    const data = await api('GET', '/api/routings/stats/all');
-    _renderRoutingStatsContent(data.routings || []);
-  } catch(e) {
-    document.getElementById('rsContent').innerHTML = `<div class="empty" style="color:var(--red)">Error: ${escHtml(e.message)}</div>`;
-  }
-}
-
-function _renderRoutingStatsContent(routings){
-  const c = document.getElementById('rsContent');
-  if(!routings.length){
-    c.innerHTML = `<div class="empty">No active routings yet.</div>`;
-    return;
-  }
-  const groups = {};
-  routings.forEach(r => { (groups[r.product_type||'Uncategorized'] = groups[r.product_type||'Uncategorized'] || []).push(r); });
-  const keys = Object.keys(groups).sort();
-
-  const totalRoutings = routings.length;
-  const withData = routings.filter(r => r.sample_count > 0).length;
-  const totalSamples = routings.reduce((s,r)=>s+(r.sample_count||0), 0);
-
-  c.innerHTML = `
-    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:18px;font-size:13px">
-      <div><span style="color:var(--muted)">Total routings:</span> <strong>${totalRoutings}</strong></div>
-      <div><span style="color:var(--muted)">With data:</span> <strong>${withData}</strong></div>
-      <div><span style="color:var(--muted)">Total completed jobs analyzed:</span> <strong>${totalSamples}</strong></div>
-    </div>
-    ${keys.map(pt => `
-      <div style="margin-bottom:24px">
-        <div style="font-weight:600;color:var(--accent);font-size:13px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:6px">${escHtml(pt)}</div>
-        ${groups[pt].map(r => _routingStatsCard(r)).join('')}
-      </div>`).join('')}`;
-}
-
-function _routingStatsCard(r){
-  const hasData = r.sample_count > 0;
-  const v = r.variance_pct;
-  let varColor = 'var(--muted)', varText = '—';
-  if(v != null){
-    if(v > 50) varColor = 'var(--red)';
-    else if(v > 20) varColor = 'var(--orange)';
-    else if(v > -20) varColor = 'var(--green)';
-    else varColor = 'var(--accent)';
-    const sn = v > 0 ? '+' : '';
-    varText = `${sn}${v}%`;
-  }
-  return `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:12px;margin-bottom:10px">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
-        <div style="font-weight:600">${escHtml(r.name)}</div>
-        <div style="display:flex;gap:14px;font-size:12px;flex-wrap:wrap">
-          <div><span style="color:var(--muted)">Estimated:</span> <strong>${r.estimated_total_hours}h</strong></div>
-          <div><span style="color:var(--muted)">Avg actual:</span> <strong>${hasData ? r.avg_actual_total_hours+'h' : '—'}</strong></div>
-          <div><span style="color:var(--muted)">Variance:</span> <strong style="color:${varColor}">${varText}</strong></div>
-          <div><span style="color:var(--muted)">Samples:</span> <strong>${r.sample_count}</strong></div>
-        </div>
-      </div>
-      <table style="width:100%;font-size:11px;border-collapse:collapse">
-        <thead>
-          <tr style="color:var(--muted);border-bottom:1px solid var(--border)">
-            <th style="text-align:left;padding:4px;width:30px">#</th>
-            <th style="text-align:left;padding:4px">Step</th>
-            <th style="text-align:right;padding:4px;width:80px">Estimated</th>
-            <th style="text-align:right;padding:4px;width:80px">Avg actual</th>
-            <th style="text-align:right;padding:4px;width:80px">Variance</th>
-            <th style="text-align:right;padding:4px;width:60px">Samples</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${(r.operations||[]).map(op => {
-            const ov = op.variance_pct;
-            let oc = 'var(--muted)', ot = '—';
-            if(ov != null){
-              if(ov > 50) oc = 'var(--red)';
-              else if(ov > 20) oc = 'var(--orange)';
-              else if(ov > -20) oc = 'var(--green)';
-              else oc = 'var(--accent)';
-              const sn = ov > 0 ? '+' : '';
-              ot = `${sn}${ov}%`;
-            }
-            return `<tr style="border-bottom:1px solid var(--border)">
-              <td style="padding:4px;color:var(--muted)">${op.sequence}</td>
-              <td style="padding:4px">${escHtml(op.name)}</td>
-              <td style="padding:4px;text-align:right">${op.estimated_hours}h</td>
-              <td style="padding:4px;text-align:right">${op.avg_actual_hours != null ? op.avg_actual_hours+'h' : '—'}</td>
-              <td style="padding:4px;text-align:right;color:${oc}">${ot}</td>
-              <td style="padding:4px;text-align:right;color:var(--muted)">${op.sample_count}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    </div>`;
+  const ok=await confirm2('Delete this routing? Jobs using it will lose their routing reference.');if(!ok)return;
+  try{await api('DELETE',`/api/routings/${id}`);toast('Deleted');await loadAll();showPage('routings');}catch(e){toast(e.message,'error')}
 }
 
 // ── MACHINES ──
@@ -3093,6 +2806,277 @@ function renderReportsContent(r){
 }
 
 // ── INIT ──
+
+// ── ORDERS (quantity-based) ──
+let allOrders = allOrders||[];
+
+async function renderOrders(){
+  await loadAll();
+  document.getElementById('topbarActions').innerHTML=`
+    <button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button>
+    <button class="btn btn-primary" onclick="openOrderModal()">+ New Order</button>`;
+
+  if(!allOrders.length){
+    document.getElementById('content').innerHTML=`
+      <div class="card"><div class="empty">No orders yet.<br>An order = one customer request for multiple identical pieces.<br>Each piece is scheduled independently — urgent small orders jump ahead of large slow ones automatically.</div></div>`;
+    return;
+  }
+
+  const sorted = [...allOrders].sort((a,b)=>new Date(a.due_date)-new Date(b.due_date));
+  document.getElementById('content').innerHTML=`
+    <div style="display:flex;flex-direction:column;gap:12px">
+      ${sorted.map(o=>orderCardHTML(o)).join('')}
+    </div>`;
+}
+
+function orderCardHTML(o){
+  const done     = o.pieces_done    || 0;
+  const inprog   = o.pieces_inprog  || 0;
+  const sched    = o.pieces_scheduled|| 0;
+  const total    = o.quantity        || 1;
+  const pct      = Math.round((done/total)*100);
+  const isLate   = o.is_late;
+  const dueColor = isLate ? 'var(--red)' : new Date(o.due_date) < new Date(Date.now()+3*86400000) ? 'var(--amber)' : 'var(--text-soft)';
+
+  const statusBadge = o.status==='completed' ? `<span class="badge badge-done">Done</span>` :
+                      o.status==='in_progress' ? `<span class="badge badge-inprog">In Progress</span>` :
+                      `<span class="badge badge-pending">Pending</span>`;
+
+  return `<div class="card">
+    <div class="card-hdr" style="flex-wrap:wrap;gap:10px">
+      <div style="min-width:0;flex:1">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:3px">
+          <span class="mono" style="font-size:14px;font-weight:600;color:var(--accent)">${o.order_number}</span>
+          ${statusBadge}
+          ${isLate?'<span class="badge badge-late">LATE</span>':''}
+        </div>
+        <div style="font-size:13px;font-weight:500">${o.customer_name} · ${o.product_type} ${o.product_size||''} ${o.product_variant||''}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-secondary" style="font-size:12px;padding:5px 10px" onclick="viewOrderPieces(${o.id})">View Pieces</button>
+        <button class="btn btn-secondary" style="font-size:12px;padding:5px 10px" onclick="scheduleOrder(${o.id})">⚡ Schedule</button>
+        <button class="btn btn-danger" style="font-size:12px;padding:5px 10px" onclick="deleteOrder(${o.id})">Delete</button>
+      </div>
+    </div>
+    <div class="card-body" style="padding:12px 20px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:14px">
+        <div><div style="font-size:11px;color:var(--muted);margin-bottom:2px">Quantity</div><div class="mono" style="font-size:16px;font-weight:600">${total} pcs</div></div>
+        <div><div style="font-size:11px;color:var(--muted);margin-bottom:2px">Due date</div><div class="mono" style="font-size:14px;color:${dueColor}">${fmtD(o.due_date)}${isLate?' ⚠':''}</div></div>
+        <div><div style="font-size:11px;color:var(--muted);margin-bottom:2px">Est. finish</div><div class="mono" style="font-size:14px;color:${o.est_finish&&isLate?'var(--red)':'var(--muted)'}">${o.est_finish?fmtD(o.est_finish):'Not scheduled'}</div></div>
+        <div><div style="font-size:11px;color:var(--muted);margin-bottom:2px">Value</div><div class="mono" style="font-size:14px;color:var(--green)">${fmtINR(o.total_price)}</div></div>
+      </div>
+      <div style="margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px">
+          <span style="color:var(--muted)">
+            ${done} done · ${inprog} in progress · ${sched} scheduled · ${total-done-inprog-sched} pending
+          </span>
+          <span class="mono" style="font-weight:600">${pct}%</span>
+        </div>
+        <div class="prog-bar" style="height:8px">
+          <div class="prog-fill" style="width:${pct}%;background:${pct===100?'var(--green)':inprog>0?'var(--accent)':'var(--accent2)'}"></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function viewOrderPieces(orderId){
+  const order = await api('GET',`/api/orders/${orderId}`);
+  const pieces = order.pieces || [];
+  const html = pieces.map(p=>`
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--accent)">P${String(p.piece_number).padStart(2,'0')}</td>
+      <td style="padding:8px 12px;font-family:var(--mono);font-size:11px;color:var(--muted)">${p.job_number}</td>
+      <td style="padding:8px 12px">${sBadge(p.status)}</td>
+      <td style="padding:8px 12px;font-family:var(--mono);font-size:11px">${p.scheduled_finish?fmtD(p.scheduled_finish):'—'}</td>
+      <td style="padding:8px 12px"><div style="display:flex;gap:4px;align-items:center">
+        <div class="prog-bar" style="width:80px"><div class="prog-fill" style="width:${p.ops_total?Math.round(p.ops_done/p.ops_total*100):0}%"></div></div>
+        <span style="font-size:10px;color:var(--muted)">${p.ops_done}/${p.ops_total}</span>
+      </div></td>
+      <td style="padding:8px 12px">
+        <button class="btn btn-ghost" style="font-size:11px;padding:3px 7px" onclick="closeModal();showPage('jobs');setTimeout(()=>expandJob(${p.id}),300)">View →</button>
+      </td>
+    </tr>`).join('');
+  showModal(`${order.order_number} — Pieces (${order.quantity})`,`
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+      <div class="stat-card" style="padding:12px"><div class="stat-label">Total</div><div class="stat-value">${order.quantity}</div></div>
+      <div class="stat-card" style="padding:12px"><div class="stat-label">Done</div><div class="stat-value" style="color:var(--green)">${order.pieces_done}</div></div>
+      <div class="stat-card" style="padding:12px"><div class="stat-label">In Progress</div><div class="stat-value" style="color:var(--accent)">${order.pieces_inprog}</div></div>
+      <div class="stat-card" style="padding:12px"><div class="stat-label">Pending</div><div class="stat-value" style="color:var(--muted)">${order.pieces_pending}</div></div>
+    </div>
+    <div style="overflow-y:auto;max-height:400px">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="border-bottom:1px solid var(--border)">
+          <th style="padding:8px 12px;font-size:10px;text-transform:uppercase;color:var(--muted);text-align:left">Piece</th>
+          <th style="padding:8px 12px;font-size:10px;text-transform:uppercase;color:var(--muted);text-align:left">Job #</th>
+          <th style="padding:8px 12px;font-size:10px;text-transform:uppercase;color:var(--muted);text-align:left">Status</th>
+          <th style="padding:8px 12px;font-size:10px;text-transform:uppercase;color:var(--muted);text-align:left">Finish</th>
+          <th style="padding:8px 12px;font-size:10px;text-transform:uppercase;color:var(--muted);text-align:left">Progress</th>
+          <th style="padding:8px 12px"></th>
+        </tr></thead>
+        <tbody>${html}</tbody>
+      </table>
+    </div>`,
+    `<button class="btn btn-primary" onclick="closeModal()">Close</button>`,
+    true
+  );
+}
+
+async function scheduleOrder(orderId){
+  try{
+    const r = await api('POST',`/api/orders/${orderId}/schedule`);
+    toast(`Scheduled ${r.scheduled} pieces${r.failed>0?' · '+r.failed+' failed':''}`);
+    await loadAll();
+    showPage('orders');
+  }catch(e){ toast(e.message,'error'); }
+}
+
+async function deleteOrder(orderId){
+  const ok = await confirm2('Delete this order and all its piece jobs? This cannot be undone.','Delete Order');
+  if(!ok) return;
+  try{
+    await api('DELETE',`/api/orders/${orderId}`);
+    toast('Order deleted');
+    await loadAll();
+    showPage('orders');
+  }catch(e){ toast(e.message,'error'); }
+}
+
+async function openOrderModal(){
+  await loadAll();
+  const PTYPES = ['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate',
+                  'Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
+  const custOpts = allCustomers.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+  const routingOpts = allRoutings.map(r=>`<option value="${r.id}">${r.name} (${r.product_type})</option>`).join('');
+  const defDue = new Date(Date.now()+30*86400000).toISOString().slice(0,10);
+
+  showModal('New Order', `
+    <div class="form-section">Customer</div>
+    <div class="form-row cols-2">
+      <div class="form-group">
+        <div class="fld-label">Customer <span style="color:var(--red)">*</span></div>
+        <select id="ord_cust">
+          <option value="">— Select customer —</option>
+          ${custOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <div class="fld-label">PO Number</div>
+        <input id="ord_po" placeholder="Customer PO reference">
+      </div>
+    </div>
+
+    <div class="form-section">Product</div>
+    <div class="form-row cols-3">
+      <div class="form-group">
+        <div class="fld-label">Product Type <span style="color:var(--red)">*</span></div>
+        <select id="ord_ptype">
+          ${PTYPES.map(p=>`<option>${p}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <div class="fld-label">Size <span style="color:var(--red)">*</span></div>
+        <input id="ord_size" placeholder="e.g. 600x600">
+      </div>
+      <div class="form-group">
+        <div class="fld-label">Variant / Type</div>
+        <input id="ord_variant" placeholder="Plain, Carbide...">
+      </div>
+    </div>
+
+    <div class="form-section">Quantity & Schedule</div>
+    <div class="form-row cols-3">
+      <div class="form-group">
+        <div class="fld-label">Quantity (pieces) <span style="color:var(--red)">*</span></div>
+        <input id="ord_qty" type="number" min="1" max="200" value="1">
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Each piece = independent job in scheduler</div>
+      </div>
+      <div class="form-group">
+        <div class="fld-label">Due Date <span style="color:var(--red)">*</span></div>
+        <input id="ord_due" type="date" value="${defDue}">
+      </div>
+      <div class="form-group">
+        <div class="fld-label">Total Price (₹)</div>
+        <input id="ord_price" type="number" min="0" step="100" placeholder="For all pieces">
+      </div>
+    </div>
+
+    <div class="form-section">Routing</div>
+    <div class="form-row cols-1">
+      <div class="form-group">
+        <div class="fld-label">Routing Template <span style="color:var(--red)">*</span></div>
+        <select id="ord_routing">
+          <option value="">— Select routing —</option>
+          ${routingOpts}
+        </select>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">All pieces will follow this routing</div>
+      </div>
+    </div>
+
+    <div class="form-row cols-1">
+      <label class="checkbox-row">
+        <input type="checkbox" id="ord_urgent">
+        🚨 Mark all pieces as Priority / Emergency
+      </label>
+    </div>
+
+    <div class="form-row cols-1">
+      <div class="form-group">
+        <div class="fld-label">Notes</div>
+        <textarea id="ord_notes" placeholder="Special instructions..."></textarea>
+      </div>
+    </div>
+
+    <div class="info-hint" style="margin-top:4px">
+      ⚡ <strong>How scheduling works:</strong> Each piece is an independent job. Critical Ratio scheduling automatically interleaves pieces from different orders — a smaller urgent order will jump ahead of a large low-urgency order on contested machines.
+    </div>`,
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-primary" id="saveOrderBtn" onclick="saveOrder()">Create Order</button>`,
+    true
+  );
+}
+
+async function saveOrder(){
+  const custId   = document.getElementById('ord_cust').value;
+  const ptype    = document.getElementById('ord_ptype').value;
+  const size     = document.getElementById('ord_size').value.trim();
+  const qty      = parseInt(document.getElementById('ord_qty').value) || 1;
+  const due      = document.getElementById('ord_due').value;
+  const routingId= document.getElementById('ord_routing').value;
+
+  if(!custId)    { toast('Select a customer','error');   return; }
+  if(!size)      { toast('Enter product size','error');   return; }
+  if(!due)       { toast('Select a due date','error');    return; }
+  if(!routingId) { toast('Select a routing','error');     return; }
+  if(qty < 1)    { toast('Quantity must be at least 1','error'); return; }
+
+  const c = allCustomers.find(x=>x.id==custId);
+  const data = {
+    customer_id:    parseInt(custId),
+    customer_name:  c?.name || '',
+    po_number:      document.getElementById('ord_po').value.trim(),
+    product_type:   ptype,
+    product_size:   size,
+    product_variant:document.getElementById('ord_variant').value.trim(),
+    quantity:       qty,
+    due_date:       due + 'T08:00:00',
+    routing_id:     parseInt(routingId),
+    total_price:    document.getElementById('ord_price').value || null,
+    priority_flag:  document.getElementById('ord_urgent').checked,
+    notes:          document.getElementById('ord_notes').value,
+  };
+
+  setLoading('saveOrderBtn', true);
+  try{
+    const r = await api('POST', '/api/orders', data);
+    toast(`Order ${r.order_number} created — ${qty} piece jobs generated`);
+    closeModal();
+    await loadAll();
+    showPage('orders');
+  }catch(e){ toast(e.message, 'error'); }
+  finally{ setLoading('saveOrderBtn', false); }
+}
+
 async function init(){
   let connected = false;
   for(let attempt=0; attempt<3; attempt++){
