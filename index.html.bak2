@@ -1770,15 +1770,12 @@ function renderGantt(data,view,filter){
   timeEl.onscroll = ()=>{ if(labelsEl) labelsEl.style.marginTop = -timeEl.scrollTop + 'px'; };
 
   // ── TIMELINE SVG ──
-    // Read theme colors once before building SVG
-  const _cs = getComputedStyle(document.documentElement);
-  const _bg  = (_cs.getPropertyValue('--bg').trim())||'#0f1115';
-  const _sur = (_cs.getPropertyValue('--surface').trim())||'#171a21';
-  const _bdr = (_cs.getPropertyValue('--border').trim())||'#262b36';
-  const _mut = (_cs.getPropertyValue('--muted').trim())||'#7a8295';
-  const _acc = (_cs.getPropertyValue('--accent').trim())||'#f59e0b';
+  const ganttBg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0d0f12';
+  const ganttSurface = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim() || '#171a21';
+  const ganttBorder = getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#262b36';
+  const ganttText = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#7a8295';
   let s = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="display:block;min-width:${W}px">
-  <rect width="${W}" height="${H}" fill="${_bg}"/>`;
+  <rect width="${W}" height="${H}" fill="${ganttBg}"/>`;
 
   // Day columns
   days.forEach(d=>{
