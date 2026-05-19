@@ -1344,7 +1344,8 @@ def create_order(data: dict):
     db.add(order); db.flush()
 
     # Generate piece jobs — each is an independent schedulable unit
-    piece_price = (order.total_price / quantity) if order.total_price else None
+    piece_price  = (order.total_price / quantity) if order.total_price else None
+    op_overrides = json.dumps(data.get("op_overrides", [])) if data.get("op_overrides") else None
     for i in range(1, quantity + 1):
         job_num = next_job_number(db)
         j = Job(
@@ -1364,6 +1365,7 @@ def create_order(data: dict):
             order_id       = order.id,
             piece_number   = i,
             status         = "pending",
+            op_overrides   = op_overrides,
         )
         db.add(j)
 
@@ -1921,6 +1923,214 @@ def get_preemption_alerts():
         if critical_ratio(j, db) < 0.5:
             alerts.extend(check_preemption(db, j))
     db.close(); return alerts
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ESTIMATE  (what-if: no DB writes)
+# ─────────────────────────────────────────────────────────────────────────────
+@app.post("/api/estimate")
+def estimate_order(data: dict):
+    """
+    Simulate scheduling for N pieces of a given routing (with optional op overrides)
+    WITHOUT writing anything to the DB.  Returns estimated finish date and
+    per-operation breakdown so the manager can quote a delivery date before
+    committing to the order.
+
+    Body: {
+      routing_id: int,
+      quantity: int,            # 1..50 — simulates this many independent pieces
+      start_date: str|null,     # ISO date; defaults to today
+      op_overrides: [           # optional per-op time tweaks (same format as job)
+        {operation_id, setup_time_mins, work_time_mins, included}
+      ]
+    }
+    """
+    db = SessionLocal()
+    routing_id = data.get("routing_id")
+    quantity   = max(1, min(int(data.get("quantity", 1)), 50))
+    start_dt   = parse_dt(data.get("start_date")) or now_ist()
+    start_dt   = snap_to_shift(start_dt)
+    overrides  = {o.get("operation_id"): o for o in data.get("op_overrides", []) if o.get("operation_id")}
+
+    routing = db.query(Routing).filter(Routing.id == routing_id).first()
+    if not routing:
+        db.close(); raise HTTPException(400, "Routing not found")
+
+    # Build op list respecting overrides
+    ops = []
+    for op in sorted(routing.operations, key=lambda o: o.sequence):
+        ov = overrides.get(op.id, {})
+        if not ov.get("included", True): continue
+        m_s  = float(ov.get("machine_setup_mins", op.machine_setup_mins or 0))
+        j_s  = float(ov.get("job_setup_mins",     op.job_setup_mins     or 0))
+        if ov.get("work_time_mins") and float(ov.get("work_time_mins",0)) > 0:
+            work = float(ov["work_time_mins"]) / 60.0
+        else:
+            work = float(op.work_time_hrs or 0)
+        ops.append({"name": op.name, "work_center_id": op.work_center_id,
+                    "wc_name": op.work_center.name if op.work_center else str(op.work_center_id),
+                    "machine_setup_mins": m_s, "job_setup_mins": j_s,
+                    "work_time_hrs": work, "total_hrs": (m_s + j_s)/60 + work})
+
+    if not ops:
+        db.close(); raise HTTPException(400, "Routing has no operations")
+
+    # Simulate scheduling piece by piece (read-only: look at existing booked slots)
+    # We keep a local dict of "extra blocked" slots added by this simulation
+    sim_booked: dict[int, list] = {}  # work_center_id -> [(start,end)]
+
+    def machine_free_sim(wc_id, slot_start, slot_end):
+        real = db.query(ScheduledOp).filter(
+            ScheduledOp.work_center_id == wc_id,
+            ScheduledOp.scheduled_end  > slot_start,
+            ScheduledOp.scheduled_start < slot_end,
+            ScheduledOp.status.in_(["scheduled","in_progress"])
+        ).first()
+        if real: return False
+        for bs, be in sim_booked.get(wc_id, []):
+            if bs < slot_end and be > slot_start:
+                return False
+        return True
+
+    piece_results = []
+    bottlenecks   = {}  # wc_name -> total blocked hours
+
+    for piece in range(quantity):
+        current = start_dt
+        piece_ops = []
+        for op in ops:
+            wc_id    = op["work_center_id"]
+            dur_hrs  = op["total_hrs"]
+            # find next free slot (simplified — no worker matching for speed)
+            search = snap_to_shift(current)
+            for _ in range(500):
+                slot_end = add_working_hours(search, dur_hrs)
+                if machine_free_sim(wc_id, search, slot_end):
+                    sim_booked.setdefault(wc_id, []).append((search, slot_end))
+                    piece_ops.append({
+                        "op_name":  op["name"],
+                        "wc_name":  op["wc_name"],
+                        "start":    search.isoformat(),
+                        "end":      slot_end.isoformat(),
+                        "dur_mins": round(dur_hrs * 60),
+                    })
+                    current = slot_end
+                    break
+                # advance to next shift or after blocking slot
+                next_candidates = [next_shift_start(search)]
+                for bs, be in sim_booked.get(wc_id, []):
+                    if be > search: next_candidates.append(snap_to_shift(be))
+                real_blocks = db.query(ScheduledOp).filter(
+                    ScheduledOp.work_center_id == wc_id,
+                    ScheduledOp.scheduled_end  > search,
+                    ScheduledOp.status.in_(["scheduled","in_progress"])
+                ).order_by(ScheduledOp.scheduled_start).first()
+                if real_blocks and real_blocks.scheduled_end:
+                    next_candidates.append(snap_to_shift(real_blocks.scheduled_end))
+                search = min(next_candidates)
+            else:
+                piece_ops.append({"op_name": op["name"], "wc_name": op["wc_name"],
+                                   "start": None, "end": None, "dur_mins": round(dur_hrs*60)})
+
+        finish = max((o["end"] for o in piece_ops if o["end"]), default=None)
+        piece_results.append({"piece": piece+1, "ops": piece_ops,
+                               "est_finish": finish})
+        # track bottlenecks
+        for o in piece_ops:
+            bottlenecks[o["wc_name"]] = bottlenecks.get(o["wc_name"],0) + (o["dur_mins"] or 0)
+
+    all_finishes = [r["est_finish"] for r in piece_results if r["est_finish"]]
+    last_finish  = max(all_finishes) if all_finishes else None
+    first_finish = min(all_finishes) if all_finishes else None
+
+    total_mins = sum(op["total_hrs"]*60 for op in ops)
+    bottleneck_sorted = sorted(bottlenecks.items(), key=lambda x: x[1], reverse=True)
+
+    db.close()
+    return {
+        "routing_name":   routing.name,
+        "quantity":       quantity,
+        "start_date":     start_dt.isoformat(),
+        "est_first_finish": first_finish,
+        "est_last_finish":  last_finish,
+        "total_work_mins":  round(total_mins),
+        "pieces":         piece_results,
+        "bottlenecks":    [{"wc_name": n, "total_mins": round(m)} for n,m in bottleneck_sorted[:5]],
+        "ops_summary":    [{"name": o["name"], "wc_name": o["wc_name"],
+                            "dur_mins": round(o["total_hrs"]*60)} for o in ops],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BULK PIECE OVERRIDE  (apply routing time changes to all pieces of an order)
+# ─────────────────────────────────────────────────────────────────────────────
+@app.post("/api/orders/{order_id}/bulk-override")
+def bulk_override_order(order_id: int, data: dict):
+    """
+    Apply op_overrides to every unstarted piece job in an order.
+    Body: { op_overrides: [{operation_id, setup_time_mins, work_time_mins,
+                             work_time_hrs, included}] }
+    Pieces that are in_progress or completed are left untouched.
+    """
+    db = SessionLocal()
+    order = db.query(CustomerOrder).filter(CustomerOrder.id == order_id).first()
+    if not order: db.close(); raise HTTPException(404, "Order not found")
+
+    overrides = data.get("op_overrides", [])
+    if not overrides:
+        db.close(); raise HTTPException(400, "op_overrides required")
+
+    updated = skipped = 0
+    for j in order.jobs:
+        if j.status in ("completed", "in_progress"):
+            skipped += 1; continue
+        j.op_overrides = json.dumps(overrides)
+        # Clear pending/scheduled ops so they get rescheduled with new times
+        for s in list(j.scheduled_ops):
+            if s.status in ("pending", "scheduled"):
+                db.delete(s)
+        j.status = "pending"
+        updated += 1
+
+    db.commit()
+    db.close()
+    return {"updated": updated, "skipped_active": skipped}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOBS LIST WITH NEXT-OP  (enriched list for jobs page)
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/api/jobs/next-ops")
+def jobs_next_ops():
+    """Return next pending/scheduled op for every active job — used to show
+    'Next: Facing on KAFO VMC, 21 May 10:00' on the job list row."""
+    db = SessionLocal()
+    jobs = db.query(Job).filter(Job.status.in_(["pending","scheduled","in_progress"])).all()
+    result = {}
+    fmt = lambda dt: dt.isoformat() if dt else None
+    for j in jobs:
+        pending = [s for s in sorted(j.scheduled_ops, key=lambda x: x.sequence)
+                   if s.status in ("pending","scheduled")]
+        if pending:
+            nxt = pending[0]
+            result[j.id] = {
+                "op_name":  nxt.op_name,
+                "wc_name":  nxt.wc_name,
+                "worker_name": nxt.worker_name,
+                "scheduled_start": fmt(nxt.scheduled_start),
+                "status": nxt.status,
+            }
+        else:
+            inprog = [s for s in j.scheduled_ops if s.status == "in_progress"]
+            if inprog:
+                result[j.id] = {
+                    "op_name": inprog[0].op_name,
+                    "wc_name": inprog[0].wc_name,
+                    "worker_name": inprog[0].worker_name,
+                    "scheduled_start": fmt(inprog[0].actual_start),
+                    "status": "in_progress",
+                }
+    db.close()
+    return result
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REPORTS

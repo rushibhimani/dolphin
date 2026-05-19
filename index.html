@@ -1363,90 +1363,176 @@ async function renderUpcoming(){
 // ── JOBS ──
 let expandedJobId=null;
 
+let jobNextOps = {};  // populated by loadAll extended
+
 async function renderJobs(){
   await loadAll();
+  // Load next-op data in background
+  api('GET','/api/jobs/next-ops').then(d=>{ jobNextOps=d||{}; renderJobsTable(); }).catch(()=>{});
+
   document.getElementById('topbarActions').innerHTML=`
     <button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button>
     <button class="btn btn-primary" onclick="openJobModal()">+ New Job</button>`;
+
+  renderJobsTable();
+}
+
+function renderJobsTable(){
   const sorted=[...allJobs].sort((a,b)=>a.critical_ratio-b.critical_ratio);
-  document.getElementById('content').innerHTML=`
-    <div class="card">
-      <div class="card-hdr">
-        <div class="card-title">Jobs (${allJobs.length})</div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <select id="statusFilter" onchange="filterJobsStatus(this.value)" style="width:140px">
-            <option value="">All Status</option>
-            <option>pending</option><option>scheduled</option><option>in_progress</option><option>completed</option>
-          </select>
-          <input placeholder="Search…" oninput="filterJobsText(this.value)" style="width:200px">
-        </div>
+
+  // Group: orders first (grouped), then standalone
+  const orderGroups = {};
+  const standalone  = [];
+  sorted.forEach(j=>{
+    if(j.order_id){
+      if(!orderGroups[j.order_id]) orderGroups[j.order_id]=[];
+      orderGroups[j.order_id].push(j);
+    } else { standalone.push(j); }
+  });
+
+  // Status filter
+  const sf = document.getElementById('jobStatusFilter')?.value || '';
+  const tf = (document.getElementById('jobTextFilter')?.value || '').toLowerCase();
+
+  function matchJob(j){
+    if(sf && j.status !== sf) return false;
+    if(tf && !`${j.job_number} ${j.customer_name} ${j.product_type} ${j.product_size}`.toLowerCase().includes(tf)) return false;
+    return true;
+  }
+
+  let html = `<div class="card">
+    <div class="card-hdr" style="flex-wrap:wrap;gap:8px">
+      <div class="card-title">Jobs (${allJobs.length})</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="jobStatusFilter" onchange="renderJobsTable()" style="width:130px">
+          <option value="">All Status</option>
+          <option value="pending">Pending</option>
+          <option value="scheduled">Scheduled</option>
+          <option value="in_progress">In Progress</option>
+          <option value="completed">Completed</option>
+        </select>
+        <input id="jobTextFilter" placeholder="Search…" oninput="renderJobsTable()" style="width:180px">
+        <label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer">
+          <input type="checkbox" id="jobGroupToggle" onchange="renderJobsTable()" ${jobGroupByOrder?'checked':''}> Group by Order
+        </label>
       </div>
-      <div class="jobs-scroll">
-        <table class="jobs-table" id="jobsTable">
-          <thead><tr><td colspan="1" style="padding:0;border:none">
-            <div class="jobs-thead-row">
-              <div style="width:28px;flex-shrink:0;margin-right:10px"></div>
-              <div class="jcol jcol-num">Job #</div>
-              <div class="jcol jcol-cust">Customer</div>
-              <div class="jcol jcol-prod">Product</div>
-              <div class="jcol jcol-due">Due</div>
-              <div class="jcol jcol-price">Price</div>
-              <div class="jcol jcol-status">Status</div>
-              <div class="jcol jcol-cr">Priority</div>
-              <div class="jcol jcol-prog">Progress</div>
-              <div class="jcol jcol-actions">Actions</div>
-            </div>
-          </td></tr></thead>
-          <tbody id="jobsBody">${sorted.map(j=>jobRowHTML(j)).join('')}</tbody>
-        </table>
-      </div>
-      ${!allJobs.length?`<div class="empty">No jobs yet. Click "+ New Job".</div>`:''}
     </div>`;
+
+  const doGroup = document.getElementById('jobGroupToggle')?.checked ?? jobGroupByOrder;
+  jobGroupByOrder = doGroup;
+
+  if(doGroup){
+    // Render order groups
+    Object.entries(orderGroups).forEach(([ordId, pieces])=>{
+      const visiblePieces = pieces.filter(matchJob);
+      if(!visiblePieces.length) return;
+      const order = allOrders.find(o=>o.id==ordId);
+      const done  = pieces.filter(p=>p.status==='completed').length;
+      const pct   = Math.round(done/pieces.length*100);
+      const lastFinish = pieces.map(p=>p.scheduled_finish).filter(Boolean).sort().pop();
+      const anyLate = pieces.some(p=>p.is_late);
+      html += `<div style="margin-bottom:6px">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px 8px 0 0;padding:8px 14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span class="mono" style="color:var(--accent);font-weight:600;font-size:13px">${order?.order_number||'ORD-?'}</span>
+          <span style="font-size:12px;color:var(--muted)">${pieces[0]?.customer_name} · ${pieces[0]?.product_type} · ${pieces.length} pcs</span>
+          <div class="prog-bar" style="width:80px;flex-shrink:0"><div class="prog-fill" style="width:${pct}%"></div></div>
+          <span style="font-size:11px;color:var(--muted)">${done}/${pieces.length} done</span>
+          ${lastFinish?`<span style="font-size:11px;color:${anyLate?'var(--red)':'var(--muted)'}">Finish: ${fmtD(lastFinish)}${anyLate?' ⚠':''}</span>`:''}
+          <button class="btn btn-ghost" style="font-size:11px;margin-left:auto" onclick="bulkOverrideOrder(${ordId})">✏ Edit All Times</button>
+        </div>
+        ${visiblePieces.map(j=>jobRowHTML(j,true)).join('')}
+      </div>`;
+    });
+    // Standalone
+    const visSA = standalone.filter(matchJob);
+    if(visSA.length){
+      if(Object.keys(orderGroups).length) html+=`<div style="font-size:11px;color:var(--muted);margin:12px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Standalone Jobs</div>`;
+      visSA.forEach(j=>{ html+=jobRowHTML(j,false); });
+    }
+  } else {
+    sorted.filter(matchJob).forEach(j=>{ html+=jobRowHTML(j,false); });
+  }
+
+  if(!allJobs.filter(matchJob).length){
+    html+=`<div class="empty">No jobs match the filter.</div>`;
+  }
+  html+='</div>';
+  document.getElementById('content').innerHTML=html;
   if(expandedJobId) setTimeout(()=>expandJob(expandedJobId,true),80);
 }
 
-function jobRowHTML(j){
-  const pct=j.ops_total?Math.round(j.ops_done/j.ops_total*100):0;
-  return`<tr id="jtr_${j.id}">
-    <td>
-      <div class="job-main-row" id="jrow_${j.id}" onclick="expandJob(${j.id})">
-        <svg class="expand-icon" id="jicon_${j.id}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-        <div class="jcol jcol-num"><span class="mono">${j.job_number}</span>${j.priority_flag?'<span class="badge badge-urgent" style="margin-left:6px">🚨</span>':''}</div>
-        <div class="jcol jcol-cust">${j.customer_name}</div>
-        <div class="jcol jcol-prod">${j.product_type}</div>
-        <div class="jcol jcol-due mono">${fmtD(j.due_date)}</div>
-        <div class="jcol jcol-price mono">${fmtINR(j.total_price)}</div>
-        <div class="jcol jcol-status">${sBadge(j.status)}</div>
-        <div class="jcol jcol-cr">${crBar(j.critical_ratio)}</div>
-        <div class="jcol jcol-prog"><div class="prog-wrap"><div style="font-size:12px;color:var(--muted)">${j.ops_done}/${j.ops_total}</div><div class="prog-bar"><div class="prog-fill" style="width:${pct}%"></div></div></div></div>
-        <div class="jcol jcol-actions" onclick="event.stopPropagation()">
-          <div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
-            <button class="btn btn-ghost" onclick="openJobModal(${j.id})">Edit</button>
-            <button class="btn btn-ghost btn-icon" title="Duplicate job" onclick="duplicateJob(${j.id})">⧉</button>
-            ${j.status==='pending'?`<button class="btn btn-secondary" onclick="scheduleJob(${j.id})">Schedule</button>`:''}
-            ${!j.priority_flag?`<button class="btn btn-danger btn-icon" title="Mark urgent" onclick="setUrgent(${j.id})">🚨</button>`:''}
-            <button class="btn btn-danger btn-icon" title="Delete" onclick="delJob(${j.id})">✕</button>
-          </div>
-        </div>
+let jobGroupByOrder = true;
+
+function jobRowHTML(j, inGroup=false){
+  const pct = j.ops_total ? Math.round(j.ops_done/j.ops_total*100) : 0;
+  const nxt = jobNextOps[j.id];
+  const nextOpHtml = nxt
+    ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">
+        ${nxt.status==='in_progress'?'▶':'⏱'} <span style="color:var(--accent)">${nxt.op_name}</span> · ${nxt.wc_name}${nxt.scheduled_start?' · '+fmtDT(nxt.scheduled_start):''}
+       </div>`
+    : '';
+  const blockHtml = j.status==='paused' ? `<span title="Paused" style="color:var(--amber)">⏸</span>` :
+                    (j.ops_total>0 && j.ops_done<j.ops_total && !nxt && j.status!=='completed') ? `<span title="Unscheduled ops" style="color:var(--orange)">⚠</span>` : '';
+
+  const radius = inGroup ? '0' : '8px';
+  return `<div id="jblock_${j.id}" style="border:1px solid var(--border);border-radius:${radius};margin-bottom:${inGroup?'0':'8px'};background:var(--card);${inGroup?'border-top:none;border-radius:0;':''}">
+    <div class="job-main-row" id="jrow_${j.id}" onclick="expandJob(${j.id})" style="cursor:pointer;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <svg class="expand-icon" id="jicon_${j.id}" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;flex-shrink:0;transition:transform .15s"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+
+      <div style="flex:0 0 110px;min-width:0">
+        <div class="mono" style="font-size:12px;font-weight:600">${j.job_number}</div>
+        ${j.piece_number?`<div style="font-size:10px;color:var(--muted)">Piece ${j.piece_number}</div>`:''}
       </div>
-      <div class="job-detail-panel" id="jpanel_${j.id}"></div>
-    </td>
-  </tr>`;
+
+      ${inGroup?'':`<div style="flex:1 1 120px;min-width:0;font-size:12px">${j.customer_name}</div>`}
+
+      <div style="flex:1 1 140px;min-width:0">
+        <div style="font-size:12px;font-weight:500">${j.product_type} ${j.product_size||''}</div>
+        ${nextOpHtml}
+      </div>
+
+      <div style="flex:0 0 80px;text-align:center">
+        <div class="mono" style="font-size:11px;color:var(--muted)">Due</div>
+        <div class="mono" style="font-size:12px">${fmtD(j.due_date)}</div>
+      </div>
+
+      <div style="flex:0 0 90px;text-align:center">
+        <div class="mono" style="font-size:11px;color:var(--muted)">Finish</div>
+        <div class="mono" style="font-size:12px;color:${j.is_late?'var(--red)':j.scheduled_finish?'var(--text)':'var(--muted)'}">${j.scheduled_finish?fmtD(j.scheduled_finish):'—'}${j.is_late?' ⚠':''}</div>
+      </div>
+
+      <div style="flex:0 0 70px">${sBadge(j.status)} ${blockHtml}</div>
+
+      <div style="flex:0 0 90px">${crBar(j.critical_ratio)}</div>
+
+      <div style="flex:0 0 100px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">${j.ops_done}/${j.ops_total} ops</div>
+        <div class="prog-bar"><div class="prog-fill" style="width:${pct}%"></div></div>
+      </div>
+
+      <div style="flex:0 0 auto;display:flex;gap:5px;flex-wrap:wrap" onclick="event.stopPropagation()">
+        ${j.priority_flag?'':'<button class="btn btn-danger btn-icon" title="Urgent" onclick="setUrgent('+j.id+')">🚨</button>'}
+        <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="openJobModal(${j.id})">Edit</button>
+        <button class="btn btn-ghost btn-icon" title="Duplicate" onclick="duplicateJob(${j.id})">⧉</button>
+        ${j.status==='pending'?`<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="scheduleJob(${j.id})">Schedule</button>`:''}
+        <button class="btn btn-danger btn-icon" title="Delete" onclick="delJob(${j.id})">✕</button>
+      </div>
+    </div>
+    <div class="job-detail-panel" id="jpanel_${j.id}"></div>
+  </div>`;
 }
 
 async function expandJob(id,keepOpen=false){
   const panel=document.getElementById(`jpanel_${id}`);
   const icon=document.getElementById(`jicon_${id}`);
-  const row=document.getElementById(`jrow_${id}`);
   if(!panel||!icon) return;
   if(panel.classList.contains('open')&&!keepOpen){
-    panel.classList.remove('open');icon.style.transform='';row.classList.remove('expanded');expandedJobId=null;return;
+    panel.classList.remove('open');icon.style.transform='';expandedJobId=null;return;
   }
   document.querySelectorAll('.job-detail-panel.open').forEach(p=>p.classList.remove('open'));
-  document.querySelectorAll('.job-main-row.expanded').forEach(r=>r.classList.remove('expanded'));
   document.querySelectorAll('.expand-icon').forEach(i=>i.style.transform='');
-  panel.innerHTML=`<div style="color:var(--muted);font-size:12px;padding:8px">Loading...</div>`;
-  panel.classList.add('open');icon.style.transform='rotate(90deg)';row.classList.add('expanded');expandedJobId=id;
+  panel.innerHTML=`<div style="color:var(--muted);font-size:12px;padding:8px 14px">Loading...</div>`;
+  panel.classList.add('open');icon.style.transform='rotate(90deg)';expandedJobId=id;
   const j=await api('GET',`/api/jobs/${id}`);
   const ops=j.scheduled_ops||[];
   panel.innerHTML=`
@@ -1483,15 +1569,8 @@ async function expandJob(id,keepOpen=false){
     </div>`;
 }
 
-function filterJobsText(q){const ql=q.toLowerCase();document.querySelectorAll('#jobsBody tr').forEach(r=>r.style.display=r.textContent.toLowerCase().includes(ql)?'':'none')}
-function filterJobsStatus(s){
-  document.querySelectorAll('#jobsBody tr').forEach(r=>{
-    if(!s){r.style.display='';return;}
-    const id=parseInt((r.getAttribute('id')||'').replace('jtr_',''));
-    const job=allJobs.find(j=>j.id===id);
-    r.style.display=(!job||job.status===s)?'':'none';
-  });
-}
+function filterJobsText(q){renderJobsTable();}
+function filterJobsStatus(s){renderJobsTable();}
 
 async function duplicateJob(id){
   try{
@@ -3268,23 +3347,70 @@ async function deleteOrder(orderId){
   }catch(e){ toast(e.message,'error'); }
 }
 
+// ── Bulk override all pieces of an order ──
+async function bulkOverrideOrder(orderId){
+  const order = allOrders.find(o=>o.id==orderId);
+  if(!order) return;
+  if(!order.routing_id){ toast('Order has no routing — cannot bulk edit','error'); return; }
+  const rt = await api('GET',`/api/routings/${order.routing_id}`);
+  // populate jobFormOps from routing
+  jobFormOps = rt.operations.map(op=>({
+    operation_id: op.id, name: op.name, wc_name: op.work_center_name,
+    work_center_id: op.work_center_id, machine_type: op.machine_type||'',
+    setup_time_mins: op.setup_time_mins,
+    work_time_mins: op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60,
+    work_time_hrs: op.work_time_hrs, is_optional: op.is_optional, included: true
+  }));
+  showModal(`Edit Times — All Pieces of ${order.order_number}`,
+    `<div style="font-size:12px;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px">
+      ⚠ This will apply new times to <strong>all pending/scheduled pieces</strong>. In-progress and completed pieces are not affected. Jobs will be reset to pending and need rescheduling.
+    </div>
+    <div id="jobOpsWrap"></div>`,
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-primary" id="bulkOverrideBtn" onclick="doBulkOverride(${orderId})">Apply to All Pieces</button>`,
+    true
+  );
+  setTimeout(()=>renderJobOpsTable(), 50);
+}
+
+async function doBulkOverride(orderId){
+  const ovs = jobFormOps.map((op,i)=>({
+    operation_id: op.operation_id,
+    setup_time_mins: parseFloat(document.getElementById(`opsetup_${i}`)?.value)||op.setup_time_mins||0,
+    work_time_mins: parseFloat(document.getElementById(`opwork_${i}`)?.value)||(op.work_time_mins||(op.work_time_hrs||0)*60),
+    work_time_hrs: (parseFloat(document.getElementById(`opwork_${i}`)?.value)||(op.work_time_mins||(op.work_time_hrs||0)*60))/60,
+    included: document.getElementById(`opchk_${i}`)?.checked??true,
+  }));
+  setLoading('bulkOverrideBtn',true);
+  try{
+    const r = await api('POST',`/api/orders/${orderId}/bulk-override`,{op_overrides:ovs});
+    toast(`Applied to ${r.updated} pieces${r.skipped_active?' ('+r.skipped_active+' active skipped)':''}`);
+    closeModal(); await loadAll(); showPage('jobs');
+  }catch(e){ toast(e.message,'error'); }
+  finally{ setLoading('bulkOverrideBtn',false); }
+}
+
+let orderFormOps = [];  // routing ops for order creation
+
 async function openOrderModal(){
   await loadAll();
   const PTYPES = ['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate',
                   'Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
+  const SIZES  = ['600x600','600x900','600x1200','900x900','900x1200','1200x1200'];
   const custOpts = allCustomers.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
   const routingOpts = allRoutings.map(r=>`<option value="${r.id}">${r.name} (${r.product_type})</option>`).join('');
   const defDue = new Date(Date.now()+30*86400000).toISOString().slice(0,10);
+  orderFormOps = [];
 
   showModal('New Order', `
+    <div style="display:grid;grid-template-columns:1fr 320px;gap:18px;align-items:start">
+
+    <div><!-- LEFT COLUMN -->
     <div class="form-section">Customer</div>
     <div class="form-row cols-2">
       <div class="form-group">
         <div class="fld-label">Customer <span style="color:var(--red)">*</span></div>
-        <select id="ord_cust">
-          <option value="">— Select customer —</option>
-          ${custOpts}
-        </select>
+        <select id="ord_cust"><option value="">— Select —</option>${custOpts}</select>
       </div>
       <div class="form-group">
         <div class="fld-label">PO Number</div>
@@ -3296,26 +3422,32 @@ async function openOrderModal(){
     <div class="form-row cols-3">
       <div class="form-group">
         <div class="fld-label">Product Type <span style="color:var(--red)">*</span></div>
-        <select id="ord_ptype">
-          ${PTYPES.map(p=>`<option>${p}</option>`).join('')}
-        </select>
+        <select id="ord_ptype" onchange="filterOrderRouting()">${PTYPES.map(p=>`<option>${p}</option>`).join('')}</select>
       </div>
       <div class="form-group">
         <div class="fld-label">Size <span style="color:var(--red)">*</span></div>
-        <input id="ord_size" placeholder="e.g. 600x600">
+        <select id="ord_size">
+          ${SIZES.map(s=>`<option>${s}</option>`).join('')}
+          <option value="custom">Custom…</option>
+        </select>
       </div>
       <div class="form-group">
         <div class="fld-label">Variant / Type</div>
-        <input id="ord_variant" placeholder="Plain, Carbide...">
+        <input id="ord_variant" placeholder="Plain, Carbide, Rustic…">
+      </div>
+    </div>
+    <div id="ord_size_custom_wrap" style="display:none" class="form-row cols-1">
+      <div class="form-group">
+        <div class="fld-label">Custom Size</div>
+        <input id="ord_size_custom" placeholder="e.g. 750x1000">
       </div>
     </div>
 
     <div class="form-section">Quantity & Schedule</div>
     <div class="form-row cols-3">
       <div class="form-group">
-        <div class="fld-label">Quantity (pieces) <span style="color:var(--red)">*</span></div>
-        <input id="ord_qty" type="number" min="1" max="200" value="1">
-        <div style="font-size:11px;color:var(--muted);margin-top:4px">Each piece = independent job in scheduler</div>
+        <div class="fld-label">Quantity <span style="color:var(--red)">*</span></div>
+        <input id="ord_qty" type="number" min="1" max="200" value="1" oninput="triggerEstimate()">
       </div>
       <div class="form-group">
         <div class="fld-label">Due Date <span style="color:var(--red)">*</span></div>
@@ -3323,49 +3455,171 @@ async function openOrderModal(){
       </div>
       <div class="form-group">
         <div class="fld-label">Total Price (₹)</div>
-        <input id="ord_price" type="number" min="0" step="100" placeholder="For all pieces">
+        <input id="ord_price" type="number" min="0" step="100" placeholder="All pieces">
       </div>
     </div>
 
-    <div class="form-section">Routing</div>
+    <div class="form-section">Routing & Operations</div>
     <div class="form-row cols-1">
       <div class="form-group">
         <div class="fld-label">Routing Template <span style="color:var(--red)">*</span></div>
-        <select id="ord_routing">
-          <option value="">— Select routing —</option>
-          ${routingOpts}
-        </select>
-        <div style="font-size:11px;color:var(--muted);margin-top:4px">All pieces will follow this routing</div>
+        <select id="ord_routing" onchange="loadOrderOps()">${routingOpts?`<option value="">— Select —</option>${routingOpts}`:'<option value="">No routings — create one first</option>'}</select>
       </div>
     </div>
-
-    <div class="form-row cols-1">
-      <label class="checkbox-row">
-        <input type="checkbox" id="ord_urgent">
-        🚨 Mark all pieces as Priority / Emergency
-      </label>
+    <div id="ordOpsWrap" style="margin-top:6px">
+      <div style="color:var(--muted);font-size:12px;padding:4px 0">Select a routing to edit operation times</div>
     </div>
 
+    <div class="form-row cols-1" style="margin-top:10px">
+      <label class="checkbox-row"><input type="checkbox" id="ord_urgent"> 🚨 Mark all pieces Priority</label>
+    </div>
     <div class="form-row cols-1">
-      <div class="form-group">
-        <div class="fld-label">Notes</div>
-        <textarea id="ord_notes" placeholder="Special instructions..."></textarea>
+      <div class="form-group"><div class="fld-label">Notes</div>
+        <textarea id="ord_notes" placeholder="Special instructions…" rows="2"></textarea>
       </div>
     </div>
+    </div><!-- end LEFT -->
 
-    <div class="info-hint" style="margin-top:4px">
-      ⚡ <strong>How scheduling works:</strong> Each piece is an independent job. Critical Ratio scheduling automatically interleaves pieces from different orders — a smaller urgent order will jump ahead of a large low-urgency order on contested machines.
-    </div>`,
-    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-     <button class="btn btn-primary" id="saveOrderBtn" onclick="saveOrder()">Create Order</button>`,
-    true
-  );
+    <div><!-- RIGHT COLUMN: Estimate Panel -->
+      <div id="estimatePanel" style="position:sticky;top:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:10px">📊 Delivery Estimate</div>
+        <div id="estimateContent" style="color:var(--muted);font-size:12px">Select routing and quantity to see estimate</div>
+        <button class="btn btn-secondary" style="width:100%;margin-top:12px;font-size:12px" onclick="triggerEstimate()">↻ Recalculate</button>
+      </div>
+    </div><!-- end RIGHT -->
+
+    </div><!-- end grid -->
+  `,
+  `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+   <button class="btn btn-primary" id="saveOrderBtn" onclick="saveOrder()">Create Order</button>`,
+  true);
+
+  // Wire size custom input
+  setTimeout(()=>{
+    document.getElementById('ord_size')?.addEventListener('change', function(){
+      document.getElementById('ord_size_custom_wrap').style.display = this.value==='custom'?'':'none';
+    });
+  }, 50);
+}
+
+async function filterOrderRouting(){
+  // filter routing select by product type
+  const ptype = document.getElementById('ord_ptype')?.value||'';
+  const sel   = document.getElementById('ord_routing');
+  if(!sel) return;
+  const opts  = allRoutings.filter(r=>!ptype||r.product_type===ptype||r.product_type.toLowerCase()===ptype.toLowerCase());
+  sel.innerHTML = `<option value="">— Select routing —</option>`+opts.map(r=>`<option value="${r.id}">${r.name}</option>`).join('');
+  orderFormOps = [];
+  document.getElementById('ordOpsWrap').innerHTML=`<div style="color:var(--muted);font-size:12px;padding:4px 0">Select a routing to edit operation times</div>`;
+  document.getElementById('estimateContent').innerHTML=`<div style="color:var(--muted);font-size:12px">Select routing and quantity to see estimate</div>`;
+}
+
+async function loadOrderOps(){
+  const rid = parseInt(document.getElementById('ord_routing')?.value);
+  if(!rid){ orderFormOps=[]; return; }
+  const rt = await api('GET',`/api/routings/${rid}`);
+  orderFormOps = rt.operations.map(op=>({
+    operation_id: op.id, name: op.name, wc_name: op.work_center_name,
+    work_center_id: op.work_center_id, machine_type: op.machine_type||'',
+    setup_time_mins: op.setup_time_mins,
+    work_time_mins: op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60,
+    work_time_hrs: op.work_time_hrs, is_optional: op.is_optional, included: true
+  }));
+  renderOrderOpsTable();
+  triggerEstimate();
+}
+
+function renderOrderOpsTable(){
+  if(!orderFormOps.length){ document.getElementById('ordOpsWrap').innerHTML='<div style="color:var(--muted);font-size:12px">No operations</div>'; return; }
+  const rows = orderFormOps.map((op,i)=>{
+    const wMins = op.work_time_mins!=null?op.work_time_mins:((op.work_time_hrs||0)*60);
+    const sMins = op.setup_time_mins||0;
+    return `<tr id="ooprow_${i}" class="${op.included?'':'excluded'}">
+      <td><input type="checkbox" id="oopchk_${i}" ${op.included?'checked':''} onchange="toggleOrderOp(${i},this.checked)" style="width:14px;height:14px;accent-color:var(--accent)"></td>
+      <td class="mono" style="color:var(--muted);text-align:center;font-size:11px">${i+1}</td>
+      <td style="font-size:12px;font-weight:500">${op.name}</td>
+      <td style="font-size:11px;color:var(--muted)">${op.wc_name}</td>
+      <td><input type="number" id="oopsetup_${i}" value="${Math.round(sMins)}" min="0" step="5" onchange="recalcOrderOp(${i})" ${op.included?'':'disabled'} style="width:60px"></td>
+      <td><input type="number" id="oopwork_${i}"  value="${Math.round(wMins)}" min="0" step="10" onchange="recalcOrderOp(${i})" ${op.included?'':'disabled'} style="width:70px"></td>
+      <td style="font-size:11px;color:var(--muted);text-align:right" id="ooptot_${i}">${fmtTotal(sMins+wMins)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('ordOpsWrap').innerHTML=`
+    <table class="op-ov-table">
+      <thead><tr><th>✓</th><th>#</th><th>Operation</th><th>Machine</th><th>Setup(min)</th><th>Work(min)</th><th>Total</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function toggleOrderOp(i,checked){
+  orderFormOps[i].included=checked;
+  document.getElementById(`ooprow_${i}`).className=checked?'':'excluded';
+  [`oopsetup_${i}`,`oopwork_${i}`].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=!checked;});
+  debounceEstimate();
+}
+function recalcOrderOp(i){
+  const s=parseFloat(document.getElementById(`oopsetup_${i}`)?.value)||0;
+  const w=parseFloat(document.getElementById(`oopwork_${i}`)?.value)||0;
+  orderFormOps[i].setup_time_mins=s; orderFormOps[i].work_time_mins=w; orderFormOps[i].work_time_hrs=w/60;
+  const el=document.getElementById(`ooptot_${i}`); if(el) el.textContent=fmtTotal(s+w);
+  debounceEstimate();
+}
+
+let _estTimer=null;
+function debounceEstimate(){ clearTimeout(_estTimer); _estTimer=setTimeout(triggerEstimate,600); }
+function triggerEstimate(){
+  clearTimeout(_estTimer);
+  const rid=parseInt(document.getElementById('ord_routing')?.value);
+  const qty=parseInt(document.getElementById('ord_qty')?.value)||1;
+  if(!rid||!orderFormOps.length){ return; }
+  runEstimate(rid, qty);
+}
+
+async function runEstimate(routingId, qty){
+  const el=document.getElementById('estimateContent');
+  if(!el) return;
+  el.innerHTML=`<div style="color:var(--muted);font-size:12px">Calculating…</div>`;
+  try{
+    const ovs = orderFormOps.map((op,i)=>({
+      operation_id: op.operation_id,
+      setup_time_mins: parseFloat(document.getElementById(`oopsetup_${i}`)?.value)||op.setup_time_mins||0,
+      work_time_mins:  parseFloat(document.getElementById(`oopwork_${i}`)?.value)||(op.work_time_mins||(op.work_time_hrs||0)*60),
+      included: document.getElementById(`oopchk_${i}`)?.checked??op.included,
+    }));
+    const r = await api('POST','/api/estimate',{routing_id:routingId, quantity:Math.min(qty,20), op_overrides:ovs});
+    const due = document.getElementById('ord_due')?.value;
+    const dueDate = due ? new Date(due) : null;
+    const finishDate = r.est_last_finish ? new Date(r.est_last_finish) : null;
+    const isLate = dueDate && finishDate && finishDate > dueDate;
+    const diffDays = dueDate && finishDate ? Math.round((finishDate-dueDate)/86400000) : null;
+
+    el.innerHTML=`
+      <div style="padding:10px;background:${isLate?'var(--red-soft)':'var(--accent-soft)'};border:1px solid ${isLate?'var(--red)':'var(--accent)'};border-radius:8px;margin-bottom:12px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:2px">Est. completion (last piece)</div>
+        <div style="font-size:18px;font-weight:700;color:${isLate?'var(--red)':'var(--accent)'}">${finishDate?finishDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'—'}</div>
+        ${diffDays!==null?`<div style="font-size:11px;margin-top:3px;color:${isLate?'var(--red)':'var(--green)'}">${isLate?'⚠ '+diffDays+' days LATE':'✓ '+Math.abs(diffDays)+' days buffer'}</div>`:''}
+      </div>
+      ${r.est_first_finish&&qty>1?`<div style="font-size:11px;color:var(--muted);margin-bottom:8px">First piece ready: <strong>${new Date(r.est_first_finish).toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</strong></div>`:''}
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600">Total work: ${fmtTotal(r.total_work_mins)} per piece</div>
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:4px">Bottlenecks</div>
+      ${r.bottlenecks.slice(0,4).map(b=>`
+        <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
+          <span>${b.wc_name}</span><span class="mono">${fmtTotal(b.total_mins)}</span>
+        </div>`).join('')}
+      <div style="font-size:10px;color:var(--muted);margin-top:8px">Based on current machine load · ${qty>20?'Capped at 20 pieces for speed':qty+' piece'+(qty>1?'s':'')}</div>
+    `;
+  }catch(e){
+    el.innerHTML=`<div style="color:var(--red);font-size:12px">Estimate failed: ${e.message}</div>`;
+  }
 }
 
 async function saveOrder(){
   const custId   = document.getElementById('ord_cust').value;
   const ptype    = document.getElementById('ord_ptype').value;
-  const size     = document.getElementById('ord_size').value.trim();
+  const sizeSel  = document.getElementById('ord_size').value;
+  const size     = sizeSel==='custom'
+    ? (document.getElementById('ord_size_custom')?.value||'').trim()
+    : sizeSel;
   const qty      = parseInt(document.getElementById('ord_qty').value) || 1;
   const due      = document.getElementById('ord_due').value;
   const routingId= document.getElementById('ord_routing').value;
@@ -3375,6 +3629,14 @@ async function saveOrder(){
   if(!due)       { toast('Select a due date','error');    return; }
   if(!routingId) { toast('Select a routing','error');     return; }
   if(qty < 1)    { toast('Quantity must be at least 1','error'); return; }
+
+  const ovs = orderFormOps.map((op,i)=>({
+    operation_id: op.operation_id,
+    setup_time_mins: parseFloat(document.getElementById(`oopsetup_${i}`)?.value)||op.setup_time_mins||0,
+    work_time_mins:  parseFloat(document.getElementById(`oopwork_${i}`)?.value)||(op.work_time_mins||(op.work_time_hrs||0)*60),
+    work_time_hrs:   (parseFloat(document.getElementById(`oopwork_${i}`)?.value)||(op.work_time_mins||(op.work_time_hrs||0)*60))/60,
+    included: document.getElementById(`oopchk_${i}`)?.checked??true,
+  }));
 
   const c = allCustomers.find(x=>x.id==custId);
   const data = {
@@ -3387,6 +3649,7 @@ async function saveOrder(){
     quantity:       qty,
     due_date:       due + 'T08:00:00',
     routing_id:     parseInt(routingId),
+    op_overrides:   ovs.length ? ovs : undefined,
     total_price:    document.getElementById('ord_price').value || null,
     priority_flag:  document.getElementById('ord_urgent').checked,
     notes:          document.getElementById('ord_notes').value,
@@ -3396,9 +3659,7 @@ async function saveOrder(){
   try{
     const r = await api('POST', '/api/orders', data);
     toast(`Order ${r.order_number} created — ${qty} piece jobs generated`);
-    closeModal();
-    await loadAll();
-    showPage('orders');
+    closeModal(); await loadAll(); showPage('orders');
   }catch(e){ toast(e.message, 'error'); }
   finally{ setLoading('saveOrderBtn', false); }
 }
