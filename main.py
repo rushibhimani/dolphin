@@ -480,7 +480,13 @@ def _ops_for_job(db, j):
                 continue
             m_setup = float(ov.get("machine_setup_mins", op.machine_setup_mins or 0))
             j_setup = float(ov.get("job_setup_mins",     op.job_setup_mins     or 0))
-            work    = float(ov.get("work_time_hrs",      op.work_time_hrs      or 0))
+            # work time: prefer work_time_mins override, else work_time_hrs, then op default
+            if ov.get("work_time_mins") is not None and float(ov.get("work_time_mins",0)) > 0:
+                work = float(ov["work_time_mins"]) / 60.0
+            elif ov.get("work_time_hrs") is not None:
+                work = float(ov["work_time_hrs"])
+            else:
+                work = float(op.work_time_hrs or 0)
             ops.append({
                 "name":              op.name,
                 "work_center_id":    op.work_center_id,
@@ -1033,6 +1039,7 @@ def routing_dict(r, db=None):
             "job_setup_mins": o.job_setup_mins,
             "setup_time_mins": o.setup_time_mins,
             "work_time_hrs": o.work_time_hrs,
+            "work_time_mins": o.work_time_mins if o.work_time_mins else round(o.work_time_hrs * 60, 1),
             "is_optional": o.is_optional} for o in r.operations]
     total_hrs = sum((o.machine_setup_mins + o.job_setup_mins) / 60 + o.work_time_hrs
                     for o in r.operations)
@@ -1084,12 +1091,19 @@ def create_routing(data: dict):
             raise HTTPException(400, f"Step {i+1}: machine {wc_id} not found")
         m_s = float(op.get("machine_setup_mins", op.get("setup_time_mins", 0)) or 0)
         j_s = float(op.get("job_setup_mins", 0) or 0)
+        # Accept work_time_mins (preferred) or work_time_hrs (legacy)
+        if op.get("work_time_mins") is not None and float(op.get("work_time_mins",0)) > 0:
+            w_mins = float(op["work_time_mins"])
+            w_hrs  = w_mins / 60.0
+        else:
+            w_hrs  = float(op.get("work_time_hrs", 0) or 0)
+            w_mins = round(w_hrs * 60, 1)
         db.add(Operation(routing_id=r.id, sequence=i+1,
                          name=(op.get("name") or "").strip(),
                          work_center_id=wc_id,
                          machine_setup_mins=m_s, job_setup_mins=j_s,
                          setup_time_mins=m_s+j_s,
-                         work_time_hrs=float(op.get("work_time_hrs", 0) or 0),
+                         work_time_hrs=w_hrs, work_time_mins=w_mins,
                          is_optional=bool(op.get("is_optional", False))))
     db.commit(); db.refresh(r)
     result = routing_dict(r, db); db.close(); return result
@@ -1119,12 +1133,18 @@ def update_routing(rid: int, data: dict):
             wc_id = int(op["work_center_id"])
             m_s = float(op.get("machine_setup_mins", op.get("setup_time_mins", 0)) or 0)
             j_s = float(op.get("job_setup_mins", 0) or 0)
+            if op.get("work_time_mins") is not None and float(op.get("work_time_mins",0)) > 0:
+                w_mins = float(op["work_time_mins"])
+                w_hrs  = w_mins / 60.0
+            else:
+                w_hrs  = float(op.get("work_time_hrs", 0) or 0)
+                w_mins = round(w_hrs * 60, 1)
             db.add(Operation(routing_id=r.id, sequence=i+1,
                              name=(op.get("name") or "").strip(),
                              work_center_id=wc_id,
                              machine_setup_mins=m_s, job_setup_mins=j_s,
                              setup_time_mins=m_s+j_s,
-                             work_time_hrs=float(op.get("work_time_hrs", 0) or 0),
+                             work_time_hrs=w_hrs, work_time_mins=w_mins,
                              is_optional=bool(op.get("is_optional", False))))
     db.commit(); result = routing_dict(r, db); db.close(); return result
 
@@ -1590,12 +1610,18 @@ def save_inline_as_routing(job_id: int, data: dict):
     for i, op in enumerate(raw):
         m_s = float(op.get("machine_setup_mins", op.get("setup_time_mins", 0)) or 0)
         j_s = float(op.get("job_setup_mins", 0) or 0)
+        if op.get("work_time_mins") is not None and float(op.get("work_time_mins", 0)) > 0:
+            w_mins = float(op["work_time_mins"])
+            w_hrs  = w_mins / 60.0
+        else:
+            w_hrs  = float(op.get("work_time_hrs", 0) or 0)
+            w_mins = round(w_hrs * 60, 1)
         db.add(Operation(routing_id=r.id, sequence=i+1,
                          name=(op.get("name") or f"Step {i+1}"),
                          work_center_id=int(op["work_center_id"]),
                          machine_setup_mins=m_s, job_setup_mins=j_s,
                          setup_time_mins=m_s+j_s,
-                         work_time_hrs=float(op.get("work_time_hrs", 0) or 0),
+                         work_time_hrs=w_hrs, work_time_mins=w_mins,
                          is_optional=bool(op.get("is_optional", False))))
     j.routing_id = r.id
     j.inline_ops = None
@@ -1701,13 +1727,24 @@ def get_today():
     today = now_ist().date()
     t_start = datetime(today.year, today.month, today.day, 0, 0)
     t_end   = datetime(today.year, today.month, today.day, 23, 59)
-    all_ops = db.query(ScheduledOp).filter(
+    # Include scheduled + in_progress ops for today, AND any paused ops (regardless of date)
+    today_ops = db.query(ScheduledOp).filter(
         ScheduledOp.status.in_(["scheduled","in_progress"]),
         ScheduledOp.scheduled_start != None,
         ScheduledOp.scheduled_end   != None,
     ).order_by(ScheduledOp.scheduled_start).all()
-    ops = [s for s in all_ops
+    paused_ops = db.query(ScheduledOp).filter(
+        ScheduledOp.status == "paused"
+    ).order_by(ScheduledOp.scheduled_start).all()
+
+    ops = [s for s in today_ops
            if s.scheduled_start <= t_end and s.scheduled_end >= t_start]
+    # Add paused ops not already in list
+    paused_ids = {s.id for s in ops}
+    for s in paused_ops:
+        if s.id not in paused_ids:
+            ops.append(s)
+
     fmt = lambda dt: dt.isoformat() if dt else None
     result = []
     for s in ops:
@@ -1721,9 +1758,51 @@ def get_today():
             "order_label": label, "piece_number": j.piece_number,
             "customer": j.customer_name, "op_name": s.op_name, "wc_name": s.wc_name,
             "worker_id": s.worker_id, "worker_name": s.worker_name,
-            "setup_time_mins": s.setup_time_mins, "work_time_hrs": s.work_time_hrs,
+            "machine_setup_mins": s.machine_setup_mins, "job_setup_mins": s.job_setup_mins,
+            "setup_time_mins": s.setup_time_mins,
+            "work_time_hrs": s.work_time_hrs,
+            "work_time_mins": s.work_time_mins if s.work_time_mins else round(s.work_time_hrs * 60, 1),
             "scheduled_start": fmt(s.scheduled_start), "scheduled_end": fmt(s.scheduled_end),
-            "actual_start": fmt(s.actual_start), "status": s.status,
+            "actual_start": fmt(s.actual_start), "actual_end": fmt(s.actual_end),
+            "status": s.status,
+            "pause_reason": s.pause_reason, "pause_notes": s.pause_notes,
+            "priority": j.priority_flag, "due_date": fmt(j.due_date),
+        })
+    db.close(); return result
+
+
+@app.get("/api/upcoming")
+def get_upcoming(days: int = 7):
+    """Return all scheduled ops in the next N days (default 7), excluding today."""
+    db = SessionLocal()
+    now = now_ist()
+    today = now.date()
+    t_start = datetime(today.year, today.month, today.day, 23, 59, 59)
+    t_end   = t_start + timedelta(days=max(1, min(days, 90)))
+    ops = db.query(ScheduledOp).filter(
+        ScheduledOp.status.in_(["scheduled","in_progress"]),
+        ScheduledOp.scheduled_start > t_start,
+        ScheduledOp.scheduled_start <= t_end,
+    ).order_by(ScheduledOp.scheduled_start).all()
+    fmt = lambda dt: dt.isoformat() if dt else None
+    result = []
+    for s in ops:
+        j = s.job
+        label = j.job_number
+        if j.order_id and j.piece_number:
+            order = db.query(CustomerOrder).filter(CustomerOrder.id == j.order_id).first()
+            if order: label = f"{order.order_number} P{j.piece_number:02d}"
+        result.append({
+            "op_id": s.id, "job_id": j.id, "job_number": j.job_number,
+            "order_label": label, "piece_number": j.piece_number,
+            "customer": j.customer_name, "op_name": s.op_name, "wc_name": s.wc_name,
+            "worker_id": s.worker_id, "worker_name": s.worker_name,
+            "machine_setup_mins": s.machine_setup_mins, "job_setup_mins": s.job_setup_mins,
+            "setup_time_mins": s.setup_time_mins,
+            "work_time_hrs": s.work_time_hrs,
+            "work_time_mins": s.work_time_mins if s.work_time_mins else round(s.work_time_hrs * 60, 1),
+            "scheduled_start": fmt(s.scheduled_start), "scheduled_end": fmt(s.scheduled_end),
+            "status": s.status,
             "priority": j.priority_flag, "due_date": fmt(j.due_date),
         })
     db.close(); return result
@@ -1773,27 +1852,46 @@ def update_op_status(op_id: int, data: dict):
     db = SessionLocal()
     s = db.query(ScheduledOp).filter(ScheduledOp.id == op_id).first()
     if not s: raise HTTPException(404, "Not found")
-    s.status = data["status"]
+    new_status = data["status"]
+    s.status = new_status
     now = now_ist()
     j = s.job
-    if data["status"] == "in_progress":
-        if not s.actual_start: s.actual_start = now
+
+    if new_status == "in_progress":
+        # Manual start time: use provided actual_start, or scheduled_start (advance start), or now
+        if data.get("actual_start"):
+            s.actual_start = parse_dt(data["actual_start"])
+        elif data.get("use_scheduled_start") and s.scheduled_start:
+            s.actual_start = s.scheduled_start
+        elif not s.actual_start:
+            s.actual_start = now
         if j.status in ("pending","scheduled"): j.status = "in_progress"
-    elif data["status"] == "paused":
+
+    elif new_status == "paused":
+        # Store pause reason and notes
+        if data.get("pause_reason"): s.pause_reason = data["pause_reason"]
+        if data.get("pause_notes"):  s.pause_notes  = data["pause_notes"]
         all_paused = all(op.status in ("paused","completed","pending","scheduled")
                          for op in j.scheduled_ops)
         if all_paused and j.status == "in_progress":
             j.status = "scheduled"
-    elif data["status"] == "completed":
-        s.actual_end = now
-        all_done = all(op.status == "completed" for op in j.scheduled_ops)
+
+    elif new_status == "completed":
+        # Manual end time; also allow retroactive actual_start correction
+        if data.get("actual_start"): s.actual_start = parse_dt(data["actual_start"])
+        if data.get("actual_end"):   s.actual_end   = parse_dt(data["actual_end"])
+        else:                        s.actual_end    = now
+        # Clear pause fields on completion
+        s.pause_reason = None; s.pause_notes = None
+        all_done   = all(op.status == "completed" for op in j.scheduled_ops)
         any_inprog = any(op.status == "in_progress" for op in j.scheduled_ops if op.id != s.id)
         if all_done:
-            j.status = "completed"; j.completed_at = now
+            j.status = "completed"; j.completed_at = s.actual_end or now
         elif not any_inprog:
             j.status = "in_progress"
-        _reactive_reschedule(db, s.work_center_id, s.worker_id, now)
+        _reactive_reschedule(db, s.work_center_id, s.worker_id, s.actual_end or now)
         if j.order_id: _update_order_status(db, j.order_id)
+
     db.commit(); db.close()
     return {"ok": True}
 

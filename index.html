@@ -663,6 +663,9 @@ input.valid,select.valid{border-color:var(--green)}
     <div class="nav-item" onclick="showPage('today')">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>Today's Work
     </div>
+    <div class="nav-item" onclick="showPage('upcoming')">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Upcoming
+    </div>
     <div class="nav-item" onclick="showPage('jobs')">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>Jobs
     </div>
@@ -754,19 +757,47 @@ let confirmResolve=()=>{};
 
 // ── PREFERENCES (theme, font scale, density) ──
 const PREFS_KEY='dolphin-prefs';
-const DEFAULT_PREFS={theme:'dark',fontScale:'default',density:'comfortable'};
+const DEFAULT_PREFS={theme:'dark',fontScale:'default',density:'comfortable',timeUnit:'minutes'};
 function loadPrefs(){
   try{
     const raw=localStorage.getItem(PREFS_KEY);
     if(raw) return Object.assign({},DEFAULT_PREFS,JSON.parse(raw));
   }catch(e){}
-  // Migrate from old single key
   try{
     const oldT=localStorage.getItem('dolphin-theme');
     if(oldT==='light'||oldT==='dark') return Object.assign({},DEFAULT_PREFS,{theme:oldT});
   }catch(e){}
   return Object.assign({},DEFAULT_PREFS);
 }
+
+// ── TIME DISPLAY HELPERS ──
+// getTimeUnit() returns 'minutes' or 'hours'
+function getTimeUnit(){return loadPrefs().timeUnit||'minutes';}
+// fmtWork: display work time (input in minutes)
+function fmtWork(mins){
+  if(!mins&&mins!==0) return '—';
+  if(getTimeUnit()==='hours'){
+    const h=mins/60; return h%1===0?`${h}h`:`${h.toFixed(1)}h`;
+  }
+  return `${Math.round(mins)}min`;
+}
+// fmtSetup: setup time always in minutes (small values)
+function fmtSetup(mins){
+  if(!mins&&mins!==0) return '—';
+  if(getTimeUnit()==='hours'){
+    const h=mins/60; return h%1===0?`${h}h`:`${h.toFixed(1)}h`;
+  }
+  return `${Math.round(mins)}min`;
+}
+// fmtTotal: total time in minutes, display per pref
+function fmtTotal(totalMins){
+  if(getTimeUnit()==='hours'){
+    const h=totalMins/60; return `${h.toFixed(1)}h`;
+  }
+  return `${Math.round(totalMins)}min`;
+}
+// Time unit label for column headers
+function timeUnitLabel(){return getTimeUnit()==='hours'?'hrs':'min';}
 function savePrefs(p){try{localStorage.setItem(PREFS_KEY,JSON.stringify(p));}catch(e){}}
 function applyPrefs(p){
   document.documentElement.setAttribute('data-theme',p.theme);
@@ -958,8 +989,8 @@ function sBadge(s){const m={pending:'badge-pending',scheduled:'badge-scheduled',
 function navActive(p){document.querySelectorAll('.nav-item').forEach(el=>el.classList.toggle('active',!!(el.getAttribute('onclick')?.includes(`'${p}'`))))}
 function showPage(p){
   currentPage=p;navActive(p);
-  document.getElementById('pageTitle').textContent={dashboard:'Dashboard',today:"Today's Work",jobs:'Jobs',orders:'Orders',schedule:'Gantt Schedule',capacity:'Capacity Heatmap',routings:'Routing Templates','routing-stats':'Routing Stats — Estimated vs Actual',machines:'Machines',workers:'Workers & Leave',customers:'Customers',reports:'Reports',settings:'Settings'}[p]||p;
-  const pageRenderer = ({dashboard:renderDashboard,today:renderToday,jobs:renderJobs,orders:renderOrders,schedule:renderSchedule,capacity:renderCapacity,routings:renderRoutings,'routing-stats':renderRoutingStats,machines:renderMachines,workers:renderWorkers,customers:renderCustomers,reports:renderReports,settings:renderSettings})[p];
+  document.getElementById('pageTitle').textContent={dashboard:'Dashboard',today:"Today's Work",upcoming:'Upcoming Tasks',jobs:'Jobs',orders:'Orders',schedule:'Gantt Schedule',capacity:'Capacity Heatmap',routings:'Routing Templates','routing-stats':'Routing Stats — Estimated vs Actual',machines:'Machines',workers:'Workers & Leave',customers:'Customers',reports:'Reports',settings:'Settings'}[p]||p;
+  const pageRenderer = ({dashboard:renderDashboard,today:renderToday,upcoming:renderUpcoming,jobs:renderJobs,orders:renderOrders,schedule:renderSchedule,capacity:renderCapacity,routings:renderRoutings,'routing-stats':renderRoutingStats,machines:renderMachines,workers:renderWorkers,customers:renderCustomers,reports:renderReports,settings:renderSettings})[p];
   if(pageRenderer) pageRenderer().catch(e=>{
     console.error('Page render error:', e);
     document.getElementById('content').innerHTML=`<div style="padding:40px;text-align:center;color:var(--muted)"><div style="font-size:14px;margin-bottom:8px">Error loading page</div><div style="font-size:12px">${e.message}</div><button class="btn btn-secondary" style="margin-top:12px" onclick="showPage('${p}')">↻ Retry</button></div>`;
@@ -1110,40 +1141,62 @@ async function renderToday(){
   const nowISO=istNow().toISOString().slice(0,19);
   try{
     const ops=await api('GET','/api/today');
+    // Separate by status groups then by machine
+    const active=ops.filter(o=>o.status==='in_progress');
+    const paused=ops.filter(o=>o.status==='paused');
+    const sched=ops.filter(o=>o.status==='scheduled');
+
+    if(!ops.length){document.getElementById('content').innerHTML=`<div class="card"><div class="empty">No operations for today.<br>Schedule some jobs first.</div></div>`;return;}
+
+    function renderOpRow(op){
+      const isNow=op.status==='in_progress';
+      const isPaused=op.status==='paused';
+      const isOverdue=op.scheduled_end&&op.scheduled_end.slice(0,19)<nowISO&&op.status==='scheduled';
+      const workMins=op.work_time_mins||(op.work_time_hrs*60);
+      const setupMins=op.setup_time_mins||0;
+      const pauseInfo=isPaused&&op.pause_reason?`<div style="font-size:11px;color:var(--amber);margin-top:3px">⏸ Paused: ${pauseReasonLabel(op.pause_reason)}${op.pause_notes?' — '+op.pause_notes:''}</div>`:'';
+      return `<div class="today-op-row ${isOverdue?'overdue':isNow?'inprog':isPaused?'paused':''}">
+        <div class="today-op-info">
+          <div class="today-op-title">
+            <span class="jobnum">${op.order_label||op.job_number}</span>
+            ${op.priority?'<span class="badge badge-urgent">🚨</span>':''}
+            ${isOverdue?'<span class="badge badge-overdue">OVERDUE</span>':''}
+            ${isPaused?'<span class="badge" style="background:var(--amber-soft);color:var(--amber);border-color:var(--amber)">PAUSED</span>':''}
+            <span class="opname">${op.op_name}</span>
+          </div>
+          <div class="today-op-meta">${op.customer}${op.worker_name?' · <span class="worker">👷 '+op.worker_name+'</span>':''} · Setup ${fmtSetup(setupMins)} · Work ${fmtWork(workMins)}</div>
+          ${op.actual_start?`<div class="today-op-started">▶ Started ${fmtDT(op.actual_start)}</div>`:''}
+          ${pauseInfo}
+        </div>
+        <div class="today-op-time">${fmtDT(op.scheduled_start)}<br>→ ${fmtDT(op.scheduled_end)}</div>
+        <div class="today-op-status">${sBadge(op.status)}</div>
+        <div class="today-op-actions">
+          ${op.status==='scheduled'?`<button class="btn btn-success" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Start</button>`:''}
+          ${op.status==='in_progress'?`
+            <button class="btn btn-secondary" onclick="promptPause(${op.op_id})">⏸ Pause</button>
+            <button class="btn btn-primary" onclick="promptComplete(${op.op_id},'${op.actual_start||''}')">✓ Done</button>`:''}
+          ${op.status==='paused'?`<button class="btn btn-success" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Resume</button>`:''}
+        </div>
+      </div>`;
+    }
+
     const byMachine={};
     ops.forEach(op=>{if(!byMachine[op.wc_name])byMachine[op.wc_name]=[];byMachine[op.wc_name].push(op);});
     const machines=Object.keys(byMachine).sort();
-    if(!machines.length){document.getElementById('content').innerHTML=`<div class="card"><div class="empty">No operations scheduled for today.<br>Schedule some jobs first.</div></div>`;return;}
-    let html='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(560px,1fr));gap:18px">';
+
+    // Summary strip
+    let html=`<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+      <div style="background:var(--accent-soft);border:1px solid var(--accent);border-radius:8px;padding:8px 16px;font-size:13px"><b style="font-size:20px;color:var(--accent)">${active.length}</b> In Progress</div>
+      <div style="background:var(--amber-soft);border:1px solid var(--amber);border-radius:8px;padding:8px 16px;font-size:13px"><b style="font-size:20px;color:var(--amber)">${paused.length}</b> Paused</div>
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:13px"><b style="font-size:20px;color:var(--text)">${sched.length}</b> Scheduled</div>
+    </div>`;
+
+    html+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(560px,1fr));gap:18px">';
     machines.forEach(m=>{
       const mops=byMachine[m];
       html+=`<div class="today-machine-block">
         <div class="today-machine-title"><span>${m}</span><span class="opcount">${mops.length} op${mops.length>1?'s':''} today</span></div>`;
-      mops.forEach(op=>{
-        const isNow=op.status==='in_progress';
-        const isOverdue=op.scheduled_end&&op.scheduled_end.slice(0,19)<nowISO&&op.status==='scheduled';
-        html+=`<div class="today-op-row ${isOverdue?'overdue':isNow?'inprog':''}">
-          <div class="today-op-info">
-            <div class="today-op-title">
-              <span class="jobnum">${op.job_number}</span>
-              ${op.priority?'<span class="badge badge-urgent">🚨</span>':''}
-              ${isOverdue?'<span class="badge badge-overdue">OVERDUE</span>':''}
-              <span class="opname">${op.op_name}</span>
-            </div>
-            <div class="today-op-meta">${op.customer}${op.po_number?' · PO '+op.po_number:''}${op.worker_name?' · <span class="worker">👷 '+op.worker_name+'</span>':''} · Setup ${op.setup_time_mins}min · Work ${op.work_time_hrs}h</div>
-            ${op.actual_start?`<div class="today-op-started">▶ Started ${fmtDT(op.actual_start)}</div>`:''}
-          </div>
-          <div class="today-op-time">${fmtDT(op.scheduled_start)}<br>→ ${fmtDT(op.scheduled_end)}</div>
-          <div class="today-op-status">${sBadge(op.status)}</div>
-          <div class="today-op-actions">
-            ${op.status==='scheduled'?`<button class="btn btn-success" onclick="updateOpStatus(${op.op_id},'in_progress')">▶ Start</button>`:''}
-            ${op.status==='in_progress'?`
-              <button class="btn btn-secondary" onclick="updateOpStatus(${op.op_id},'paused')">⏸ Pause</button>
-              <button class="btn btn-primary" onclick="updateOpStatus(${op.op_id},'completed')">✓ Done</button>`:''}
-            ${op.status==='paused'?`<button class="btn btn-success" onclick="updateOpStatus(${op.op_id},'in_progress')">▶ Resume</button>`:''}
-          </div>
-        </div>`;
-      });
+      mops.forEach(op=>{ html+=renderOpRow(op); });
       html+=`</div>`;
     });
     html+='</div>';
@@ -1154,9 +1207,157 @@ async function renderToday(){
   todayRefreshTimer=setInterval(()=>{if(currentPage==='today')renderToday();},60000);
 }
 
+function pauseReasonLabel(r){
+  return{waiting_material:'Waiting Material',machine_down:'Machine Down',worker_absent:'Worker Absent',rework:'Rework',other:'Other'}[r]||r||'Unknown';
+}
+
+// ── Manual time dialogs ──
+function nowLocalInput(){
+  const d=istNow();
+  return d.toISOString().slice(0,16).replace('T',' ');
+}
+function isoToLocalInput(iso){
+  if(!iso)return nowLocalInput();
+  return iso.slice(0,16).replace('T',' ');
+}
+
+function promptStart(opId, scheduledStart){
+  const schLocal=scheduledStart?isoToLocalInput(scheduledStart):'';
+  const nowLocal=nowLocalInput();
+  showModal('Start Operation','<div style="display:grid;gap:12px">'+
+    '<div><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Actual Start Time</label>'+
+    `<input type="datetime-local" id="dlg_start" value="${nowLocal.replace(' ','T')}" style="width:100%"></div>`+
+    (schLocal?`<div style="display:flex;gap:8px;align-items:center"><button class="btn btn-ghost" style="font-size:12px" onclick="document.getElementById('dlg_start').value='${schLocal.replace(' ','T')}'">Use Scheduled (${fmtDT(scheduledStart)})</button></div>`:'')
+    +'<div style="font-size:12px;color:var(--muted)">Adjust if data entry is delayed from actual floor start.</div>'+
+    '</div>',
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-success" onclick="doStart(${opId})">▶ Start</button>`
+  );
+}
+
+async function doStart(opId){
+  const dt=document.getElementById('dlg_start')?.value;
+  const actualStart=dt?dt.replace('T',' '):null;
+  try{
+    await api('PUT',`/api/ops/${opId}/status`,{status:'in_progress',actual_start:actualStart});
+    toast('Started ▶'); closeModal(); showPage(currentPage);
+  }catch(e){toast(e.message,'error');}
+}
+
+function promptPause(opId){
+  showModal('Pause Operation','<div style="display:grid;gap:12px">'+
+    '<div><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Reason for Pause</label>'+
+    '<select id="dlg_pause_reason" style="width:100%">'+
+    '<option value="">— Select reason —</option>'+
+    '<option value="waiting_material">Waiting for Material</option>'+
+    '<option value="machine_down">Machine Down / Maintenance</option>'+
+    '<option value="worker_absent">Worker Absent</option>'+
+    '<option value="rework">Rework / Quality Issue</option>'+
+    '<option value="other">Other</option>'+
+    '</select></div>'+
+    '<div><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Notes (optional)</label>'+
+    '<input type="text" id="dlg_pause_notes" placeholder="Any additional notes…" style="width:100%"></div>'+
+    '</div>',
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-secondary" onclick="doPause(${opId})">⏸ Pause</button>`
+  );
+}
+
+async function doPause(opId){
+  const reason=document.getElementById('dlg_pause_reason')?.value||'';
+  const notes=document.getElementById('dlg_pause_notes')?.value||'';
+  try{
+    await api('PUT',`/api/ops/${opId}/status`,{status:'paused',pause_reason:reason,pause_notes:notes});
+    toast('Paused ⏸'); closeModal(); showPage(currentPage);
+  }catch(e){toast(e.message,'error');}
+}
+
+function promptComplete(opId, actualStart){
+  const startLocal=actualStart?isoToLocalInput(actualStart):nowLocalInput();
+  const nowLocal=nowLocalInput();
+  showModal('Complete Operation','<div style="display:grid;gap:12px">'+
+    '<div><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Actual Start Time</label>'+
+    `<input type="datetime-local" id="dlg_cstart" value="${startLocal.replace(' ','T')}" style="width:100%"></div>`+
+    '<div><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Actual End Time</label>'+
+    `<input type="datetime-local" id="dlg_cend" value="${nowLocal.replace(' ','T')}" style="width:100%"></div>`+
+    '<div style="font-size:12px;color:var(--muted)">Adjust times if data entry is delayed from actual floor completion.</div>'+
+    '</div>',
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-primary" onclick="doComplete(${opId})">✓ Mark Complete</button>`
+  );
+}
+
+async function doComplete(opId){
+  const cs=document.getElementById('dlg_cstart')?.value;
+  const ce=document.getElementById('dlg_cend')?.value;
+  try{
+    await api('PUT',`/api/ops/${opId}/status`,{
+      status:'completed',
+      actual_start:cs?cs.replace('T',' '):null,
+      actual_end:ce?ce.replace('T',' '):null
+    });
+    toast('Completed ✓'); closeModal(); showPage(currentPage);
+  }catch(e){toast(e.message,'error');}
+}
+
 async function updateOpStatus(opId,status){
-  try{await api('PUT',`/api/ops/${opId}/status`,{status});toast(status==='completed'?'Marked complete ✓':'Started ▶');showPage(currentPage);}
+  // Legacy fast-path for Gantt and job detail — no manual time dialog
+  try{await api('PUT',`/api/ops/${opId}/status`,{status});toast(status==='completed'?'Marked complete ✓':status==='in_progress'?'Started ▶':'Updated');showPage(currentPage);}
   catch(e){toast(e.message,'error')}
+}
+
+// ── UPCOMING ──
+async function renderUpcoming(){
+  if(todayRefreshTimer) clearInterval(todayRefreshTimer);
+  document.getElementById('topbarActions').innerHTML=`
+    <select id="upcomingDays" onchange="renderUpcoming()" style="width:130px">
+      <option value="7">Next 7 Days</option>
+      <option value="14">Next 14 Days</option>
+      <option value="30">Next 30 Days</option>
+    </select>
+    <button class="btn btn-secondary" onclick="renderUpcoming()">↻ Refresh</button>`;
+  document.getElementById('content').innerHTML=`<div style="color:var(--muted)">Loading…</div>`;
+  const days=parseInt(document.getElementById('upcomingDays')?.value||7);
+  try{
+    const ops=await api('GET',`/api/upcoming?days=${days}`);
+    if(!ops.length){
+      document.getElementById('content').innerHTML=`<div class="card"><div class="empty">No operations scheduled in next ${days} days.<br>Run Schedule All to plan jobs.</div></div>`;
+      return;
+    }
+    // Group by date
+    const byDate={};
+    ops.forEach(op=>{
+      const d=op.scheduled_start?op.scheduled_start.slice(0,10):'Unknown';
+      if(!byDate[d])byDate[d]=[];byDate[d].push(op);
+    });
+    const dates=Object.keys(byDate).sort();
+    let html='';
+    dates.forEach(d=>{
+      const dops=byDate[d];
+      const dateObj=new Date(d+'T00:00:00');
+      const dayLabel=dateObj.toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short'});
+      html+=`<div class="today-machine-block">
+        <div class="today-machine-title"><span>${dayLabel}</span><span class="opcount">${dops.length} op${dops.length>1?'s':''}</span></div>`;
+      dops.forEach(op=>{
+        const workMins=op.work_time_mins||(op.work_time_hrs*60);
+        const setupMins=op.setup_time_mins||0;
+        html+=`<div class="today-op-row">
+          <div class="today-op-info">
+            <div class="today-op-title">
+              <span class="jobnum">${op.order_label||op.job_number}</span>
+              ${op.priority?'<span class="badge badge-urgent">🚨</span>':''}
+              <span class="opname">${op.op_name}</span>
+            </div>
+            <div class="today-op-meta">${op.customer} · ${op.wc_name}${op.worker_name?' · <span class="worker">👷 '+op.worker_name+'</span>':''} · Setup ${fmtSetup(setupMins)} · Work ${fmtWork(workMins)}</div>
+          </div>
+          <div class="today-op-time">${fmtDT(op.scheduled_start)}<br>→ ${fmtDT(op.scheduled_end)}</div>
+          <div class="today-op-status">${sBadge(op.status)}</div>
+        </div>`;
+      });
+      html+=`</div>`;
+    });
+    document.getElementById('content').innerHTML=`<div style="display:grid;gap:14px">${html}</div>`;
+  }catch(e){document.getElementById('content').innerHTML=`<div class="empty">${e.message}</div>`;}
 }
 
 // ── JOBS ──
@@ -1267,7 +1468,7 @@ async function expandJob(id,keepOpen=false){
       return`<div class="${cls}">
         <span class="mono" style="font-size:11px;color:var(--muted)">${op.sequence}</span>
         <span style="font-size:12px;font-weight:500">${op.op_name}</span>
-        <span style="font-size:11px;color:var(--muted);font-family:var(--mono)">${op.wc_name} · ${op.worker_name?'👷 '+op.worker_name:'<span style=\'color:var(--orange)\'>⚠ No worker</span>'} · ${op.setup_time_mins}m setup · ${op.work_time_hrs}h work${op.setup_waived?' <span style=\'color:var(--green);font-size:10px\'>(machine setup waived)</span>':''}</span>
+        <span style="font-size:11px;color:var(--muted);font-family:var(--mono)">${op.wc_name} · ${op.worker_name?'👷 '+op.worker_name:'<span style=\'color:var(--orange)\'>⚠ No worker</span>'} · ${fmtSetup(op.setup_time_mins)} setup · ${fmtWork(op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60)} work${op.setup_waived?' <span style=\'color:var(--green);font-size:10px\'>(machine setup waived)</span>':''}</span>
         <span style="font-size:11px;color:var(--muted);font-family:var(--mono)">${op.scheduled_start?fmtDT(op.scheduled_start)+' → '+fmtDT(op.scheduled_end):'Not scheduled'}</span>
         <span>${sBadge(op.status)}</span>
         <span style="display:flex;gap:4px">
@@ -1329,8 +1530,10 @@ async function openJobModal(editId){
       jobFormOps = rt.operations.map(op=>({
         operation_id: op.id, name: op.name, wc_name: op.work_center_name,
         machine_type: op.machine_type||'',
+        work_center_id: op.work_center_id,
         setup_time_mins: ovMap[op.id]?.setup_time_mins ?? op.setup_time_mins,
-        work_time_hrs:   ovMap[op.id]?.work_time_hrs   ?? op.work_time_hrs,
+        work_time_mins: ovMap[op.id]?.work_time_mins ?? (op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60),
+        work_time_hrs:  ovMap[op.id]?.work_time_hrs   ?? op.work_time_hrs,
         is_optional: op.is_optional,
         included: ovMap[op.id]?.included ?? true
       }));
@@ -1537,7 +1740,10 @@ async function loadJobOps(){
   }
   jobFormOps=rt.operations.map(op=>({
     operation_id:op.id,name:op.name,wc_name:op.work_center_name,machine_type:op.machine_type||'',
-    setup_time_mins:op.setup_time_mins,work_time_hrs:op.work_time_hrs,
+    work_center_id:op.work_center_id,
+    setup_time_mins:op.setup_time_mins,
+    work_time_mins:op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60,
+    work_time_hrs:op.work_time_hrs,
     is_optional:op.is_optional,included:true
   }));
   renderJobOpsTable();
@@ -1545,23 +1751,33 @@ async function loadJobOps(){
 
 function renderJobOpsTable(){
   if(!jobFormOps.length){document.getElementById('jobOpsWrap').innerHTML='<div style="color:var(--muted);font-size:12px">No operations</div>';return;}
-  const rows=jobFormOps.map((op,i)=>`
+  const unit=timeUnitLabel();
+  const rows=jobFormOps.map((op,i)=>{
+    // work_time_mins is canonical; fall back to hrs*60
+    const wMins=op.work_time_mins!=null?op.work_time_mins:((op.work_time_hrs||0)*60);
+    const sMins=op.setup_time_mins||0;
+    const totMins=sMins+wMins;
+    return `
     <tr id="opovrow_${i}" class="${op.included?'':'excluded'}">
       <td><input type="checkbox" id="opchk_${i}" ${op.included?'checked':''} onchange="toggleOp(${i},this.checked)" style="width:14px;height:14px;accent-color:var(--accent)"></td>
       <td class="mono" style="color:var(--muted);text-align:center">${i+1}</td>
       <td style="font-weight:500">${op.name}${op.is_optional?' <span style="font-size:10px;color:var(--muted)">(opt)</span>':''}</td>
       <td style="color:var(--muted);font-family:var(--mono);font-size:11px">${op.wc_name}</td>
-      <td><input type="number" id="opsetup_${i}" value="${op.setup_time_mins}" min="0" step="5" onchange="recalcOp(${i})" ${op.included?'':'disabled'}></td>
-      <td><input type="number" id="opwork_${i}" value="${op.work_time_hrs}" min="0" step="0.5" onchange="recalcOp(${i})" ${op.included?'':'disabled'}></td>
-      <td id="optot_${i}" class="mono" style="color:var(--muted);text-align:right">${((op.setup_time_mins/60)+op.work_time_hrs).toFixed(1)}h</td>
-    </tr>`).join('');
+      <td><input type="number" id="opsetup_${i}" value="${Math.round(sMins)}" min="0" step="5" onchange="recalcOp(${i})" ${op.included?'':'disabled'} title="Setup time in minutes"></td>
+      <td><input type="number" id="opwork_${i}" value="${Math.round(wMins)}" min="0" step="10" onchange="recalcOp(${i})" ${op.included?'':'disabled'} title="Work time in minutes"></td>
+      <td id="optot_${i}" class="mono" style="color:var(--muted);text-align:right">${fmtTotal(totMins)}</td>
+    </tr>`;
+  }).join('');
   document.getElementById('jobOpsWrap').innerHTML=`
     <table class="op-ov-table">
-      <thead><tr><th>✓</th><th>#</th><th>Operation</th><th>Machine</th><th>Setup (min)</th><th>Work (hrs)</th><th>Total</th></tr></thead>
+      <thead><tr><th>✓</th><th>#</th><th>Operation</th><th>Machine</th><th>Setup (min)</th><th>Work (min)</th><th>Total</th></tr></thead>
       <tbody>${rows}</tbody>
       <tfoot><tr><td colspan="5" style="padding:7px 8px;font-size:11px;color:var(--muted)">Total working time:</td>
       <td colspan="2" id="opGrandTot" class="mono" style="font-size:12px;font-weight:600;padding:7px 8px;color:var(--text)"></td></tr></tfoot>
-    </table>`;
+    </table>
+    <div style="margin-top:10px">
+      <button class="btn btn-ghost" style="font-size:12px" onclick="promptSaveAsRouting()" title="Save these operations as a reusable routing template">💾 Save as Routing Template</button>
+    </div>`;
   updateGrandTotal();
 }
 
@@ -1574,18 +1790,21 @@ function toggleOp(i,checked){
 function recalcOp(i){
   const s=parseFloat(document.getElementById(`opsetup_${i}`)?.value)||0;
   const w=parseFloat(document.getElementById(`opwork_${i}`)?.value)||0;
-  jobFormOps[i].setup_time_mins=s;jobFormOps[i].work_time_hrs=w;
-  const el=document.getElementById(`optot_${i}`);if(el)el.textContent=((s/60)+w).toFixed(1)+'h';
+  // both s and w are in MINUTES
+  jobFormOps[i].setup_time_mins=s;
+  jobFormOps[i].work_time_mins=w;
+  jobFormOps[i].work_time_hrs=w/60;
+  const el=document.getElementById(`optot_${i}`);if(el)el.textContent=fmtTotal(s+w);
   updateGrandTotal();
 }
 function updateGrandTotal(){
   const tot=jobFormOps.filter(o=>o.included).reduce((s,o,i)=>{
     const sv=parseFloat(document.getElementById(`opsetup_${i}`)?.value)??o.setup_time_mins;
-    const wv=parseFloat(document.getElementById(`opwork_${i}`)?.value)??o.work_time_hrs;
-    return s+(sv/60)+wv;
+    const wv=parseFloat(document.getElementById(`opwork_${i}`)?.value)??(o.work_time_mins!=null?o.work_time_mins:(o.work_time_hrs||0)*60);
+    return s+sv+wv; // both in minutes
   },0);
   const el=document.getElementById('opGrandTot');
-  if(el) el.textContent=`${tot.toFixed(1)}h ≈ ${(tot/10).toFixed(1)} days`;
+  if(el) el.textContent=`${fmtTotal(tot)} ≈ ${(tot/600).toFixed(1)} days`;
 }
 
 async function saveJob(editId){
@@ -1605,7 +1824,8 @@ async function saveJob(editId){
   const ovs=jobFormOps.map((op,i)=>({
     operation_id:op.operation_id,
     setup_time_mins:parseFloat(document.getElementById(`opsetup_${i}`)?.value)??op.setup_time_mins,
-    work_time_hrs:parseFloat(document.getElementById(`opwork_${i}`)?.value)??op.work_time_hrs,
+    work_time_mins:parseFloat(document.getElementById(`opwork_${i}`)?.value)??(op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60),
+    work_time_hrs:(parseFloat(document.getElementById(`opwork_${i}`)?.value)??(op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60))/60,
     included:document.getElementById(`opchk_${i}`)?.checked??op.included,
   }));
   const custSel = document.getElementById('f_cust_id');
@@ -1640,6 +1860,51 @@ async function saveJob(editId){
   }finally{
     setLoading('saveJobBtn',false);
   }
+}
+
+// ── Save current job ops as a new routing template ──
+function promptSaveAsRouting(){
+  if(!jobFormOps.length){toast('No operations to save','error');return;}
+  const ptype=document.getElementById('f_ptype')?.value||'';
+  showModal('Save as Routing Template',
+    `<div style="display:grid;gap:12px">
+      <div><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Routing Name <span style="color:var(--red)">*</span></label>
+        <input type="text" id="dlg_rname" placeholder="e.g. Punch — Custom 600x1200 Rustic" style="width:100%"></div>
+      <div><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Product Type</label>
+        <input type="text" id="dlg_rtype" value="${ptype}" style="width:100%"></div>
+      <div><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Description (optional)</label>
+        <input type="text" id="dlg_rdesc" placeholder="Brief description…" style="width:100%"></div>
+      <div style="font-size:12px;color:var(--muted)">Will save ${jobFormOps.filter(o=>o.included).length} included operations with their current times.</div>
+    </div>`,
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-primary" onclick="doSaveAsRouting()">💾 Save Routing</button>`
+  );
+}
+
+async function doSaveAsRouting(){
+  const name=(document.getElementById('dlg_rname')?.value||'').trim();
+  if(!name){toast('Routing name is required','error');return;}
+  const ptype=(document.getElementById('dlg_rtype')?.value||'').trim();
+  const desc=(document.getElementById('dlg_rdesc')?.value||'').trim();
+  // Collect current op values from form inputs
+  const ops=jobFormOps.map((op,i)=>{
+    if(!op.included) return null;
+    const sMins=parseFloat(document.getElementById(`opsetup_${i}`)?.value)||op.setup_time_mins||0;
+    const wMins=parseFloat(document.getElementById(`opwork_${i}`)?.value)||(op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60);
+    return {
+      name:op.name,
+      work_center_id:op.work_center_id,
+      machine_setup_mins:0, job_setup_mins:sMins, setup_time_mins:sMins,
+      work_time_mins:wMins, work_time_hrs:wMins/60,
+      is_optional:op.is_optional||false,
+    };
+  }).filter(Boolean);
+  try{
+    const r=await api('POST','/api/routings',{name,product_type:ptype||'Custom',description:desc,operations:ops,is_active:true});
+    toast(`Routing "${r.name}" saved!`);
+    closeModal();
+    await loadAll(); // refresh routing list
+  }catch(e){toast(e.message,'error');}
 }
 
 // ── GANTT ──
@@ -1989,12 +2254,12 @@ async function renderRoutings(){
   document.getElementById('content').innerHTML=`<div class="card"><div class="card-hdr"><div class="card-title">Routing Templates (${allRoutings.length})</div></div><div id="routingList"></div></div>`;
   if(!allRoutings.length){document.getElementById('routingList').innerHTML=`<div class="empty">No routings. Create one or load demo data.</div>`;return;}
   document.getElementById('routingList').innerHTML=allRoutings.map(r=>{
-    const totalHrs=r.operations.reduce((s,o)=>s+(o.setup_time_mins/60)+o.work_time_hrs,0);
+    const totalMins=r.operations.reduce((s,o)=>s+o.setup_time_mins+(o.work_time_mins!=null?o.work_time_mins:(o.work_time_hrs||0)*60),0);
     return`<div style="padding:14px 18px;border-bottom:1px solid var(--border)">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
         <div>
           <div style="font-weight:600;margin-bottom:2px">${r.name}</div>
-          <div style="font-size:11px;color:var(--muted)">${r.product_type}${r.description?' · '+r.description:''} · ${r.operations.length} operations · ${totalHrs.toFixed(1)}h total · ${r.material_lead_days}d material lead</div>
+          <div style="font-size:11px;color:var(--muted)">${r.product_type}${r.description?' · '+r.description:''} · ${r.operations.length} operations · ${fmtTotal(totalMins)} total · ${r.material_lead_days}d material lead</div>
           ${r.operations.length===0?`<div style="font-size:11px;color:var(--red);margin-top:3px">⚠ No operations defined — add at least one</div>`:''}
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0">
@@ -2003,13 +2268,15 @@ async function renderRoutings(){
         </div>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
-        ${r.operations.map((op,i)=>`${i>0?`<span style="color:var(--border2)">→</span>`:''}
+        ${r.operations.map((op,i)=>{
+          const opMins=op.setup_time_mins+(op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60);
+          return`${i>0?`<span style="color:var(--border2)">→</span>`:''}
           <div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:11px">
             <span style="color:var(--muted)">${op.sequence}.</span>
             <strong style="margin-left:2px">${op.name}</strong>
             <span style="color:var(--accent2);margin-left:4px">${op.work_center_name}</span>
-            <span style="color:var(--muted);margin-left:4px">${((op.setup_time_mins/60)+op.work_time_hrs).toFixed(1)}h${op.is_optional?' opt':''}</span>
-          </div>`).join('')}
+            <span style="color:var(--muted);margin-left:4px">${fmtTotal(opMins)}${op.is_optional?' opt':''}</span>
+          </div>`;}).join('')}
         ${r.operations.length===0?`<span style="color:var(--muted);font-size:12px;font-style:italic">No operations yet</span>`:''}
       </div>
     </div>`;
@@ -2058,7 +2325,7 @@ function openRoutingModal(editId){
       </div>
     </div>
     <div style="display:grid;grid-template-columns:52px 28px 1fr 170px 72px 72px 40px 28px;gap:5px;padding:4px 0 8px;font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">
-      <span>Move</span><span style="text-align:center">#</span><span>Operation Name</span><span>Machine</span><span>Setup(m)</span><span>Work(h)</span><span style="text-align:center">Opt</span><span></span>
+      <span>Move</span><span style="text-align:center">#</span><span>Operation Name</span><span>Machine</span><span>Setup(min)</span><span>Work(min)</span><span style="text-align:center">Opt</span><span></span>
     </div>
     <div id="opsContainer"></div>
     <div id="opsEmpty" style="${routingOps.length?'display:none':''}color:var(--muted);font-size:12px;padding:8px 0">No operations yet. Click "+ Add Step".</div>`,
@@ -2087,22 +2354,26 @@ function renderOpRows(){
       <span class="op-ed-seq">${i+1}</span>
       <input id="oped_name_${i}" value="${op.name||''}" placeholder="e.g. Facing">
       <select id="oped_wc_${i}">${buildMachineOpts(op.work_center_id)}</select>
-      <input type="number" id="oped_setup_${i}" value="${op.setup_time_mins??0}" min="0" step="5">
-      <input type="number" id="oped_work_${i}" value="${op.work_time_hrs??0}" min="0" step="0.5">
+      <input type="number" id="oped_setup_${i}" value="${op.setup_time_mins??0}" min="0" step="5" title="Setup time in minutes">
+      <input type="number" id="oped_work_${i}" value="${op.work_time_mins!=null?Math.round(op.work_time_mins):Math.round((op.work_time_hrs||0)*60)}" min="0" step="10" title="Work time in minutes">
       <input type="checkbox" id="oped_opt_${i}" ${op.is_optional?'checked':''} style="width:14px;height:14px;accent-color:var(--accent);margin:auto;display:block">
       <button class="op-rm" onclick="removeOp(${i})" title="Remove">✕</button>
     </div>`).join('');
 }
 
 function syncRoutingOps(){
-  routingOps=routingOps.map((op,i)=>({
-    ...op,
-    name:document.getElementById(`oped_name_${i}`)?.value?.trim()||op.name,
-    work_center_id:parseInt(document.getElementById(`oped_wc_${i}`)?.value)||op.work_center_id,
-    setup_time_mins:parseFloat(document.getElementById(`oped_setup_${i}`)?.value)||0,
-    work_time_hrs:parseFloat(document.getElementById(`oped_work_${i}`)?.value)||0,
-    is_optional:!!document.getElementById(`oped_opt_${i}`)?.checked,
-  }));
+  routingOps=routingOps.map((op,i)=>{
+    const wMins=parseFloat(document.getElementById(`oped_work_${i}`)?.value)||0;
+    return {
+      ...op,
+      name:document.getElementById(`oped_name_${i}`)?.value?.trim()||op.name,
+      work_center_id:parseInt(document.getElementById(`oped_wc_${i}`)?.value)||op.work_center_id,
+      setup_time_mins:parseFloat(document.getElementById(`oped_setup_${i}`)?.value)||0,
+      work_time_mins:wMins,
+      work_time_hrs:wMins/60,
+      is_optional:!!document.getElementById(`oped_opt_${i}`)?.checked,
+    };
+  });
 }
 
 function moveOp(i,dir){
@@ -2112,7 +2383,7 @@ function moveOp(i,dir){
   [routingOps[i],routingOps[j]]=[routingOps[j],routingOps[i]];
   renderOpRows();
 }
-function addOpRow(){syncRoutingOps();routingOps.push({name:'',work_center_id:allMachines[0]?.id,setup_time_mins:0,work_time_hrs:0,is_optional:false});renderOpRows();}
+function addOpRow(){syncRoutingOps();routingOps.push({name:'',work_center_id:allMachines[0]?.id,setup_time_mins:0,work_time_mins:0,work_time_hrs:0,is_optional:false});renderOpRows();}
 function removeOp(i){syncRoutingOps();routingOps.splice(i,1);renderOpRows();}
 
 async function saveRouting(editId){
@@ -2794,7 +3065,7 @@ function renderReportsContent(r){
       <div class="stat-card">
         <div class="stat-label">Revenue (Last 30 Days)</div>
         <div class="stat-value" style="color:var(--green);font-size:22px">${fmtINR(t.recent_revenue_30d)}</div>
-        <div class="stat-sub">${fmtINR(t.completed_revenue)} all-time</div>
+        <div class="stat-sub">${fmtINR(t.total_revenue)} all-time</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">On-Time Rate</div>
@@ -3169,6 +3440,21 @@ async function renderSettings(){
   const opt=(value,label,current)=>`<button type="button" class="pref-opt ${current===value?'active':''}" data-value="${value}">${label}</button>`;
   document.getElementById('content').innerHTML=`
     <div style="max-width:760px;display:flex;flex-direction:column;gap:18px">
+      <div class="card">
+        <div class="card-hdr"><div class="card-title">Time Display</div></div>
+        <div class="card-body">
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-label">Work time unit</div>
+              <div class="pref-help">How to display setup and work durations. Minutes is clearer on shop floor (e.g. 90min). Hours suits office use (e.g. 1.5h). Both units use minutes as the base — no data is changed.</div>
+            </div>
+            <div class="pref-opts" data-pref="timeUnit">
+              ${opt('minutes','Minutes',p.timeUnit||'minutes')}
+              ${opt('hours','Hours',p.timeUnit||'minutes')}
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="card">
         <div class="card-hdr"><div class="card-title">Appearance</div></div>
         <div class="card-body">

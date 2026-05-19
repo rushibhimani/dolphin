@@ -1,0 +1,602 @@
+<!-- ═══════════════════════════════════════════════════════════════════════════════
+     PHASE 1: HTML COMPONENTS & MODALS
+     Add these sections to index.html appropriately
+     ═════════════════════════════════════════════════════════════════════════════ -->
+
+<!-- ADD TO NAVIGATION (Top Button Bar) -->
+<button onclick="showPage('preferences')" class="nav-btn">⚙️ Preferences</button>
+<button onclick="showPage('future-tasks')" class="nav-btn">📅 Future Tasks</button>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════
+     TODAY'S WORK PAGE - ENHANCED WITH FILTERS
+     Replace existing "Today's Work" section with this
+     ═════════════════════════════════════════════════════════════════════════════ -->
+
+<div id="today-page" class="page" style="display:none;">
+  <h1>Today's Work</h1>
+  
+  <!-- Phase 1: Status Filter Buttons -->
+  <div class="filter-buttons" style="margin-bottom: 15px;">
+    <button onclick="setTodayFilter('all')" class="filter-btn active">All Operations</button>
+    <button onclick="setTodayFilter('active')" class="filter-btn">Active Only</button>
+    <button onclick="setTodayFilter('paused')" class="filter-btn">Paused</button>
+    <button onclick="setTodayFilter('completed')" class="filter-btn">Completed</button>
+  </div>
+
+  <table class="ops-table">
+    <thead>
+      <tr>
+        <th>Job</th>
+        <th>Operation</th>
+        <th>Machine</th>
+        <th>Worker</th>
+        <th>Work Time</th>
+        <th>Status</th>
+        <th>Pause Reason</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="today-ops-body">
+      <!-- Populated by loadTodayWithPaused() -->
+    </tbody>
+  </table>
+
+  <button onclick="loadTodayWithPaused(todayFilter)" class="btn-refresh">🔄 Refresh</button>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════
+     OPERATION START MODAL - Phase 1 ENHANCED
+     ═════════════════════════════════════════════════════════════════════════════ -->
+
+<div id="start-op-modal" class="modal" style="display:none;">
+  <div class="modal-content">
+    <span class="close" onclick="document.getElementById('start-op-modal').style.display='none'">&times;</span>
+    <h2>Start Operation</h2>
+    
+    <form onsubmit="startOp(document.getElementById('start-op-modal').dataset.opId); return false;">
+      <label>Scheduled Start Time:</label>
+      <input type="datetime-local" id="scheduled-start-display" disabled>
+      
+      <label>Actual Start Time:</label>
+      <input type="datetime-local" id="actual-start-time" required>
+      <button type="button" onclick="document.getElementById('actual-start-time').value = new Date().toISOString().slice(0,16)">
+        Set to Now
+      </button>
+      
+      <label>
+        <input type="checkbox" id="start-early-checkbox">
+        Start Earlier than Scheduled (Override)
+      </label>
+      
+      <button type="submit" class="btn-success">Start Operation</button>
+      <button type="button" onclick="document.getElementById('start-op-modal').style.display='none'">Cancel</button>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════
+     OPERATION PAUSE MODAL - Phase 1 WITH REASON & NOTES
+     ═════════════════════════════════════════════════════════════════════════════ -->
+
+<div id="pause-op-modal" class="modal" style="display:none;">
+  <div class="modal-content">
+    <span class="close" onclick="document.getElementById('pause-op-modal').style.display='none'">&times;</span>
+    <h2>Pause Operation</h2>
+    
+    <form onsubmit="pauseOp(document.getElementById('pause-op-modal').dataset.opId); return false;">
+      <label>Pause Reason:</label>
+      <select id="pause-reason" required>
+        <option value="">-- Select Reason --</option>
+        <option value="waiting_material">Waiting for Material</option>
+        <option value="machine_down">Machine Breakdown</option>
+        <option value="worker_absent">Worker Absent</option>
+        <option value="rework">Rework Required</option>
+        <option value="other">Other</option>
+      </select>
+      
+      <label>Notes:</label>
+      <textarea id="pause-notes" placeholder="Additional details about pause..." rows="4"></textarea>
+      
+      <button type="submit" class="btn-warning">Pause Operation</button>
+      <button type="button" onclick="document.getElementById('pause-op-modal').style.display='none'">Cancel</button>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════
+     OPERATION COMPLETE MODAL - Phase 1 WITH ACTUAL TIMES
+     ═════════════════════════════════════════════════════════════════════════════ -->
+
+<div id="complete-op-modal" class="modal" style="display:none;">
+  <div class="modal-content">
+    <span class="close" onclick="document.getElementById('complete-op-modal').style.display='none'">&times;</span>
+    <h2>Complete Operation</h2>
+    
+    <form onsubmit="completeOp(document.getElementById('complete-op-modal').dataset.opId); return false;">
+      <label>Actual Start Time:</label>
+      <input type="datetime-local" id="actual-start-time-complete" required>
+      
+      <label>Actual End Time:</label>
+      <input type="datetime-local" id="actual-end-time" required>
+      <button type="button" onclick="document.getElementById('actual-end-time').value = new Date().toISOString().slice(0,16)">
+        Set to Now
+      </button>
+      
+      <button type="submit" class="btn-success">Complete Operation</button>
+      <button type="button" onclick="document.getElementById('complete-op-modal').style.display='none'">Cancel</button>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════
+     JOB CREATION MODAL - Phase 1 ENHANCED WITH ROUTING EDITING
+     ═════════════════════════════════════════════════════════════════════════════ -->
+
+<div id="job-modal" class="modal" style="display:none;">
+  <div class="modal-content">
+    <span class="close" onclick="document.getElementById('job-modal').style.display='none'">&times;</span>
+    <h2>Create Job</h2>
+    
+    <form onsubmit="submitJobWithRouting(); return false;">
+      <!-- Existing fields -->
+      <label>Customer:</label>
+      <input type="text" id="customer-name" required>
+      
+      <label>Product Type:</label>
+      <input type="text" id="product-type" required>
+      
+      <label>Product Size:</label>
+      <input type="text" id="product-size">
+      
+      <label>Due Date:</label>
+      <input type="datetime-local" id="due-date" required>
+      
+      <label>Total Price (₹):</label>
+      <input type="number" id="total-price" step="0.01">
+      
+      <!-- Phase 1: Routing Selection & Editing -->
+      <label>Routing Template:</label>
+      <select id="routing-select" onchange="handleRoutingChange()">
+        <option value="">-- Select Routing or Create Inline --</option>
+        <!-- Populated from API -->
+      </select>
+      
+      <!-- Phase 1: Edit Operations Section -->
+      <div id="edit-operations-div" style="display:none; margin-top: 20px; border: 1px solid #666; padding: 10px;">
+        <h3>Edit Operations</h3>
+        <table class="ops-edit-table">
+          <thead>
+            <tr>
+              <th>Operation</th>
+              <th>Machine Setup (mins)</th>
+              <th>Job Setup (mins)</th>
+              <th>Work Time (mins)</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="edit-ops-table-body">
+            <!-- Populated by renderEditingOperations() -->
+          </tbody>
+        </table>
+        <button type="button" onclick="editingOperations.push({}); renderEditingOperations()">
+          + Add Operation
+        </button>
+      </div>
+      
+      <!-- Phase 1: Save as New Routing -->
+      <div style="margin-top: 15px; padding: 10px; background: #333; border-radius: 4px;">
+        <label>
+          <input type="checkbox" id="save-routing-checkbox" onchange="toggleSaveAsRouting()">
+          Save Operations as New Routing Template
+        </label>
+        <div id="save-routing-details" style="display:none; margin-top: 10px;">
+          <label>Routing Name:</label>
+          <input type="text" id="routing-name" placeholder="e.g., Punch-Custom-2026-05-19">
+        </div>
+      </div>
+      
+      <button type="submit" class="btn-success">Create Job</button>
+      <button type="button" onclick="document.getElementById('job-modal').style.display='none'">Cancel</button>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════
+     FUTURE TASKS PAGE - NEW (Phase 1)
+     ═════════════════════════════════════════════════════════════════════════════ -->
+
+<div id="future-tasks-page" class="page" style="display:none;">
+  <h1>Future Tasks Schedule</h1>
+  
+  <!-- Tabs for 7-day / 30-day -->
+  <div class="tabs" style="margin-bottom: 15px;">
+    <button onclick="loadFutureTasks(7)" class="tab-btn active">Next 7 Days</button>
+    <button onclick="loadFutureTasks(30)" class="tab-btn">Next 30 Days</button>
+  </div>
+  
+  <!-- View Selector -->
+  <div style="margin-bottom: 15px;">
+    <label>View by:</label>
+    <button onclick="loadFutureGantt('machine', futureTasksDays)">By Machine</button>
+    <button onclick="loadFutureGantt('worker', futureTasksDays)">By Worker</button>
+    <button onclick="loadFutureGantt('job', futureTasksDays)">By Job</button>
+  </div>
+  
+  <!-- Table View -->
+  <h3>Scheduled Operations</h3>
+  <table class="ops-table">
+    <thead>
+      <tr>
+        <th>Job</th>
+        <th>Operation</th>
+        <th>Machine</th>
+        <th>Worker</th>
+        <th>Work Time</th>
+        <th>Start</th>
+        <th>End</th>
+        <th>Due Date</th>
+      </tr>
+    </thead>
+    <tbody id="future-tasks-body">
+      <!-- Populated by loadFutureTasks() -->
+    </tbody>
+  </table>
+  
+  <!-- Gantt View -->
+  <h3 style="margin-top: 30px;">Gantt Timeline</h3>
+  <div id="future-gantt-container">
+    <!-- Populated by loadFutureGantt() -->
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════
+     PREFERENCES PAGE - NEW (Phase 1)
+     ═════════════════════════════════════════════════════════════════════════════ -->
+
+<div id="preferences-page" class="page" style="display:none;">
+  <h1>Preferences</h1>
+  
+  <div class="preference-section">
+    <h2>Time Display Unit</h2>
+    <p>Choose how times are displayed throughout the application:</p>
+    
+    <div class="radio-group">
+      <label>
+        <input type="radio" name="time-unit" value="minutes" data-unit-option 
+               onchange="handleTimeUnitChange(event)">
+        <strong>Minutes</strong> — Display as "120 mins"
+      </label>
+      
+      <label>
+        <input type="radio" name="time-unit" value="hours" data-unit-option
+               onchange="handleTimeUnitChange(event)">
+        <strong>Hours</strong> — Display as "2.0 hrs"
+      </label>
+      
+      <label>
+        <input type="radio" name="time-unit" value="hours_minutes" data-unit-option
+               onchange="handleTimeUnitChange(event)">
+        <strong>Hours:Minutes</strong> — Display as "2:00 hrs"
+      </label>
+    </div>
+  </div>
+  
+  <div class="preference-section" style="margin-top: 30px;">
+    <h2>Input Format</h2>
+    <p>When entering times, you can use any format:</p>
+    <ul>
+      <li>Minutes: <code>120</code></li>
+      <li>Hours: <code>2</code> or <code>2.5</code></li>
+      <li>Hours:Minutes: <code>2:30</code></li>
+    </ul>
+    <p>The system will automatically convert to minutes for storage.</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════
+     CSS ADDITIONS FOR PHASE 1
+     Add to existing <style> section in index.html
+     ═════════════════════════════════════════════════════════════════════════════ -->
+
+<style>
+/* Filter Buttons */
+.filter-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  padding: 8px 16px;
+  background: #555;
+  border: 1px solid #777;
+  color: #fff;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.filter-btn:hover {
+  background: #666;
+}
+
+.filter-btn.active {
+  background: #d4a374;
+  border-color: #d4a374;
+  color: #000;
+  font-weight: bold;
+}
+
+/* Status Colors */
+.amber-bg {
+  background: #ff9800;
+  color: #000;
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-weight: bold;
+  display: inline-block;
+}
+
+.green-bg {
+  background: #4caf50;
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.red-bg {
+  background: #f44336;
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.blue-bg {
+  background: #2196f3;
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+/* Operations Table */
+.ops-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 15px 0;
+  background: #222;
+  border: 1px solid #555;
+}
+
+.ops-table th {
+  background: #444;
+  padding: 10px;
+  text-align: left;
+  border-bottom: 2px solid #666;
+}
+
+.ops-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #444;
+}
+
+.ops-table tr:hover {
+  background: #333;
+}
+
+.pause-col {
+  color: #ff9800;
+  font-weight: bold;
+}
+
+/* Modals */
+.modal {
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0,0,0,0.8);
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-content {
+  background: #1a1a1a;
+  padding: 30px;
+  border: 1px solid #555;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+
+.modal-content h2 {
+  margin-top: 0;
+  color: #d4a374;
+}
+
+.modal-content form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.modal-content label {
+  font-weight: bold;
+  color: #ddd;
+}
+
+.modal-content input[type="text"],
+.modal-content input[type="number"],
+.modal-content input[type="datetime-local"],
+.modal-content select,
+.modal-content textarea {
+  padding: 8px;
+  background: #333;
+  border: 1px solid #555;
+  color: #fff;
+  border-radius: 4px;
+  font-family: inherit;
+}
+
+.modal-content button {
+  padding: 10px 15px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.2s;
+}
+
+.btn-success {
+  background: #4caf50;
+  color: #fff;
+}
+
+.btn-success:hover {
+  background: #45a049;
+}
+
+.btn-warning {
+  background: #ff9800;
+  color: #000;
+}
+
+.btn-warning:hover {
+  background: #e68900;
+}
+
+.close {
+  position: absolute;
+  right: 15px;
+  top: 10px;
+  font-size: 28px;
+  font-weight: bold;
+  color: #aaa;
+  cursor: pointer;
+}
+
+.close:hover {
+  color: #fff;
+}
+
+/* Preference Section */
+.preference-section {
+  background: #222;
+  padding: 20px;
+  border-radius: 4px;
+  border: 1px solid #555;
+  margin-bottom: 20px;
+}
+
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.radio-group label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  color: #ddd;
+}
+
+.radio-group input[type="radio"] {
+  cursor: pointer;
+}
+
+/* Operations Edit Table */
+.ops-edit-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #222;
+  border: 1px solid #555;
+}
+
+.ops-edit-table th {
+  background: #333;
+  padding: 8px;
+  text-align: left;
+  border-bottom: 1px solid #555;
+}
+
+.ops-edit-table td {
+  padding: 8px;
+  border-bottom: 1px solid #444;
+}
+
+.ops-edit-table input {
+  width: 100%;
+  padding: 4px;
+  background: #333;
+  border: 1px solid #555;
+  color: #fff;
+}
+
+/* Gantt Section */
+.gantt-section {
+  margin-bottom: 20px;
+  background: #222;
+  padding: 15px;
+  border-radius: 4px;
+  border: 1px solid #555;
+}
+
+.gantt-section h4 {
+  margin-top: 0;
+  color: #d4a374;
+}
+
+.gantt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.gantt-table th {
+  background: #333;
+  padding: 6px;
+  text-align: left;
+}
+
+.gantt-table td {
+  padding: 6px;
+  border-bottom: 1px solid #444;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 10px;
+}
+
+.tab-btn {
+  padding: 8px 16px;
+  background: #555;
+  border: 1px solid #777;
+  color: #fff;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.tab-btn:hover {
+  background: #666;
+}
+
+.tab-btn.active {
+  background: #d4a374;
+  border-color: #d4a374;
+  color: #000;
+  font-weight: bold;
+}
+</style>

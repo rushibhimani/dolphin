@@ -97,6 +97,7 @@ class Operation(Base):
     machine_setup_mins = Column(Float, default=0)   # waived for consecutive same-worker ops
     job_setup_mins     = Column(Float, default=0)   # always required per job
     work_time_hrs      = Column(Float, default=0)
+    work_time_mins     = Column(Float, default=0)   # canonical — always = work_time_hrs * 60
     is_optional        = Column(Boolean, default=False)
     setup_time_mins    = Column(Float, default=0)   # legacy = machine + job
     routing            = relationship("Routing", back_populates="operations")
@@ -184,11 +185,14 @@ class ScheduledOp(Base):
     setup_time_mins      = Column(Float, default=0)
     machine_setup_waived = Column(Boolean, default=False)
     work_time_hrs        = Column(Float, default=0)
+    work_time_mins       = Column(Float, default=0)   # canonical — always = work_time_hrs * 60
     scheduled_start      = Column(DateTime, nullable=True)
     scheduled_end        = Column(DateTime, nullable=True)
     actual_start         = Column(DateTime, nullable=True)
     actual_end           = Column(DateTime, nullable=True)
     status               = Column(String, default="pending")
+    pause_reason         = Column(String, nullable=True)   # waiting_material, machine_down, worker_absent, rework, other
+    pause_notes          = Column(Text, nullable=True)
     job                  = relationship("Job", back_populates="scheduled_ops")
     worker               = relationship("Worker", back_populates="scheduled_ops")
 
