@@ -2506,6 +2506,7 @@ async function renderMachines(){
             </td>
             <td style="padding:9px 6px">
               ${m.is_bottleneck?'<span class="badge badge-bottleneck">BN</span>':''}
+              ${m.preferred_worker_name?`<div style="font-size:10px;color:var(--accent);margin-top:2px;font-weight:600">⭐ ${m.preferred_worker_name}</div>`:''}
               ${m.skilled_worker_names&&m.skilled_worker_names.length?`<div style="font-size:10px;color:var(--muted);margin-top:2px">${m.skilled_worker_names.slice(0,2).join(', ')}${m.skilled_worker_names.length>2?' +'+( m.skilled_worker_names.length-2):''}</div>`:'<span style="color:var(--red);font-size:10px">No workers</span>'}
             </td>
             <td style="padding:9px 14px 9px 0">
@@ -2522,6 +2523,14 @@ async function renderMachines(){
 }
 
 function openMachineModal(m){
+  // Build skilled worker options for preferred worker dropdown
+  // If editing, use the machine's skilled_worker_ids; otherwise show all active workers
+  const skilledIds = new Set(m?.skilled_worker_ids || []);
+  const workerOpts = allWorkers
+    .filter(w => w.is_active && (!m || skilledIds.has(w.id)))
+    .map(w=>`<option value="${w.id}" ${m?.preferred_worker_id==w.id?'selected':''}>${w.name} (${w.role||'Operator'})</option>`)
+    .join('');
+
   showModal(m?'Edit Machine':'Add Machine',
     `<div class="form-row cols-2">
       <div class="form-group"><div class="fld-label">Machine Name <span style="color:var(--red)">*</span></div>
@@ -2558,10 +2567,17 @@ function openMachineModal(m){
     </div>
     <div class="form-row cols-2">
       <div class="form-group">
-        <div class="fld-label">Continuity Window (hours) <span style="font-size:10px;color:var(--muted);font-weight:400">— keep same worker on this machine if gap is less than this</span></div>
+        <div class="fld-label">Preferred Worker <span style="font-size:10px;color:var(--muted);font-weight:400">— scheduler tries this worker first on this machine</span></div>
+        <select id="m_preferred_worker">
+          <option value="">— None (use scoring) —</option>
+          ${workerOpts}
+        </select>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Also used for order piece consistency — all pieces try the same worker per machine</div>
+      </div>
+      <div class="form-group">
+        <div class="fld-label">Continuity Window (hours) <span style="font-size:10px;color:var(--muted);font-weight:400">— keep same worker on this machine if gap &lt; this</span></div>
         <input type="number" id="m_continuity" min="0" max="12" step="0.5" value="${m?.continuity_hours??2}">
       </div>
-      <div></div>
     </div>
     <div class="form-row cols-1">
       <label class="checkbox-row"><input type="checkbox" id="m_bot" ${m?.is_bottleneck?'checked':''}>⚠ Mark as Bottleneck (capacity constrained)</label>
@@ -2576,6 +2592,7 @@ function openMachineModal(m){
 
 async function saveMachine(editId){
   if(!validateAll(['m_name'])){toast('Fix highlighted fields','error');return;}
+  const pwVal = document.getElementById('m_preferred_worker')?.value;
   const data={
     name:document.getElementById('m_name').value.trim(),
     machine_type:document.getElementById('m_type').value,
@@ -2583,6 +2600,7 @@ async function saveMachine(editId){
     status:document.getElementById('m_status')?.value||'active',
     skill_level:parseInt(document.getElementById('m_skill_level')?.value||'1'),
     continuity_hours:parseFloat(document.getElementById('m_continuity')?.value||'2'),
+    preferred_worker_id: pwVal ? parseInt(pwVal) : null,
   };
   setLoading('saveMachineBtn',true);
   try{

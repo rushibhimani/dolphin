@@ -30,6 +30,7 @@ class WorkCenter(Base):
     continuity_hours         = Column(Float, default=2.0)
     continuity_threshold_hrs = Column(Float, default=2.0)
     skill_level              = Column(Integer, default=1)
+    preferred_worker_id      = Column(Integer, nullable=True)   # FK to workers.id (soft ref — avoids circular)
     skilled_workers          = relationship("Worker", secondary=worker_skills, back_populates="skills")
 
 

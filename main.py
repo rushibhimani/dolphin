@@ -190,7 +190,13 @@ def is_worker_available(db, worker_id, start, end):
     ).first()
     return conflict is None
 
-def find_qualified_workers(db, work_center_id, for_start=None):
+def find_qualified_workers(db, work_center_id, for_start=None, preferred_worker_id=None):
+    """
+    Return qualified workers sorted by priority:
+    1. Preferred worker (if set on machine and available and qualified)
+    2. Order-affinity worker (passed in as preferred_worker_id)
+    3. Scoring: skill match + load balance + continuity bonus
+    """
     wc = db.query(WorkCenter).filter(WorkCenter.id == work_center_id).first()
     if not wc:
         return []
@@ -203,8 +209,17 @@ def find_qualified_workers(db, work_center_id, for_start=None):
     today_end   = datetime(now.year, now.month, now.day, 23, 59)
     shift_hours = 10.0
 
+    # Build lookup by id
+    qual_ids = {w.id: w for w in qualified}
+
+    # Determine priority worker: affinity first, then machine preferred_worker
+    priority_id = preferred_worker_id or getattr(wc, 'preferred_worker_id', None)
+
     def worker_score(w):
         wl = getattr(w, 'skill_level', 1) or 1
+        # Priority worker gets a massive bonus — goes to front of queue
+        if priority_id and w.id == priority_id:
+            return -1000
         if machine_level >= 3:
             skill_score = (3 - wl) * 30
         elif machine_level == 2:
@@ -239,6 +254,29 @@ def find_qualified_workers(db, work_center_id, for_start=None):
     qualified.sort(key=worker_score)
     return qualified
 
+
+def get_order_affinity_worker(db, job, work_center_id, op_sequence):
+    """
+    For piece 2+ of an order: find which worker did the same op (same sequence)
+    on piece 1 of the same order.  Returns worker_id or None.
+    """
+    if not job.order_id or not job.piece_number or job.piece_number <= 1:
+        return None
+    # Find piece 1 of this order
+    piece1 = db.query(Job).filter(
+        Job.order_id == job.order_id,
+        Job.piece_number == 1
+    ).first()
+    if not piece1:
+        return None
+    # Find the scheduled op on piece1 at the same sequence on the same machine
+    op1 = db.query(ScheduledOp).filter(
+        ScheduledOp.job_id == piece1.id,
+        ScheduledOp.work_center_id == work_center_id,
+        ScheduledOp.sequence == op_sequence,
+    ).first()
+    return op1.worker_id if op1 and op1.worker_id else None
+
 def should_waive_machine_setup(db, worker_id, work_center_id, start_time):
     if not worker_id:
         return False
@@ -256,19 +294,17 @@ def should_waive_machine_setup(db, worker_id, work_center_id, start_time):
     return gap < threshold
 
 def find_next_slot_with_worker(db, work_center_id, total_duration_hrs,
-                                job_setup_hrs, machine_setup_hrs, start_after):
+                                job_setup_hrs, machine_setup_hrs, start_after,
+                                preferred_worker_id=None):
     """
     Returns (start, end, worker, waived).
-    BUG-FIX #1 — was returning 3 values; now correctly returns 4.
-    BUG-FIX #2 — setup waiving actually shortens the scheduled duration.
-    BUG-FIX #9 — fallback raises ValueError instead of silently creating
-                 a phantom overlapping op.
+    preferred_worker_id: order-affinity or machine-preferred worker to try first.
     """
     wc = db.query(WorkCenter).filter(WorkCenter.id == work_center_id).first()
     if wc and getattr(wc, 'status', 'active') not in ('active', None, ''):
         raise ValueError(f"Machine '{wc.name}' is {wc.status}")
 
-    qualified = find_qualified_workers(db, work_center_id, start_after)
+    qualified = find_qualified_workers(db, work_center_id, start_after, preferred_worker_id)
     search_start = snap_to_shift(start_after)
     search_limit = search_start + timedelta(days=90)
 
@@ -580,6 +616,10 @@ def _do_schedule(db, j):
         wc = db.query(WorkCenter).filter(WorkCenter.id == op["work_center_id"]).first()
         wc_name = wc.name if wc else str(op["work_center_id"])
 
+        # Order affinity: use same worker as piece 1 for this machine+sequence
+        seq = ops.index(op) + 1
+        affinity_worker_id = get_order_affinity_worker(db, j, op["work_center_id"], seq)
+
         try:
             start, end, worker, waived = find_next_slot_with_worker(
                 db,
@@ -587,7 +627,8 @@ def _do_schedule(db, j):
                 total_hrs,
                 j_setup_hrs,
                 m_setup_hrs,
-                current_start
+                current_start,
+                preferred_worker_id=affinity_worker_id,
             )
         except ValueError as e:
             # BUG-FIX #5: advance current_start even when machine blocked
@@ -672,11 +713,16 @@ def health(): return {"status": "ok", "time_ist": now_ist().isoformat()}
 def list_wc():
     db = SessionLocal()
     wcs = db.query(WorkCenter).order_by(WorkCenter.machine_type, WorkCenter.name).all()
+    # Build worker lookup for preferred worker names
+    all_workers = {w.id: w.name for w in db.query(Worker).all()}
     result = [{"id": w.id, "name": w.name, "machine_type": w.machine_type,
                "is_bottleneck": w.is_bottleneck,
                "code": w.code or "",
                "status": w.status or "active",
                "skill_level": w.skill_level or 1,
+               "continuity_hours": w.continuity_hours or 2.0,
+               "preferred_worker_id": w.preferred_worker_id,
+               "preferred_worker_name": all_workers.get(w.preferred_worker_id) if w.preferred_worker_id else None,
                "skilled_worker_ids":   [sw.id   for sw in w.skilled_workers],
                "skilled_worker_names": [sw.name for sw in w.skilled_workers if sw.is_active]}
               for w in wcs]
@@ -713,9 +759,18 @@ def update_wc(wc_id: int, data: dict):
     if "status" in data: wc.status = data["status"]
     if "skill_level" in data: wc.skill_level = int(data["skill_level"])
     if "continuity_hours" in data: wc.continuity_hours = float(data["continuity_hours"])
+    if "preferred_worker_id" in data:
+        pw = data["preferred_worker_id"]
+        wc.preferred_worker_id = int(pw) if pw else None
     db.commit(); db.refresh(wc)
+    pw_name = None
+    if wc.preferred_worker_id:
+        pw = db.query(Worker).filter(Worker.id == wc.preferred_worker_id).first()
+        pw_name = pw.name if pw else None
     r = {"id": wc.id, "name": wc.name, "machine_type": wc.machine_type,
          "is_bottleneck": wc.is_bottleneck,
+         "preferred_worker_id": wc.preferred_worker_id,
+         "preferred_worker_name": pw_name,
          "skilled_worker_ids":   [sw.id   for sw in wc.skilled_workers],
          "skilled_worker_names": [sw.name for sw in wc.skilled_workers]}
     db.close(); return r
@@ -1653,8 +1708,11 @@ def schedule_all():
     db = SessionLocal()
     # BUG-FIX #7: include ALL pending/scheduled jobs (including partially-done)
     jobs = db.query(Job).filter(Job.status.in_(["pending","scheduled"])).all()
-    # Sort by CR — most urgent first
-    jobs.sort(key=lambda j: critical_ratio(j, db))
+    # Sort by CR (most urgent first), then by order_id+piece_number so piece 1 always before piece 2
+    def sort_key(j):
+        cr = critical_ratio(j, db)
+        return (cr, j.order_id or 0, j.piece_number or 0)
+    jobs.sort(key=sort_key)
     count = unassigned = skipped = preempted = 0
     for j in jobs:
         if not j.routing_id and not j.inline_ops:
