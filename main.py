@@ -1,3 +1,4 @@
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -70,31 +71,82 @@ def next_order_number(db):
     return f"ORD-{year}-{counter.seq:03d}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SHIFT HELPERS  (all times IST-naive)
+# SHIFT SETTINGS  — stored in shift_settings.json, editable from Settings page
 # ─────────────────────────────────────────────────────────────────────────────
-# BUG-FIX #11 — Sundays (weekday 6) and public holidays were treated as
-# full working days.  Now Sunday returns a zero-length shift so
-# add_working_hours / snap_to_shift skip over them automatically.
-# Holidays can be added to HOLIDAY_DATES set if needed.
 
-HOLIDAY_DATES: set = set()   # add date(year,month,day) objects here
+SHIFT_SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "shift_settings.json")
+
+DAYS = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+
+DEFAULT_SHIFT_SETTINGS = {
+    "monday":    {"working": True,  "start": "08:00", "end": "20:00", "lunch_start": "12:00", "lunch_end": "14:00"},
+    "tuesday":   {"working": True,  "start": "08:00", "end": "20:00", "lunch_start": "12:00", "lunch_end": "14:00"},
+    "wednesday": {"working": True,  "start": "08:00", "end": "14:00", "lunch_start": "12:00", "lunch_end": "14:00"},
+    "thursday":  {"working": True,  "start": "08:00", "end": "20:00", "lunch_start": "12:00", "lunch_end": "14:00"},
+    "friday":    {"working": True,  "start": "08:00", "end": "20:00", "lunch_start": "12:00", "lunch_end": "14:00"},
+    "saturday":  {"working": False, "start": "08:00", "end": "20:00", "lunch_start": "12:00", "lunch_end": "14:00"},
+    "sunday":    {"working": False, "start": "08:00", "end": "20:00", "lunch_start": None,    "lunch_end": None},
+}
+
+_shift_cache: dict = {}
+
+def load_shift_settings() -> dict:
+    global _shift_cache
+    if _shift_cache:
+        return _shift_cache
+    try:
+        if os.path.exists(SHIFT_SETTINGS_FILE):
+            with open(SHIFT_SETTINGS_FILE, "r") as f:
+                loaded = json.load(f)
+            # Merge with defaults so new keys are always present
+            merged = {d: {**DEFAULT_SHIFT_SETTINGS[d], **loaded.get(d, {})} for d in DAYS}
+            _shift_cache = merged
+            return merged
+    except Exception:
+        pass
+    _shift_cache = DEFAULT_SHIFT_SETTINGS.copy()
+    return _shift_cache
+
+def save_shift_settings(data: dict):
+    global _shift_cache
+    _shift_cache = {}  # clear cache so next call reloads
+    with open(SHIFT_SETTINGS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def _parse_time(d: date, t: str | None) -> datetime | None:
+    if not t: return None
+    h, m = map(int, t.split(":"))
+    return datetime(d.year, d.month, d.day, h, m)
+
+HOLIDAY_DATES: set = set()
 
 def get_shift(d):
     """Return (shift_start, shift_end, lunch_start, lunch_end) for date d.
-    Returns a zero-length window (shift_start == shift_end) on non-working days
-    so all callers naturally skip them.
+    All values from shift_settings.json — fully configurable.
+    Returns zero-length window on non-working days so callers skip them.
     """
-    if d.weekday() == 6 or d in HOLIDAY_DATES:   # Sunday or public holiday
-        midnight = datetime(d.year, d.month, d.day, 0, 0)
-        return midnight, midnight, None, None      # zero-length — skip day
+    cfg = load_shift_settings()
+    day_name = DAYS[d.weekday()]   # 0=monday … 6=sunday
+    day_cfg  = cfg.get(day_name, DEFAULT_SHIFT_SETTINGS[day_name])
 
-    s = datetime(d.year, d.month, d.day, 8, 0)
-    if d.weekday() == 2:                           # Wednesday half-day
-        return s, datetime(d.year, d.month, d.day, 14, 0), None, None
-    return (s,
-            datetime(d.year, d.month, d.day, 20, 0),
-            datetime(d.year, d.month, d.day, 12, 0),
-            datetime(d.year, d.month, d.day, 14, 0))
+    if not day_cfg.get("working", True) or d in HOLIDAY_DATES:
+        midnight = datetime(d.year, d.month, d.day, 0, 0)
+        return midnight, midnight, None, None
+
+    shift_s = _parse_time(d, day_cfg.get("start", "08:00"))
+    shift_e = _parse_time(d, day_cfg.get("end",   "20:00"))
+    lunch_s = _parse_time(d, day_cfg.get("lunch_start"))
+    lunch_e = _parse_time(d, day_cfg.get("lunch_end"))
+
+    # If lunch window covers or exceeds shift end, ignore it
+    if lunch_s and lunch_e and lunch_s >= shift_e:
+        lunch_s = lunch_e = None
+    # Clamp lunch end to shift end
+    if lunch_e and lunch_e > shift_e:
+        lunch_e = shift_e
+
+    return shift_s, shift_e, lunch_s, lunch_e
+
 
 def next_shift_start(dt):
     d = dt.date() + timedelta(days=1)
@@ -751,6 +803,47 @@ def root(): return FileResponse("index.html")
 
 @app.get("/api/health")
 def health(): return {"status": "ok", "time_ist": now_ist().isoformat()}
+
+@app.get("/api/shift-settings")
+def get_shift_settings_endpoint():
+    s = load_shift_settings()
+    result = {}
+    for day in DAYS:
+        cfg = s[day]
+        if not cfg["working"]:
+            effective = 0.0
+        else:
+            sh, sm = map(int, (cfg.get("start","08:00")).split(":"))
+            eh, em = map(int, (cfg.get("end",  "20:00")).split(":"))
+            total = (eh*60+em) - (sh*60+sm)
+            ls, le = cfg.get("lunch_start"), cfg.get("lunch_end")
+            if ls and le:
+                lsh, lsm = map(int, ls.split(":"))
+                leh, lem = map(int, le.split(":"))
+                total -= max(0, (leh*60+lem) - (lsh*60+lsm))
+            effective = round(total / 60, 2)
+        result[day] = {**cfg, "effective_hours": effective}
+    return result
+
+@app.put("/api/shift-settings")
+def put_shift_settings(data: dict):
+    def parse_t(t):
+        if not t: return None
+        h, m = map(int, t.split(":")); return h*60+m
+    validated = {}
+    for day in DAYS:
+        cfg   = data.get(day, DEFAULT_SHIFT_SETTINGS[day])
+        working = bool(cfg.get("working", True))
+        start = cfg.get("start", "08:00"); end = cfg.get("end", "20:00")
+        ls = cfg.get("lunch_start") or None; le = cfg.get("lunch_end") or None
+        if (parse_t(end) or 1200) <= (parse_t(start) or 480):
+            raise HTTPException(400, f"{day}: end time must be after start time")
+        if ls and le and (parse_t(le) or 0) <= (parse_t(ls) or 0):
+            raise HTTPException(400, f"{day}: lunch end must be after lunch start")
+        validated[day] = {"working": working, "start": start, "end": end,
+                          "lunch_start": ls, "lunch_end": le}
+    save_shift_settings(validated)
+    return {"ok": True, "settings": validated}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WORK CENTERS

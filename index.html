@@ -3932,23 +3932,62 @@ document.getElementById('modalOverlay').addEventListener('click',function(e){if(
 
 // ── SETTINGS PAGE ──
 async function renderSettings(){
-  document.getElementById('topbarActions').innerHTML='';
+  document.getElementById('topbarActions').innerHTML=`<button class="btn btn-primary" onclick="saveShiftSettings()">💾 Save Working Hours</button>`;
   const p=getPrefs();
   const opt=(value,label,current)=>`<button type="button" class="pref-opt ${current===value?'active':''}" data-value="${value}">${label}</button>`;
+
+  let shifts={};
+  try{ shifts=await api('GET','/api/shift-settings'); }catch(e){}
+
+  const days=['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+  const dayLabels={monday:'Monday',tuesday:'Tuesday',wednesday:'Wednesday',thursday:'Thursday',friday:'Friday',saturday:'Saturday',sunday:'Sunday'};
+
+  function shiftRowHTML(day){
+    const s=shifts[day]||{working:true,start:'08:00',end:'20:00',lunch_start:'12:00',lunch_end:'14:00',effective_hours:0};
+    const eff=s.effective_hours||0;
+    const dis=!s.working?'disabled':'';
+    return `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:8px 10px;font-weight:500;min-width:100px">${dayLabels[day]}</td>
+      <td style="padding:8px 10px;text-align:center"><input type="checkbox" id="shift_working_${day}" ${s.working?'checked':''} onchange="onShiftChange('${day}')" style="width:16px;height:16px;accent-color:var(--accent)"></td>
+      <td style="padding:6px"><input type="time" id="shift_start_${day}" value="${s.start||'08:00'}" onchange="onShiftChange('${day}')" style="width:95px;font-size:12px" ${dis}></td>
+      <td style="padding:6px"><input type="time" id="shift_end_${day}" value="${s.end||'20:00'}" onchange="onShiftChange('${day}')" style="width:95px;font-size:12px" ${dis}></td>
+      <td style="padding:6px"><input type="time" id="shift_ls_${day}" value="${s.lunch_start||''}" onchange="onShiftChange('${day}')" style="width:95px;font-size:12px" ${dis} placeholder="none"></td>
+      <td style="padding:6px"><input type="time" id="shift_le_${day}" value="${s.lunch_end||''}" onchange="onShiftChange('${day}')" style="width:95px;font-size:12px" ${dis} placeholder="none"></td>
+      <td style="padding:8px 12px;text-align:right" id="shift_eff_${day}"><span style="font-family:var(--mono);font-size:13px;font-weight:600;color:${eff>0?'var(--accent)':'var(--muted)'}">${s.working?eff+'h':'—'}</span></td>
+    </tr>`;
+  }
+
   document.getElementById('content').innerHTML=`
-    <div style="max-width:760px;display:flex;flex-direction:column;gap:18px">
+    <div style="max-width:820px;display:flex;flex-direction:column;gap:18px">
+      <div class="card">
+        <div class="card-hdr">
+          <div class="card-title">Working Hours</div>
+          <div style="font-size:12px;color:var(--muted)">Shift times for each day. Scheduler uses these for all job planning and estimates.</div>
+        </div>
+        <div class="card-body" style="padding:0">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:var(--surface);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">
+              <th style="padding:8px 10px;text-align:left;font-weight:600">Day</th>
+              <th style="padding:8px 10px;text-align:center;font-weight:600">Working</th>
+              <th style="padding:8px 6px;text-align:left;font-weight:600">Shift Start</th>
+              <th style="padding:8px 6px;text-align:left;font-weight:600">Shift End</th>
+              <th style="padding:8px 6px;text-align:left;font-weight:600">Lunch Start</th>
+              <th style="padding:8px 6px;text-align:left;font-weight:600">Lunch End</th>
+              <th style="padding:8px 12px;text-align:right;font-weight:600">Net Hours</th>
+            </tr></thead>
+            <tbody>${days.map(shiftRowHTML).join('')}</tbody>
+          </table>
+          <div style="padding:10px 14px;background:var(--surface);border-top:1px solid var(--border);font-size:11px;color:var(--muted)">
+            💡 Net Hours = Shift End − Shift Start − Lunch Break. Leave Lunch Start/End blank for no lunch break. After saving, run <strong>Schedule All</strong> for new times to take effect.
+          </div>
+        </div>
+      </div>
       <div class="card">
         <div class="card-hdr"><div class="card-title">Time Display</div></div>
         <div class="card-body">
           <div class="pref-row">
-            <div class="pref-info">
-              <div class="pref-label">Work time unit</div>
-              <div class="pref-help">How to display setup and work durations. Minutes is clearer on shop floor (e.g. 90min). Hours suits office use (e.g. 1.5h). Both units use minutes as the base — no data is changed.</div>
-            </div>
-            <div class="pref-opts" data-pref="timeUnit">
-              ${opt('minutes','Minutes',p.timeUnit||'minutes')}
-              ${opt('hours','Hours',p.timeUnit||'minutes')}
-            </div>
+            <div class="pref-info"><div class="pref-label">Work time unit</div><div class="pref-help">How to display setup and work durations. Both use minutes as the base — no data is changed.</div></div>
+            <div class="pref-opts" data-pref="timeUnit">${opt('minutes','Minutes',p.timeUnit||'minutes')}${opt('hours','Hours',p.timeUnit||'minutes')}</div>
           </div>
         </div>
       </div>
@@ -3956,37 +3995,16 @@ async function renderSettings(){
         <div class="card-hdr"><div class="card-title">Appearance</div></div>
         <div class="card-body">
           <div class="pref-row">
-            <div class="pref-info">
-              <div class="pref-label">Theme</div>
-              <div class="pref-help">Light is easier on bright shop floors. Dark is easier on the eyes at night.</div>
-            </div>
-            <div class="pref-opts" data-pref="theme">
-              ${opt('light','Light',p.theme)}
-              ${opt('dark','Dark',p.theme)}
-            </div>
+            <div class="pref-info"><div class="pref-label">Theme</div><div class="pref-help">Light for bright shop floors. Dark for night use.</div></div>
+            <div class="pref-opts" data-pref="theme">${opt('light','Light',p.theme)}${opt('dark','Dark',p.theme)}</div>
           </div>
           <div class="pref-row">
-            <div class="pref-info">
-              <div class="pref-label">Font size</div>
-              <div class="pref-help">Bigger text is easier to read at arm's length on a shop monitor.</div>
-            </div>
-            <div class="pref-opts" data-pref="fontScale">
-              ${opt('small','Small',p.fontScale)}
-              ${opt('default','Default',p.fontScale)}
-              ${opt('large','Large',p.fontScale)}
-              ${opt('xlarge','Extra large',p.fontScale)}
-            </div>
+            <div class="pref-info"><div class="pref-label">Font size</div><div class="pref-help">Larger text for shop monitors at arm's length.</div></div>
+            <div class="pref-opts" data-pref="fontScale">${opt('small','Small',p.fontScale)}${opt('default','Default',p.fontScale)}${opt('large','Large',p.fontScale)}${opt('xlarge','Extra large',p.fontScale)}</div>
           </div>
           <div class="pref-row">
-            <div class="pref-info">
-              <div class="pref-label">Density</div>
-              <div class="pref-help">Compact shows more on screen. Spacious is easier to tap.</div>
-            </div>
-            <div class="pref-opts" data-pref="density">
-              ${opt('compact','Compact',p.density)}
-              ${opt('comfortable','Comfortable',p.density)}
-              ${opt('spacious','Spacious',p.density)}
-            </div>
+            <div class="pref-info"><div class="pref-label">Density</div><div class="pref-help">Compact shows more. Spacious is easier to tap.</div></div>
+            <div class="pref-opts" data-pref="density">${opt('compact','Compact',p.density)}${opt('comfortable','Comfortable',p.density)}${opt('spacious','Spacious',p.density)}</div>
           </div>
         </div>
       </div>
@@ -3994,26 +4012,61 @@ async function renderSettings(){
         <div class="card-hdr"><div class="card-title">About</div></div>
         <div class="card-body" style="color:var(--text-soft);line-height:1.6">
           <div><strong>Dolphin ERP</strong> — Mould &amp; Die scheduling.</div>
-          <div style="margin-top:6px">Preferences are saved to this browser only.</div>
-          <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-ghost" onclick="resetPrefs()">Reset to defaults</button>
-          </div>
+          <div style="margin-top:6px">Display preferences saved to this browser. Shift settings saved to server.</div>
+          <div style="margin-top:14px"><button class="btn btn-ghost" onclick="resetPrefs()">Reset display preferences</button></div>
         </div>
       </div>
-    </div>
-  `;
-  // Wire up the pref buttons
+    </div>`;
+
   document.querySelectorAll('.pref-opts').forEach(group=>{
     const key=group.getAttribute('data-pref');
     group.querySelectorAll('.pref-opt').forEach(btn=>{
       btn.addEventListener('click',()=>{
         const val=btn.getAttribute('data-value');
         updatePref(key,val);
-        // Update active state in this group
         group.querySelectorAll('.pref-opt').forEach(b=>b.classList.toggle('active',b===btn));
       });
     });
   });
+}
+
+function onShiftChange(day){
+  const working=document.getElementById(`shift_working_${day}`)?.checked;
+  ['start','end','ls','le'].forEach(f=>{
+    const el=document.getElementById(`shift_${f}_${day}`);
+    if(el) el.disabled=!working;
+  });
+  const start=document.getElementById(`shift_start_${day}`)?.value||'08:00';
+  const end  =document.getElementById(`shift_end_${day}`)?.value||'20:00';
+  const ls   =document.getElementById(`shift_ls_${day}`)?.value||'';
+  const le   =document.getElementById(`shift_le_${day}`)?.value||'';
+  const [sh,sm]=start.split(':').map(Number);
+  const [eh,em]=end.split(':').map(Number);
+  let total=(eh*60+em)-(sh*60+sm);
+  if(ls&&le){const[lsh,lsm]=ls.split(':').map(Number);const[leh,lem]=le.split(':').map(Number);total-=Math.max(0,(leh*60+lem)-(lsh*60+lsm));}
+  const eff=working?Math.max(0,total/60).toFixed(1):0;
+  const el=document.getElementById(`shift_eff_${day}`);
+  if(el) el.innerHTML=`<span style="font-family:var(--mono);font-size:13px;font-weight:600;color:${eff>0?'var(--accent)':'var(--muted)'}">${working?eff+'h':'—'}</span>`;
+}
+
+async function saveShiftSettings(){
+  const days=['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+  const data={};
+  days.forEach(day=>{
+    const ls=document.getElementById(`shift_ls_${day}`)?.value||'';
+    const le=document.getElementById(`shift_le_${day}`)?.value||'';
+    data[day]={
+      working:     document.getElementById(`shift_working_${day}`)?.checked||false,
+      start:       document.getElementById(`shift_start_${day}`)?.value||'08:00',
+      end:         document.getElementById(`shift_end_${day}`)?.value||'20:00',
+      lunch_start: ls||null,
+      lunch_end:   le||null,
+    };
+  });
+  try{
+    await api('PUT','/api/shift-settings',data);
+    toast('Working hours saved ✓  — run Schedule All to apply');
+  }catch(e){ toast(e.message,'error'); }
 }
 function resetPrefs(){
   applyPrefs(Object.assign({},DEFAULT_PREFS));
