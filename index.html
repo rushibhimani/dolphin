@@ -1037,6 +1037,22 @@ async function seedRealData(){
   }catch(e){toast(e.message,'error')}
 }
 
+async function seedPunchRoutings(){
+  const ok = await confirm2(
+    'Creates 4 standard Punch routing templates with formula-based times from your Excel sheet:\n\n' +
+    '• Plain Small (≤ 600×600)\n• Plain Big (> 600×600)\n• Iso Small (≤ 600×600)\n• Iso Big (> 600×600)\n\n' +
+    'Machines must be set up first. Existing routings with the same name are skipped.',
+    'Load Punch Routings'
+  );
+  if(!ok) return;
+  try{
+    const r = await api('POST','/api/seed-punch-routings');
+    if(r.created?.length) toast(`✓ Created: ${r.created.join(', ')}`);
+    if(r.skipped_existing?.length) toast(`Already existed (skipped): ${r.skipped_existing.length}`);
+    await loadAll(); showPage('routings');
+  }catch(e){ toast(e.message,'error'); }
+}
+
 async function seedData(){try{const r=await api('POST','/api/seed');toast(r.msg);await loadAll();showPage(currentPage)}catch(e){toast(e.message,'error')}}
 
 // ── DASHBOARD ──
@@ -1126,6 +1142,7 @@ async function renderDashboard(){
         <button class="btn btn-secondary" onclick="showPage('schedule')">📅 Gantt</button>
         <button class="btn btn-secondary" onclick="showPage('capacity')">🔥 Capacity</button>
         <button class="btn btn-secondary" onclick="showPage('workers')">👷 Workers</button>
+        <button class="btn btn-ghost" onclick="seedPunchRoutings()" title="Add 4 standard Punch routing templates with formula-based times">🥊 Load Punch Routings</button>
       </div>
     </div>`;
 }
@@ -2403,8 +2420,9 @@ function openRoutingModal(editId){
         <button class="btn btn-secondary" style="font-size:11px;padding:4px 9px;text-transform:none;letter-spacing:0" onclick="addOpRow()">+ Add Step</button>
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:52px 28px 1fr 170px 72px 72px 40px 28px;gap:5px;padding:4px 0 8px;font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">
-      <span>Move</span><span style="text-align:center">#</span><span>Operation Name</span><span>Machine</span><span>Setup(min)</span><span>Work(min)</span><span style="text-align:center">Opt</span><span></span>
+    <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--muted);padding:4px 8px 6px;border-bottom:1px solid var(--border);margin-bottom:6px">
+      <span>Name → Machine → Setup(min) → Work(min) | ⚡=Formula mode</span>
+      <span style="font-size:10px">☑ = Optional step</span>
     </div>
     <div id="opsContainer"></div>
     <div id="opsEmpty" style="${routingOps.length?'display:none':''}color:var(--muted);font-size:12px;padding:8px 0">No operations yet. Click "+ Add Step".</div>`,
@@ -2424,33 +2442,142 @@ function renderOpRows(){
   const e=document.getElementById('opsEmpty');
   if(e) e.style.display=routingOps.length?'none':'';
   if(!c) return;
-  c.innerHTML=routingOps.map((op,i)=>`
-    <div class="op-ed-row" id="opedrow_${i}">
-      <div class="op-ed-arrows">
-        <button onclick="moveOp(${i},-1)" ${i===0?'disabled':''} title="Move up">▲</button>
-        <button onclick="moveOp(${i},1)" ${i===routingOps.length-1?'disabled':''} title="Move down">▼</button>
+
+  const FTYPES={volume_milling:'Volume Milling',area:'Area',perimeter_side:'Perimeter Side',perimeter_weld:'Perimeter Weld',fixed:'Fixed (setup only)'};
+  const DIMS=['length','width','thickness'];
+
+  c.innerHTML=routingOps.map((op,i)=>{
+    const hasFormula=!!(op.formula_type&&op.formula_type!=='none');
+    const wMins=op.work_time_mins!=null?Math.round(op.work_time_mins):Math.round((op.work_time_hrs||0)*60);
+    const ft=op.formula_type||'';
+    const needsDimX = ft && ft!=='fixed' && ft!=='perimeter_weld';
+    const needsDimY = ft==='volume_milling'||ft==='area';
+    const needsDepth= ft && ft!=='fixed'&&ft!=='area'&&ft!=='perimeter_weld';
+    const needsMRR  = ft && ft!=='fixed';
+
+    // Formula preview string
+    let preview='';
+    if(hasFormula&&ft&&ft!=='fixed'){
+      const dx=(op.dim_x_source||'L').slice(0,1).toUpperCase();
+      const dy=(op.dim_y_source||'W').slice(0,1).toUpperCase();
+      const d=op.depth_mm||'?'; const r=op.mrr||'?';
+      if(ft==='volume_milling')   preview=`(${dx} × ${dy} × ${d}) ÷ ${r}`;
+      else if(ft==='area')        preview=`(${dx} × ${dy}) ÷ ${r}`;
+      else if(ft==='perimeter_side') preview=`(${dx} × T × ${d}) ÷ ${r}`;
+      else if(ft==='perimeter_weld') preview=`(2×(L+W)) ÷ ${r}`;
+    } else if(hasFormula&&ft==='fixed') preview='Setup time only — no machining';
+
+    return `
+    <div style="border:1px solid var(--border);border-radius:7px;margin-bottom:6px;overflow:hidden">
+
+      <!-- TOP ROW: move, seq, name, machine, setup, work/formula-toggle, opt, remove -->
+      <div style="display:flex;align-items:center;gap:6px;padding:7px 8px;background:var(--card)">
+        <div class="op-ed-arrows" style="display:flex;flex-direction:column;gap:1px">
+          <button onclick="moveOp(${i},-1)" ${i===0?'disabled':''} style="font-size:9px;padding:1px 4px;line-height:1.2">▲</button>
+          <button onclick="moveOp(${i},1)"  ${i===routingOps.length-1?'disabled':''} style="font-size:9px;padding:1px 4px;line-height:1.2">▼</button>
+        </div>
+        <span style="font-size:11px;color:var(--muted);font-family:var(--mono);flex-shrink:0;width:16px;text-align:center">${i+1}</span>
+        <input id="oped_name_${i}" value="${op.name||''}" placeholder="Operation name" style="flex:2 1 130px;min-width:90px">
+        <select id="oped_wc_${i}" style="flex:2 1 140px;min-width:110px">${buildMachineOpts(op.work_center_id)}</select>
+        <div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:1px">
+          <span style="font-size:9px;color:var(--muted)">Setup</span>
+          <input type="number" id="oped_setup_${i}" value="${op.setup_time_mins??0}" min="0" step="5" style="width:54px">
+        </div>
+        ${hasFormula
+          ? `<div style="flex:1 1 auto;font-size:11px;color:var(--accent);font-family:var(--mono);padding:0 4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${preview}">${preview||'Formula set'}</div>`
+          : `<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:1px">
+               <span style="font-size:9px;color:var(--muted)">Work(min)</span>
+               <input type="number" id="oped_work_${i}" value="${wMins}" min="0" step="10" style="width:64px">
+             </div>`
+        }
+        <label style="font-size:10px;color:var(--muted);white-space:nowrap;cursor:pointer;display:flex;align-items:center;gap:3px;flex-shrink:0">
+          <input type="checkbox" id="oped_useformula_${i}" ${hasFormula?'checked':''}
+            onchange="toggleOpFormula(${i},this.checked)"
+            style="accent-color:var(--accent);width:12px;height:12px"> ⚡
+        </label>
+        <input type="checkbox" id="oped_opt_${i}" ${op.is_optional?'checked':''} title="Optional step" style="width:13px;height:13px;accent-color:var(--amber);flex-shrink:0">
+        <button onclick="removeOp(${i})" title="Remove step" style="flex-shrink:0;background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:2px 4px;line-height:1">✕</button>
       </div>
-      <span class="op-ed-seq">${i+1}</span>
-      <input id="oped_name_${i}" value="${op.name||''}" placeholder="e.g. Facing">
-      <select id="oped_wc_${i}">${buildMachineOpts(op.work_center_id)}</select>
-      <input type="number" id="oped_setup_${i}" value="${op.setup_time_mins??0}" min="0" step="5" title="Setup time in minutes">
-      <input type="number" id="oped_work_${i}" value="${op.work_time_mins!=null?Math.round(op.work_time_mins):Math.round((op.work_time_hrs||0)*60)}" min="0" step="10" title="Work time in minutes">
-      <input type="checkbox" id="oped_opt_${i}" ${op.is_optional?'checked':''} style="width:14px;height:14px;accent-color:var(--accent);margin:auto;display:block">
-      <button class="op-rm" onclick="removeOp(${i})" title="Remove">✕</button>
-    </div>`).join('');
+
+      <!-- BOTTOM ROW: formula params — only shown when formula ON -->
+      <div id="oped_formula_${i}" style="${hasFormula?'':'display:none'}background:var(--surface);border-top:1px solid var(--border);padding:8px 12px;display:${hasFormula?'grid':'none'};grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;align-items:end">
+
+        <div class="form-group" style="margin:0">
+          <div class="fld-label" style="font-size:10px">Formula Type</div>
+          <select id="oped_ftype_${i}" style="font-size:12px" onchange="syncRoutingOps();renderOpRows()">
+            <option value="">— select —</option>
+            ${Object.entries(FTYPES).map(([v,l])=>`<option value="${v}" ${ft===v?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </div>
+
+        ${needsDimX?`<div class="form-group" style="margin:0">
+          <div class="fld-label" style="font-size:10px">Dim X</div>
+          <select id="oped_dimx_${i}" style="font-size:12px">
+            ${DIMS.map(d=>`<option value="${d}" ${op.dim_x_source===d?'selected':''}>${d.charAt(0).toUpperCase()+d.slice(1)}</option>`).join('')}
+          </select>
+        </div>`:''}
+
+        ${needsDimY?`<div class="form-group" style="margin:0">
+          <div class="fld-label" style="font-size:10px">Dim Y</div>
+          <select id="oped_dimy_${i}" style="font-size:12px">
+            ${DIMS.map(d=>`<option value="${d}" ${op.dim_y_source===d?'selected':''}>${d.charAt(0).toUpperCase()+d.slice(1)}</option>`).join('')}
+          </select>
+        </div>`:''}
+
+        ${needsDepth?`<div class="form-group" style="margin:0">
+          <div class="fld-label" style="font-size:10px">Depth (mm)</div>
+          <input type="number" id="oped_depth_${i}" value="${op.depth_mm||''}" min="0" step="0.5" placeholder="e.g. 10" style="font-size:12px">
+        </div>`:''}
+
+        ${needsMRR?`<div class="form-group" style="margin:0">
+          <div class="fld-label" style="font-size:10px">MRR (mm³/min or mm²/min)</div>
+          <input type="number" id="oped_mrr_${i}" value="${op.mrr||''}" min="0" step="1" placeholder="e.g. 37500" style="font-size:12px">
+        </div>`:''}
+
+        ${ft==='fixed'?`<div style="font-size:11px;color:var(--muted);align-self:center">No machining time — only setup minutes above apply.</div>`:''}
+
+      </div>
+
+    </div>`;
+  }).join('');
+}
+
+function toggleOpFormula(i, on){
+  syncRoutingOps();
+  if(on && (!routingOps[i].formula_type||routingOps[i].formula_type==='none')){
+    routingOps[i].formula_type='volume_milling';
+    routingOps[i].dim_x_source='length';
+    routingOps[i].dim_y_source='width';
+  }
+  if(!on) routingOps[i].formula_type=null;
+  renderOpRows();
 }
 
 function syncRoutingOps(){
   routingOps=routingOps.map((op,i)=>{
-    const wMins=parseFloat(document.getElementById(`oped_work_${i}`)?.value)||0;
+    const useFormula=document.getElementById(`oped_useformula_${i}`)?.checked;
+    const ftype=document.getElementById(`oped_ftype_${i}`)?.value||null;
+    let wMins=0;
+    if(useFormula&&ftype){
+      // work_time_mins will be calculated at order time from dimensions
+      // store 0 here — the formula fields carry the real config
+      wMins=0;
+    } else {
+      wMins=parseFloat(document.getElementById(`oped_work_${i}`)?.value)||0;
+    }
     return {
       ...op,
-      name:document.getElementById(`oped_name_${i}`)?.value?.trim()||op.name,
-      work_center_id:parseInt(document.getElementById(`oped_wc_${i}`)?.value)||op.work_center_id,
+      name:           document.getElementById(`oped_name_${i}`)?.value?.trim()||op.name,
+      work_center_id: parseInt(document.getElementById(`oped_wc_${i}`)?.value)||op.work_center_id,
       setup_time_mins:parseFloat(document.getElementById(`oped_setup_${i}`)?.value)||0,
-      work_time_mins:wMins,
-      work_time_hrs:wMins/60,
-      is_optional:!!document.getElementById(`oped_opt_${i}`)?.checked,
+      work_time_mins: wMins,
+      work_time_hrs:  wMins/60,
+      is_optional:    !!document.getElementById(`oped_opt_${i}`)?.checked,
+      formula_type:   useFormula?(ftype||null):null,
+      mrr:            parseFloat(document.getElementById(`oped_mrr_${i}`)?.value)||null,
+      depth_mm:       parseFloat(document.getElementById(`oped_depth_${i}`)?.value)||null,
+      dim_x_source:   document.getElementById(`oped_dimx_${i}`)?.value||null,
+      dim_y_source:   document.getElementById(`oped_dimy_${i}`)?.value||null,
     };
   });
 }
@@ -3412,7 +3539,8 @@ let orderFormOps = [];  // routing ops for order creation
 
 async function openOrderModal(){
   await loadAll();
-  const PTYPES = ['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate',
+  const PTYPES = ['Lower Punch','Upper Punch','Iso Lower Punch','Iso Upper Punch',
+                  'Die Frame','Liner Set','Complete Mould','Custom Plate',
                   'Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
   const SIZES  = ['600x600','600x900','600x1200','900x900','900x1200','1200x1200'];
   const custOpts = allCustomers.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
@@ -3484,6 +3612,30 @@ async function openOrderModal(){
         <select id="ord_routing" onchange="loadOrderOps()">${routingOpts?`<option value="">— Select —</option>${routingOpts}`:'<option value="">No routings — create one first</option>'}</select>
       </div>
     </div>
+
+    <!-- Punch dimension calculator — shown only when routing has formula-based ops -->
+    <div id="punchCalcPanel" style="display:none;background:var(--accent-soft);border:1px solid var(--accent);border-radius:8px;padding:12px;margin:8px 0">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--accent);margin-bottom:8px">📐 Auto-Calculate Times from Dimensions</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end">
+        <div class="form-group" style="margin:0">
+          <div class="fld-label">Length (mm)</div>
+          <input type="number" id="ord_length" min="1" step="1" placeholder="e.g. 670" oninput="debounceEstimate()">
+        </div>
+        <div class="form-group" style="margin:0">
+          <div class="fld-label">Width (mm)</div>
+          <input type="number" id="ord_width" min="1" step="1" placeholder="e.g. 670" oninput="debounceEstimate()">
+        </div>
+        <div class="form-group" style="margin:0">
+          <div class="fld-label">Thickness (mm)</div>
+          <input type="number" id="ord_thickness" min="1" step="1" value="35" placeholder="35">
+        </div>
+        <button class="btn btn-primary" style="height:36px;white-space:nowrap;flex-shrink:0" onclick="calcPunchTimes()">⚡ Calculate</button>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">
+        Times calculated from your Excel formula sheet · Plain ≤600mm: Edge Grinding · &gt;600mm: Edge Sizing · Iso adds Iso Depth Milling + Radius Milling
+      </div>
+    </div>
+
     <div id="ordOpsWrap" style="margin-top:6px">
       <div style="color:var(--muted);font-size:12px;padding:4px 0">Select a routing to edit operation times</div>
     </div>
@@ -3521,7 +3673,6 @@ async function openOrderModal(){
 }
 
 async function filterOrderRouting(){
-  // filter routing select by product type
   const ptype = document.getElementById('ord_ptype')?.value||'';
   const sel   = document.getElementById('ord_routing');
   if(!sel) return;
@@ -3530,6 +3681,9 @@ async function filterOrderRouting(){
   orderFormOps = [];
   document.getElementById('ordOpsWrap').innerHTML=`<div style="color:var(--muted);font-size:12px;padding:4px 0">Select a routing to edit operation times</div>`;
   document.getElementById('estimateContent').innerHTML=`<div style="color:var(--muted);font-size:12px">Select routing and quantity to see estimate</div>`;
+  // Show punch calc panel for punch types
+  const punchCalcPanel = document.getElementById('punchCalcPanel');
+  if(punchCalcPanel) punchCalcPanel.style.display = ptype.toLowerCase().includes('punch') ? '' : 'none';
 }
 
 async function loadOrderOps(){
@@ -3541,10 +3695,63 @@ async function loadOrderOps(){
     work_center_id: op.work_center_id, machine_type: op.machine_type||'',
     setup_time_mins: op.setup_time_mins,
     work_time_mins: op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60,
-    work_time_hrs: op.work_time_hrs, is_optional: op.is_optional, included: true
+    work_time_hrs: op.work_time_hrs, is_optional: op.is_optional, included: true,
+    formula_type: op.formula_type, mrr: op.mrr, depth_mm: op.depth_mm,
+    dim_x_source: op.dim_x_source, dim_y_source: op.dim_y_source,
   }));
+
+  // Show punch calc panel whenever product type is a punch type
+  const ptype = document.getElementById('ord_ptype')?.value||'';
+  const punchCalcPanel = document.getElementById('punchCalcPanel');
+  if(punchCalcPanel) punchCalcPanel.style.display = ptype.toLowerCase().includes('punch') ? '' : 'none';
+
   renderOrderOpsTable();
   triggerEstimate();
+}
+
+// ── Punch dimension calculator ──
+async function calcPunchTimes(){
+  const ptype = (document.getElementById('ord_ptype')?.value||'Lower Punch');
+  const L = parseFloat(document.getElementById('ord_length')?.value)||0;
+  const W = parseFloat(document.getElementById('ord_width')?.value)||0;
+  const T = parseFloat(document.getElementById('ord_thickness')?.value)||35;
+
+  if(!L||!W){toast('Enter length and width first','error');return;}
+
+  // punch_type for API: 'Lower' or 'Upper'
+  const apiPunchType = ptype.toLowerCase().includes('upper') ? 'Upper' : 'Lower';
+
+  const machineMap={};
+  orderFormOps.forEach(op=>{ if(op.name&&op.work_center_id) machineMap[op.name]=op.work_center_id; });
+
+  try{
+    const r = await api('POST','/api/punch-calc',{
+      punch_type:apiPunchType, length:L, width:W, thickness:T, machine_map:machineMap
+    });
+
+    const calcByName={};
+    r.ops.forEach(o=>{ calcByName[o.name]=o; });
+
+    orderFormOps = r.ops.map(calcOp=>{
+      const existing = orderFormOps.find(o=>o.name===calcOp.name);
+      return {
+        operation_id: existing?.operation_id||null,
+        name:         calcOp.name,
+        wc_name:      existing?.wc_name||'',
+        work_center_id: calcOp.work_center_id || existing?.work_center_id || null,
+        setup_time_mins: calcOp.setup_time_mins,
+        work_time_mins:  calcOp.work_time_mins,
+        work_time_hrs:   calcOp.work_time_mins/60,
+        is_optional: false, included: true,
+        formula_type:    calcOp.formula_type,
+        _formula_desc:   calcOp.formula_desc,
+      };
+    });
+
+    renderOrderOpsTable();
+    triggerEstimate();
+    toast(`Calculated ${r.ops.length} operations — total ${Math.round(r.total_mins)}min (${r.total_hrs.toFixed(1)}h)`);
+  }catch(e){toast(e.message,'error');}
 }
 
 function renderOrderOpsTable(){
@@ -3552,13 +3759,18 @@ function renderOrderOpsTable(){
   const rows = orderFormOps.map((op,i)=>{
     const wMins = op.work_time_mins!=null?op.work_time_mins:((op.work_time_hrs||0)*60);
     const sMins = op.setup_time_mins||0;
+    const hasFormula = op.formula_type&&op.formula_type!=='none';
+    const formulaBadge = hasFormula
+      ? `<span style="font-size:10px;background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 5px;margin-left:4px" title="${op._formula_desc||op.formula_type}">⚡ formula</span>`
+      : '';
+    const wcOpts = allMachines.map(m=>`<option value="${m.id}" ${op.work_center_id==m.id?'selected':''}>${m.name}</option>`).join('');
     return `<tr id="ooprow_${i}" class="${op.included?'':'excluded'}">
       <td><input type="checkbox" id="oopchk_${i}" ${op.included?'checked':''} onchange="toggleOrderOp(${i},this.checked)" style="width:14px;height:14px;accent-color:var(--accent)"></td>
       <td class="mono" style="color:var(--muted);text-align:center;font-size:11px">${i+1}</td>
-      <td style="font-size:12px;font-weight:500">${op.name}</td>
-      <td style="font-size:11px;color:var(--muted)">${op.wc_name}</td>
+      <td style="font-size:12px;font-weight:500">${op.name}${formulaBadge}</td>
+      <td><select id="oopwc_${i}" onchange="updateOrderOpWC(${i},this.value)" style="font-size:11px;min-width:120px">${wcOpts}</select></td>
       <td><input type="number" id="oopsetup_${i}" value="${Math.round(sMins)}" min="0" step="5" onchange="recalcOrderOp(${i})" ${op.included?'':'disabled'} style="width:60px"></td>
-      <td><input type="number" id="oopwork_${i}"  value="${Math.round(wMins)}" min="0" step="10" onchange="recalcOrderOp(${i})" ${op.included?'':'disabled'} style="width:70px"></td>
+      <td><input type="number" id="oopwork_${i}"  value="${Math.round(wMins)}" min="0" step="10" onchange="recalcOrderOp(${i})" ${op.included?'':'disabled'} style="width:70px" ${hasFormula?'title="Auto-calculated — edit to override"':''}></td>
       <td style="font-size:11px;color:var(--muted);text-align:right" id="ooptot_${i}">${fmtTotal(sMins+wMins)}</td>
     </tr>`;
   }).join('');
@@ -3567,6 +3779,12 @@ function renderOrderOpsTable(){
       <thead><tr><th>✓</th><th>#</th><th>Operation</th><th>Machine</th><th>Setup(min)</th><th>Work(min)</th><th>Total</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
+}
+
+function updateOrderOpWC(i, wcId){
+  orderFormOps[i].work_center_id = parseInt(wcId);
+  const m = allMachines.find(x=>x.id==wcId);
+  if(m) orderFormOps[i].wc_name = m.name;
 }
 
 function toggleOrderOp(i,checked){

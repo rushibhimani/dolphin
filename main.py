@@ -298,8 +298,16 @@ def find_next_slot_with_worker(db, work_center_id, total_duration_hrs,
                                 preferred_worker_id=None):
     """
     Returns (start, end, worker, waived).
-    preferred_worker_id: order-affinity or machine-preferred worker to try first.
+
+    Worker assignment priority:
+    1. If preferred_worker_id set — try that worker first at every candidate slot.
+       If the preferred worker is busy at a slot but the machine is free, SKIP that
+       slot and look for the next slot where BOTH machine and preferred worker are free.
+       After PATIENCE_DAYS of waiting, fall back to any qualified worker.
+    2. No preferred worker — use scoring order (skill + load + continuity).
     """
+    PATIENCE_DAYS = 2   # wait up to 2 days for preferred worker before falling back
+
     wc = db.query(WorkCenter).filter(WorkCenter.id == work_center_id).first()
     if wc and getattr(wc, 'status', 'active') not in ('active', None, ''):
         raise ValueError(f"Machine '{wc.name}' is {wc.status}")
@@ -307,6 +315,7 @@ def find_next_slot_with_worker(db, work_center_id, total_duration_hrs,
     qualified = find_qualified_workers(db, work_center_id, start_after, preferred_worker_id)
     search_start = snap_to_shift(start_after)
     search_limit = search_start + timedelta(days=90)
+    patience_limit = search_start + timedelta(days=PATIENCE_DAYS)
 
     machine_booked = db.query(ScheduledOp).filter(
         ScheduledOp.work_center_id == work_center_id,
@@ -330,30 +339,66 @@ def find_next_slot_with_worker(db, work_center_id, total_duration_hrs,
                 return False
         return True
 
+    # Find preferred worker object once
+    preferred_worker = None
+    if preferred_worker_id:
+        preferred_worker = next((w for w in qualified if w.id == preferred_worker_id), None)
+
     for candidate in candidates:
         if candidate > search_limit:
             break
         candidate = snap_to_shift(candidate)
+
         if not qualified:
             # No workers assigned — schedule machine-only
             dur = job_setup_hrs + machine_setup_hrs + (total_duration_hrs - job_setup_hrs - machine_setup_hrs)
             slot_end = add_working_hours(candidate, dur)
             if machine_free(candidate, slot_end):
                 return candidate, slot_end, None, False
+            continue
+
+        # Determine which workers to try at this candidate
+        if preferred_worker and candidate <= patience_limit:
+            # Strict mode: only try preferred worker
+            # If machine is free but preferred worker is busy → skip slot,
+            # add preferred worker's next-free time as candidate
+            waive = should_waive_machine_setup(db, preferred_worker.id, work_center_id, candidate)
+            m_setup = 0.0 if waive else machine_setup_hrs
+            actual_dur = job_setup_hrs + m_setup + max(
+                total_duration_hrs - job_setup_hrs - machine_setup_hrs, 0.0
+            )
+            actual_dur = max(actual_dur, job_setup_hrs + 0.083)
+            slot_end = add_working_hours(candidate, actual_dur)
+
+            if machine_free(candidate, slot_end):
+                if is_worker_available(db, preferred_worker.id, candidate, slot_end):
+                    return candidate, slot_end, preferred_worker, waive
+                else:
+                    # Machine free, preferred worker busy — find when preferred worker is next free
+                    next_pref_free = db.query(ScheduledOp).filter(
+                        ScheduledOp.worker_id == preferred_worker.id,
+                        ScheduledOp.scheduled_end > candidate,
+                        ScheduledOp.status.in_(["scheduled", "in_progress"])
+                    ).order_by(ScheduledOp.scheduled_end).first()
+                    if next_pref_free and next_pref_free.scheduled_end:
+                        candidates = sorted(set(candidates) | {snap_to_shift(next_pref_free.scheduled_end)})
+                    # Don't fall through to other workers — wait for preferred
+                    continue
+            # Machine busy — add next machine-free slot and continue
         else:
+            # Fallback mode (past patience or no preferred) — try all workers in score order
             for worker in qualified:
                 waive = should_waive_machine_setup(db, worker.id, work_center_id, candidate)
-                # BUG-FIX #2: actual duration shrinks when machine setup waived
                 m_setup = 0.0 if waive else machine_setup_hrs
                 actual_dur = job_setup_hrs + m_setup + max(
                     total_duration_hrs - job_setup_hrs - machine_setup_hrs, 0.0
                 )
-                actual_dur = max(actual_dur, job_setup_hrs + 0.083)   # min 5 min
+                actual_dur = max(actual_dur, job_setup_hrs + 0.083)
                 slot_end = add_working_hours(candidate, actual_dur)
                 if machine_free(candidate, slot_end) and is_worker_available(db, worker.id, candidate, slot_end):
                     return candidate, slot_end, worker, waive
 
-        # No slot here — add next machine-free candidate
+        # Add next machine-free candidate
         next_free = min(
             (snap_to_shift(b.scheduled_end) for b in machine_booked
              if b.scheduled_end and b.scheduled_end > candidate),
@@ -365,7 +410,6 @@ def find_next_slot_with_worker(db, work_center_id, total_duration_hrs,
             next_shift_start(datetime(candidate.year, candidate.month, candidate.day, 20, 0))
         })
 
-    # BUG-FIX #9: raise instead of silently placing phantom op
     raise ValueError(
         f"No slot found within 90 days on machine {wc.name if wc else work_center_id}"
     )
@@ -575,11 +619,13 @@ def _do_schedule(db, j):
     if not ops:
         return False
 
-    # Clear only non-started scheduled ops
-    for s in list(j.scheduled_ops):
-        if s.status in ("pending", "scheduled"):
-            db.delete(s)
-    db.flush()
+    # Note: pending/scheduled ops are cleared in batch by schedule_all before calling _do_schedule.
+    # For single-job scheduling (schedule_job endpoint), clear here.
+    if not getattr(j, '_batch_cleared', False):
+        for s in list(j.scheduled_ops):
+            if s.status in ("pending", "scheduled"):
+                db.delete(s)
+        db.flush()
 
     # Determine start — respect not_before and material_ready_date
     now = now_ist()
@@ -970,9 +1016,11 @@ def mark_absent_today(worker_id: int):
                 replaced = True; reassigned += 1; break
         if not replaced:
             op.worker_id = None; op.worker_name = None; unassigned += 1
-    db.commit(); db.close()
+    db.commit()
+    worker_name = w.name   # capture before session closes
+    db.close()
     return {"reassigned": reassigned, "unassigned": unassigned,
-            "total_ops": len(ops), "worker_name": w.name}
+            "total_ops": len(ops), "worker_name": worker_name}
 
 @app.post("/api/workers/{worker_id}/reschedule-after-leave")
 def reschedule_after_leave(worker_id: int):
@@ -1095,7 +1143,13 @@ def routing_dict(r, db=None):
             "setup_time_mins": o.setup_time_mins,
             "work_time_hrs": o.work_time_hrs,
             "work_time_mins": o.work_time_mins if o.work_time_mins else round(o.work_time_hrs * 60, 1),
-            "is_optional": o.is_optional} for o in r.operations]
+            "is_optional": o.is_optional,
+            "formula_type":  o.formula_type,
+            "mrr":           o.mrr,
+            "depth_mm":      o.depth_mm,
+            "dim_x_source":  o.dim_x_source,
+            "dim_y_source":  o.dim_y_source,
+            } for o in r.operations]
     total_hrs = sum((o.machine_setup_mins + o.job_setup_mins) / 60 + o.work_time_hrs
                     for o in r.operations)
     res = {"id": r.id, "name": r.name, "product_type": r.product_type,
@@ -1159,7 +1213,13 @@ def create_routing(data: dict):
                          machine_setup_mins=m_s, job_setup_mins=j_s,
                          setup_time_mins=m_s+j_s,
                          work_time_hrs=w_hrs, work_time_mins=w_mins,
-                         is_optional=bool(op.get("is_optional", False))))
+                         is_optional=bool(op.get("is_optional", False)),
+                         formula_type=op.get("formula_type") or None,
+                         mrr=float(op["mrr"]) if op.get("mrr") else None,
+                         depth_mm=float(op["depth_mm"]) if op.get("depth_mm") else None,
+                         dim_x_source=op.get("dim_x_source") or None,
+                         dim_y_source=op.get("dim_y_source") or None,
+                         ))
     db.commit(); db.refresh(r)
     result = routing_dict(r, db); db.close(); return result
 
@@ -1200,7 +1260,13 @@ def update_routing(rid: int, data: dict):
                              machine_setup_mins=m_s, job_setup_mins=j_s,
                              setup_time_mins=m_s+j_s,
                              work_time_hrs=w_hrs, work_time_mins=w_mins,
-                             is_optional=bool(op.get("is_optional", False))))
+                             is_optional=bool(op.get("is_optional", False)),
+                             formula_type=op.get("formula_type") or None,
+                             mrr=float(op["mrr"]) if op.get("mrr") else None,
+                             depth_mm=float(op["depth_mm"]) if op.get("depth_mm") else None,
+                             dim_x_source=op.get("dim_x_source") or None,
+                             dim_y_source=op.get("dim_y_source") or None,
+                             ))
     db.commit(); result = routing_dict(r, db); db.close(); return result
 
 @app.delete("/api/routings/{rid}")
@@ -1706,21 +1772,36 @@ def schedule_job(job_id: int):
 @app.post("/api/schedule-all")
 def schedule_all():
     db = SessionLocal()
-    # BUG-FIX #7: include ALL pending/scheduled jobs (including partially-done)
     jobs = db.query(Job).filter(Job.status.in_(["pending","scheduled"])).all()
-    # Sort by CR (most urgent first), then by order_id+piece_number so piece 1 always before piece 2
+
+    # Sort: most urgent first, then by order+piece_number for consistent piece ordering
     def sort_key(j):
         cr = critical_ratio(j, db)
-        return (cr, j.order_id or 0, j.piece_number or 0)
+        return (round(cr, 4), j.order_id or 0, j.piece_number or 0)
     jobs.sort(key=sort_key)
+
+    # ── CRITICAL FIX ──
+    # Clear ALL pending/scheduled ops for ALL jobs in the batch BEFORE scheduling
+    # any of them.  Without this, job N sees old scheduled ops from jobs N+1..M
+    # blocking machines, and ends up scheduled AFTER them even though it should go first.
+    has_active = set()
+    for j in jobs:
+        active = any(s.status == "in_progress" for s in j.scheduled_ops)
+        if active:
+            has_active.add(j.id)
+            continue
+        for s in list(j.scheduled_ops):
+            if s.status in ("pending", "scheduled"):
+                db.delete(s)
+        j._batch_cleared = True   # signal to _do_schedule not to re-clear
+    db.flush()
+
     count = unassigned = skipped = preempted = 0
     for j in jobs:
         if not j.routing_id and not j.inline_ops:
             continue
-        # BUG-FIX #7: don't skip partially-done jobs — reschedule their remaining ops
-        has_active = any(s.status in ("in_progress",) for s in j.scheduled_ops)
-        if has_active:
-            skipped += 1; continue    # truly in progress — don't disturb
+        if j.id in has_active:
+            skipped += 1; continue
         cr = critical_ratio(j, db)
         if cr < 0.5:
             for pc in check_preemption(db, j):
@@ -1730,11 +1811,11 @@ def schedule_all():
         try:
             _do_schedule(db, j); count += 1
         except Exception:
-            count += 1   # partial schedule still counted
+            count += 1
         for s in j.scheduled_ops:
             if s.worker_id is None and s.scheduled_start is not None:
                 unassigned += 1
-    # Update order statuses
+
     order_ids = {j.order_id for j in jobs if j.order_id}
     for oid in order_ids:
         _update_order_status(db, oid)
@@ -1985,6 +2066,242 @@ def get_preemption_alerts():
 # ─────────────────────────────────────────────────────────────────────────────
 # ESTIMATE  (what-if: no DB writes)
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FORMULA ENGINE  — updated punch_lead_time.xlsx (4-column layout)
+# Verified cell-by-cell. 4 subtypes: lower_small, upper_small, lower_big, upper_big
+# ─────────────────────────────────────────────────────────────────────────────
+
+FORMULA_TYPES = {
+    "volume_milling":      "Volume Milling       -- L x W x Depth / MRR",
+    "side_cutting":        "Side Cutting L       -- L x Depth / 180",
+    "side_cutting_w":      "Side Cutting W       -- W x Depth / 180",
+    "welding":             "Perimeter Welding    -- 2x(L+W) / 200",
+    "surface_grinding":    "Surface Grinding     -- (W+50)*D*2/2.5 * (L+250)/20000",
+    "edge_grinding":       "Edge Grinding S1     -- (T+50)*D*2/2.5 * (L+250)/20000",
+    "edge_grinding_w":     "Edge Grinding S2     -- (T+50)*D*2/2.5 * (W+250)/20000",
+    "step_milling_full":   "Step Milling Full    -- 2*(L+W)*(T-8)/0.3/1000",
+    "edge_sizing":         "Edge Sizing          -- 2*(L+W)*Passes/250",
+    "step_milling_side":   "Step Milling Side L  -- L*Depth/180",
+    "step_milling_side_w": "Step Milling Side W  -- W*Depth/180",
+    "iso_depth_milling":   "Iso Depth Milling    -- L*W*Depth/56250",
+    "rubber_milling":      "Rubber Depth Mill    -- L*W*0.5/9375",
+    "radius_milling":      "Radius Milling       -- 2*(L+W)*3/250",
+    "sand_blasting":       "Sand Blasting        -- L*W/12000",
+    "fixed":               "Fixed Time           -- constant machining minutes",
+}
+
+DIM_SOURCES = ["length", "width", "thickness"]
+
+
+def calc_op_time(formula_type, mrr, depth_mm,
+                 dim_x_source, dim_y_source,
+                 length, width, thickness) -> float:
+    """Return machining time in MINUTES. Verified against updated punch_lead_time.xlsx."""
+    L, W, T, D = length, width, thickness, (depth_mm or 0.0)
+
+    if formula_type == "volume_milling":
+        R = mrr or 35000.0
+        return (L * W * D) / R
+
+    elif formula_type == "side_cutting":
+        return (L * D) / 180.0
+
+    elif formula_type == "side_cutting_w":
+        return (W * D) / 180.0
+
+    elif formula_type == "welding":
+        return 2 * (L + W) / 200.0
+
+    elif formula_type == "surface_grinding":
+        passes   = (W + 50) * D * 2 / (25 * 0.1)
+        time_per = (L + 250) / 20000.0
+        return passes * time_per
+
+    elif formula_type == "edge_grinding":
+        passes   = (T + 50) * D * 2 / (25 * 0.1)
+        time_per = (L + 250) / 20000.0
+        return passes * time_per
+
+    elif formula_type == "edge_grinding_w":
+        passes   = (T + 50) * D * 2 / (25 * 0.1)
+        time_per = (W + 250) / 20000.0
+        return passes * time_per
+
+    elif formula_type == "step_milling_full":
+        return 2 * (L + W) * (T - 8) / 0.3 / 1000.0
+
+    elif formula_type == "edge_sizing":
+        passes = depth_mm or 10.0
+        return 2 * (L + W) * passes / 250.0
+
+    elif formula_type == "step_milling_side":
+        return (L * D) / 180.0
+
+    elif formula_type == "step_milling_side_w":
+        return (W * D) / 180.0
+
+    elif formula_type == "iso_depth_milling":
+        # Iso Depth Milling: L*W*Depth / 56250  (MRR = 50*0.75*0.5*3000 = 56250)
+        return (L * W * D) / 56250.0
+
+    elif formula_type == "rubber_milling":
+        return (L * W * 0.5) / 9375.0
+
+    elif formula_type == "radius_milling":
+        return 2 * (L + W) * 3 / 250.0
+
+    elif formula_type == "sand_blasting":
+        return (L * W) / 12000.0
+
+    elif formula_type == "fixed":
+        return 0.0
+
+    return 0.0
+
+
+# Tuple: (name, formula_type, depth_mm, setup_mins, mach_fixed, subtypes)
+PUNCH_OPS = [
+    # ── NON-ISO (Lower/Upper) ─────────────────────────────────────────────────
+    # Op 1: Lifting Holes — Fixed
+    ("Lifting Holes",        "fixed",             None, 20, 30, {"lower_small","upper_small","lower_big","upper_big"}),
+    # Op 2: Facing — L*W*5/35000
+    ("Facing",               "volume_milling",    5,    20, 0,  {"lower_small","upper_small","lower_big","upper_big"}),
+    # Op 3: Side Cutting 1 — L*10/180
+    ("Side Cutting 1",       "side_cutting",      10,   20, 0,  {"lower_small","upper_small","lower_big","upper_big"}),
+    # Op 4: Side Cutting 2 — W*10/180
+    ("Side Cutting 2",       "side_cutting_w",    10,   20, 0,  {"lower_small","upper_small","lower_big","upper_big"}),
+    # Op 5: Welding — 2*(L+W)/200
+    ("Welding",              "welding",           None, 20, 0,  {"lower_small","upper_small","lower_big","upper_big"}),
+    # Op 6: Surface Grinding — (W+50)*2*2/2.5 * (L+250)/20000
+    ("Surface Grinding",     "surface_grinding",  2,    10, 0,  {"lower_small","upper_small","lower_big","upper_big"}),
+    # Op 7 SMALL: Edge Grinding S1
+    ("Edge Grinding Side 1", "edge_grinding",     5,    10, 0,  {"lower_small","upper_small"}),
+    # Op 7 BIG: Step Milling Full — 2*(L+W)*(T-8)/0.3/1000
+    ("Step Milling",         "step_milling_full", None, 10, 0,  {"lower_big","upper_big"}),
+    # Op 8 SMALL: Edge Grinding S2
+    ("Edge Grinding Side 2", "edge_grinding_w",   5,    10, 0,  {"lower_small","upper_small"}),
+    # Op 8 BIG: Edge Sizing — 2*(L+W)*10/250
+    ("Edge Sizing",          "edge_sizing",       10,   10, 0,  {"lower_big","upper_big"}),
+    # Op 9 SMALL: Step Milling Side 1 (lower=4mm, upper=2mm)
+    ("Step Milling Side 1",  "step_milling_side", 4,    20, 0,  {"lower_small"}),
+    ("Step Milling Side 1",  "step_milling_side", 2,    20, 0,  {"upper_small"}),
+    # Op 9 BIG: Rubber Depth Milling
+    ("Rubber Depth Milling", "rubber_milling",    None, 20, 0,  {"lower_big","upper_big"}),
+    # Op 10 SMALL: Step Milling Side 2 (lower=4mm, upper=2mm)
+    ("Step Milling Side 2",  "step_milling_side_w",4,   20, 0,  {"lower_small"}),
+    ("Step Milling Side 2",  "step_milling_side_w",2,   20, 0,  {"upper_small"}),
+    # Op 10 BIG: Radius Milling — 2*(L+W)*3/250
+    ("Radius Milling",       "radius_milling",    None,  5, 0,  {"lower_big","upper_big"}),
+    # Op 11 SMALL: Rubber Depth Milling
+    ("Rubber Depth Milling", "rubber_milling",    None, 20, 0,  {"lower_small","upper_small"}),
+    # Op 11 BIG: Sandblasting
+    ("Sandblasting",         "sand_blasting",     None, 20, 0,  {"lower_big","upper_big"}),
+    # Op 12 SMALL: Radius Milling
+    ("Radius Milling",       "radius_milling",    None,  5, 0,  {"lower_small","upper_small"}),
+    # Op 12 BIG: Rubberizing
+    ("Rubberizing",          "fixed",             None, 20, 40, {"lower_big","upper_big"}),
+    # Op 13 SMALL: Removal Slot
+    ("Removal Slot",         "fixed",             None, 20, 30, {"lower_small","upper_small"}),
+    # Op 14 SMALL: Sandblasting
+    ("Sandblasting",         "sand_blasting",     None, 20, 0,  {"lower_small","upper_small"}),
+    # Op 15 SMALL: Rubberizing
+    ("Rubberizing",          "fixed",             None, 20, 40, {"lower_small","upper_small"}),
+
+    # ── ISO (Lower Iso / Upper Iso) ───────────────────────────────────────────
+    # Same as Non-Iso except: adds Iso Depth Milling after Side Cutting 2
+    # and Radius Milling uses correct 2*(L+W)*3/250 formula
+    ("Lifting Holes",        "fixed",             None, 20, 30, {"iso_lower_small","iso_upper_small","iso_lower_big","iso_upper_big"}),
+    ("Facing",               "volume_milling",    5,    20, 0,  {"iso_lower_small","iso_upper_small","iso_lower_big","iso_upper_big"}),
+    ("Side Cutting 1",       "side_cutting",      10,   20, 0,  {"iso_lower_small","iso_upper_small","iso_lower_big","iso_upper_big"}),
+    ("Side Cutting 2",       "side_cutting_w",    10,   20, 0,  {"iso_lower_small","iso_upper_small","iso_lower_big","iso_upper_big"}),
+    # Iso Depth Milling — L*W*11/56250
+    ("Iso Depth Milling",    "iso_depth_milling", 11,   20, 0,  {"iso_lower_small","iso_upper_small","iso_lower_big","iso_upper_big"}),
+    ("Welding",              "welding",           None, 20, 0,  {"iso_lower_small","iso_upper_small","iso_lower_big","iso_upper_big"}),
+    ("Surface Grinding",     "surface_grinding",  2,    10, 0,  {"iso_lower_small","iso_upper_small","iso_lower_big","iso_upper_big"}),
+    ("Edge Grinding Side 1", "edge_grinding",     5,    10, 0,  {"iso_lower_small","iso_upper_small"}),
+    ("Step Milling",         "step_milling_full", None, 10, 0,  {"iso_lower_big","iso_upper_big"}),
+    ("Edge Grinding Side 2", "edge_grinding_w",   5,    10, 0,  {"iso_lower_small","iso_upper_small"}),
+    ("Edge Sizing",          "edge_sizing",       10,   10, 0,  {"iso_lower_big","iso_upper_big"}),
+    ("Step Milling Side 1",  "step_milling_side", 4,    20, 0,  {"iso_lower_small"}),
+    ("Step Milling Side 1",  "step_milling_side", 2,    20, 0,  {"iso_upper_small"}),
+    ("Radius Milling",       "radius_milling",    None,  5, 0,  {"iso_lower_big","iso_upper_big"}),
+    ("Step Milling Side 2",  "step_milling_side_w",4,   20, 0,  {"iso_lower_small"}),
+    ("Step Milling Side 2",  "step_milling_side_w",2,   20, 0,  {"iso_upper_small"}),
+    ("Radius Milling",       "radius_milling",    None,  5, 0,  {"iso_lower_small","iso_upper_small"}),
+    ("Rubber Depth Milling", "rubber_milling",    None, 20, 0,  {"iso_lower_small","iso_upper_small"}),
+    ("Sandblasting",         "sand_blasting",     None, 20, 0,  {"iso_lower_big","iso_upper_big"}),
+    ("Rubberizing",          "fixed",             None, 20, 40, {"iso_lower_big","iso_upper_big"}),
+    ("Removal Slot",         "fixed",             None, 20, 30, {"iso_lower_small","iso_upper_small"}),
+    ("Sandblasting",         "sand_blasting",     None, 20, 0,  {"iso_lower_small","iso_upper_small"}),
+    ("Rubberizing",          "fixed",             None, 20, 40, {"iso_lower_small","iso_upper_small"}),
+]
+
+
+def punch_subtype(punch_type: str, length: float, width: float) -> str:
+    """Map punch_type + size to one of 8 subtypes."""
+    is_large = length > 600 or width > 600
+    pt = punch_type.lower()
+    is_iso   = "iso" in pt
+    is_upper = "upper" in pt
+    if is_iso:
+        if is_large: return "iso_upper_big"   if is_upper else "iso_lower_big"
+        return        "iso_upper_small" if is_upper else "iso_lower_small"
+    else:
+        if is_large: return "upper_big"   if is_upper else "lower_big"
+        return        "upper_small" if is_upper else "lower_small"
+
+
+@app.post("/api/punch-calc")
+def punch_calc(data: dict):
+    punch_type  = data.get("punch_type", "Lower")
+    length      = float(data.get("length",     600))
+    width       = float(data.get("width",      600))
+    thickness   = float(data.get("thickness",   35))
+    machine_map = data.get("machine_map", {})
+    subtype     = punch_subtype(punch_type, length, width)
+    result = []
+    for (name, ftype, depth, setup, mach_fixed, subtypes) in PUNCH_OPS:
+        if subtype not in subtypes:
+            continue
+        if ftype == "fixed":
+            machining = float(mach_fixed)
+        else:
+            machining = calc_op_time(ftype, None, depth, None, None, length, width, thickness)
+        work_mins  = round(machining, 2)
+        total_mins = round(machining + setup, 2)
+        result.append({
+            "name": name, "formula_type": ftype, "depth_mm": depth,
+            "setup_time_mins": setup, "work_time_mins": work_mins,
+            "total_mins": total_mins, "work_center_id": machine_map.get(name),
+            "formula_desc": FORMULA_TYPES.get(ftype, ftype),
+        })
+    total = sum(r["total_mins"] for r in result)
+    return {"subtype": subtype, "length": length, "width": width, "thickness": thickness,
+            "ops": result, "total_mins": round(total, 1), "total_hrs": round(total / 60, 2)}
+
+
+@app.get("/api/punch-formula-types")
+def get_formula_types():
+    return {
+        "formula_types": [{"value": k, "label": v} for k, v in FORMULA_TYPES.items()],
+        "dim_sources":   DIM_SOURCES,
+    }
+
+
+@app.put("/api/routings/{rid}/operations/{oid}/formula")
+def update_op_formula(rid: int, oid: int, data: dict):
+    db = SessionLocal()
+    op = db.query(Operation).filter(Operation.id == oid, Operation.routing_id == rid).first()
+    if not op: db.close(); raise HTTPException(404, "Operation not found")
+    op.formula_type = data.get("formula_type") or None
+    op.mrr          = float(data["mrr"])      if data.get("mrr")      else None
+    op.depth_mm     = float(data["depth_mm"]) if data.get("depth_mm") else None
+    op.dim_x_source = data.get("dim_x_source") or None
+    op.dim_y_source = data.get("dim_y_source") or None
+    db.commit(); db.close()
+    return {"ok": True}
+
 @app.post("/api/estimate")
 def estimate_order(data: dict):
     """
@@ -2333,82 +2650,158 @@ def seed_real():
 
 @app.post("/api/seed-punch-routings")
 def seed_punch_routings():
+    """
+    Seed all 4 standard Punch routings with formula-based op times.
+    Formula parameters sourced from punch_lead_time.xlsx.
+    Machine lookup is flexible — tries multiple name variants.
+    Skips routings that already exist (safe to re-run).
+    """
     db = SessionLocal()
-    def find_m(keywords):
+
+    def find_wc(*keywords):
+        """Find work center by any of the given keywords (case-insensitive)."""
         for kw in keywords:
             wc = db.query(WorkCenter).filter(
                 func.lower(WorkCenter.name).contains(kw.lower())
             ).first()
             if wc: return wc
         return None
+
+    # Machine lookup — tries common name variants from Yukeng_Setup.txt
     M = {
-        "M1":  db.query(WorkCenter).filter(func.lower(WorkCenter.name) == "edge grinder").first(),
-        "M2":  db.query(WorkCenter).filter(func.lower(WorkCenter.name) == "dc surface grinder").first(),
-        "M8":  db.query(WorkCenter).filter(func.lower(WorkCenter.name) == "kafo vmc").first(),
-        "M9":  db.query(WorkCenter).filter(func.lower(WorkCenter.name) == "dc vmc").first(),
-        "M10": find_m(["Radial Drill"]),
-        "M14": find_m(["Big Edge Mill"]),
-        "M15": find_m(["Rubberizing"]),
-        "M16": find_m(["Welding"]),
-        "M18": find_m(["Mould Assembly"]),
-        "M19": find_m(["Oil Station"]),
-        "M22": find_m(["Sand Blasting"]),
+        "lifting_holes":  find_wc("Big Radial Drill","Radial Drill","Drill"),
+        "facing":         find_wc("DC VMC","Double Column VMC","VMC"),
+        "side_cutting":   find_wc("Big Edge Mill","Edge Mill","Universal Milling","Step Milling"),
+        "welding":        find_wc("Welding"),
+        "surface_grind":  find_wc("Double Column Surface","DC Surface","Surface Grinder"),
+        "edge_grind":     find_wc("Profile Grinder","Edge Grinder","Grinder"),
+        "edge_sizing":    find_wc("KAFO VMC","KAFO","VMC"),
+        "rubber_milling": find_wc("KAFO VMC","KAFO","Router CNC","VMC"),
+        "radius_milling": find_wc("KAFO VMC","KAFO","Router CNC","VMC"),
+        "sand_blast":     find_wc("Sand Blasting","Sand"),
+        "rubberizing":    find_wc("Rubberizing","Rubber"),
     }
-    missing = [k for k,v in M.items() if v is None]
+
+    missing = {k for k,v in M.items() if v is None}
     if missing:
         db.close()
-        raise HTTPException(400, f"Machines not found: {', '.join(missing)}. Run 'Load Real Setup' first.")
-    routings_def = [
-        {"name":"Punch — Plain Small (≤ 600x600)","description":"Plain Punch up to 600x600. ~11 hrs.",
-         "lead_days":2.0,"steps":[
-            (1,"Lifting Holes","M10",20,0.33),(2,"Facing","M9",15,2.00),
-            (3,"Side Cutting","M14",40,1.25),(4,"Welding","M16",30,0.08),
-            (5,"Surface Grinding","M2",15,0.42),(6,"Edge Grinding","M1",60,0.17),
-            (7,"Rubber Depth Milling","M8",15,1.00),(8,"Sand Blasting","M22",5,0.67),
-            (9,"Rubberizing","M15",30,1.00),(10,"Packing","M18",5,0.25)]},
-        {"name":"Punch — Plain Big (> 600x600)","description":"Plain Punch larger than 600x600. ~20 hrs.",
-         "lead_days":3.0,"steps":[
-            (1,"Lifting Holes","M10",20,0.33),(2,"Facing","M9",15,3.92),
-            (3,"Side Cutting","M14",40,1.83),(4,"Welding","M16",30,0.17),
-            (5,"Surface Grinding","M2",15,0.83),(6,"Edge Sizing","M8",30,5.33),
-            (7,"Rubber Depth Milling","M8",15,1.67),(8,"Sand Blasting","M22",5,1.25),
-            (9,"Rubberizing","M15",30,1.00),(10,"Packing","M18",5,0.25)]},
-        {"name":"Punch — Iso Small (≤ 600x600)","description":"Isostatic Punch up to 600x600. ~13 hrs.",
-         "lead_days":2.0,"steps":[
-            (1,"Lifting Holes","M10",20,0.33),(2,"Facing","M9",15,2.00),
-            (3,"Side Cutting","M14",40,1.25),(4,"Iso Depth Milling","M9",15,1.67),
-            (5,"Welding","M16",30,0.08),(6,"Surface Grinding","M2",15,0.42),
-            (7,"Edge Grinding","M1",60,0.17),(8,"Radius Milling","M8",15,0.58),
-            (9,"Sand Blasting","M22",5,0.67),(10,"Rubberizing","M15",30,1.00),
-            (11,"Oil Filling","M19",5,0.08),(12,"Packing","M18",5,0.25)]},
-        {"name":"Punch — Iso Big (> 600x600)","description":"Isostatic Punch larger than 600x600. ~20 hrs.",
-         "lead_days":3.0,"steps":[
-            (1,"Lifting Holes","M10",20,0.33),(2,"Facing","M9",15,3.92),
-            (3,"Side Cutting","M14",40,1.83),(4,"Iso Depth Milling","M9",15,3.25),
-            (5,"Welding","M16",30,0.17),(6,"Surface Grinding","M2",15,0.83),
-            (7,"Edge Sizing","M8",30,2.67),(8,"Radius Milling","M8",15,0.92),
-            (9,"Sand Blasting","M22",5,1.25),(10,"Rubberizing","M15",30,1.00),
-            (11,"Oil Filling","M19",5,0.08),(12,"Packing","M18",5,0.25)]},
+        raise HTTPException(400,
+            f"Could not find machines for: {', '.join(sorted(missing))}. "
+            f"Please run 'Load Real Setup' first or add these machines manually.")
+
+    # ── Op definitions ────────────────────────────────────────────────────────
+    # Each tuple: (seq, name, machine_key, setup_mins, formula_type,
+    #              dim_x, dim_y, depth_mm, mrr)
+    # Source: punch_lead_time.xlsx — all 4 sheets verified
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Updated sheet: 4 subtypes — Lower Small, Upper Small, Lower Big, Upper Big
+    # Lower vs Upper differ only in Step Milling depth (4mm vs 2mm)
+    # Tuple: (seq, name, machine_key, setup, formula_type, depth_mm, mach_fixed)
+
+    # Shared ops
+    LIFTING  = (0, "Lifting Holes",        "lifting_holes",  20, "fixed",             None, 30)
+    FACING   = (0, "Facing",               "facing",         20, "volume_milling",    5,    0)
+    SIDE1    = (0, "Side Cutting 1",       "side_cutting",   20, "side_cutting",      10,   0)
+    SIDE2    = (0, "Side Cutting 2",       "side_cutting",   20, "side_cutting_w",    10,   0)
+    WELD     = (0, "Welding",              "welding",        20, "welding",           None, 0)
+    SURF_GR  = (0, "Surface Grinding",     "surface_grind",  10, "surface_grinding",  2,    0)
+    SAND     = (0, "Sandblasting",         "sand_blast",     20, "sand_blasting",     None, 0)
+
+    # Small-only ops
+    EDGEGR1  = (0, "Edge Grinding Side 1", "edge_grind",     10, "edge_grinding",     5,    0)
+    EDGEGR2  = (0, "Edge Grinding Side 2", "edge_grind",     10, "edge_grinding_w",   5,    0)
+    STEP_L_1 = (0, "Step Milling Side 1",  "side_cutting",   20, "step_milling_side", 4,    0)  # Lower
+    STEP_U_1 = (0, "Step Milling Side 1",  "side_cutting",   20, "step_milling_side", 2,    0)  # Upper
+    STEP_L_2 = (0, "Step Milling Side 2",  "side_cutting",   20, "step_milling_side_w",4,   0)  # Lower
+    STEP_U_2 = (0, "Step Milling Side 2",  "side_cutting",   20, "step_milling_side_w",2,   0)  # Upper
+    RUB_S    = (0, "Rubber Depth Milling", "rubber_milling", 20, "rubber_milling",    None, 0)
+    RAD_S    = (0, "Radius Milling",       "radius_milling",  5, "radius_milling",    None, 0)
+    RMOV     = (0, "Removal Slot",         "side_cutting",   20, "fixed",             None, 30)
+    RUB_FIN  = (0, "Rubberizing",          "rubberizing",    20, "fixed",             None, 40)
+
+    # Big-only ops
+    STEP_FULL= (0, "Step Milling",         "facing",         10, "step_milling_full", None, 0)
+    EDGESIZ  = (0, "Edge Sizing",          "edge_sizing",    10, "edge_sizing",       10,   0)
+    RUB_B    = (0, "Rubber Depth Milling", "rubber_milling", 20, "rubber_milling",    None, 0)
+    RAD_B    = (0, "Radius Milling",       "radius_milling",  5, "radius_milling",    None, 0)
+    RUB_FIN_B= (0, "Rubberizing",          "rubberizing",    20, "fixed",             None, 40)
+
+    ISO_MILL = (0, "Iso Depth Milling",    "facing",         20, "iso_depth_milling", 11, 0)
+
+    def seq(ops):
+        return [(i+1,)+op[1:] for i, op in enumerate(ops)]
+
+    ROUTINGS = [
+        {"name": "Punch — Lower Small (≤ 600×600)", "description": "Non-Iso Lower Punch, small size.", "lead_days": 2.0,
+         "ops": seq([LIFTING, FACING, SIDE1, SIDE2, WELD, SURF_GR,
+                     EDGEGR1, EDGEGR2, STEP_L_1, STEP_L_2,
+                     RUB_S, RAD_S, RMOV, SAND, RUB_FIN])},
+        {"name": "Punch — Upper Small (≤ 600×600)", "description": "Non-Iso Upper Punch, small size.", "lead_days": 2.0,
+         "ops": seq([LIFTING, FACING, SIDE1, SIDE2, WELD, SURF_GR,
+                     EDGEGR1, EDGEGR2, STEP_U_1, STEP_U_2,
+                     RUB_S, RAD_S, RMOV, SAND, RUB_FIN])},
+        {"name": "Punch — Lower Big (> 600×600)", "description": "Non-Iso Lower Punch, large size.", "lead_days": 3.0,
+         "ops": seq([LIFTING, FACING, SIDE1, SIDE2, WELD, SURF_GR,
+                     STEP_FULL, EDGESIZ, RUB_B, RAD_B, SAND, RUB_FIN_B])},
+        {"name": "Punch — Upper Big (> 600×600)", "description": "Non-Iso Upper Punch, large size.", "lead_days": 3.0,
+         "ops": seq([LIFTING, FACING, SIDE1, SIDE2, WELD, SURF_GR,
+                     STEP_FULL, EDGESIZ, RUB_B, RAD_B, SAND, RUB_FIN_B])},
+        # Iso variants — same as Non-Iso but with Iso Depth Milling inserted after Side Cutting 2
+        {"name": "Iso Punch — Lower Small (≤ 600×600)", "description": "Isostatic Lower Punch, small size.", "lead_days": 2.0,
+         "ops": seq([LIFTING, FACING, SIDE1, SIDE2, ISO_MILL, WELD, SURF_GR,
+                     EDGEGR1, EDGEGR2, STEP_L_1, STEP_L_2,
+                     RAD_S, RMOV, SAND, RUB_FIN])},
+        {"name": "Iso Punch — Upper Small (≤ 600×600)", "description": "Isostatic Upper Punch, small size.", "lead_days": 2.0,
+         "ops": seq([LIFTING, FACING, SIDE1, SIDE2, ISO_MILL, WELD, SURF_GR,
+                     EDGEGR1, EDGEGR2, STEP_U_1, STEP_U_2,
+                     RAD_S, RMOV, SAND, RUB_FIN])},
+        {"name": "Iso Punch — Lower Big (> 600×600)", "description": "Isostatic Lower Punch, large size.", "lead_days": 3.0,
+         "ops": seq([LIFTING, FACING, SIDE1, SIDE2, ISO_MILL, WELD, SURF_GR,
+                     STEP_FULL, EDGESIZ, RAD_B, SAND, RUB_FIN_B])},
+        {"name": "Iso Punch — Upper Big (> 600×600)", "description": "Isostatic Upper Punch, large size.", "lead_days": 3.0,
+         "ops": seq([LIFTING, FACING, SIDE1, SIDE2, ISO_MILL, WELD, SURF_GR,
+                     STEP_FULL, EDGESIZ, RAD_B, SAND, RUB_FIN_B])},
     ]
+
     created = []; skipped = []
-    for rdef in routings_def:
+    for rdef in ROUTINGS:
         if db.query(Routing).filter(Routing.name == rdef["name"]).first():
             skipped.append(rdef["name"]); continue
+
         r = Routing(name=rdef["name"], product_type="Punch",
                     description=rdef["description"],
-                    material_lead_days=rdef["lead_days"], is_active=False)
+                    material_lead_days=rdef["lead_days"],
+                    is_active=True)
         db.add(r); db.flush()
-        for seq,op_name,mkey,setup_min,work_hrs in rdef["steps"]:
+
+        for op_tuple in rdef["ops"]:
+            seq_no, name, mkey, setup, ftype, depth, mach_fixed = op_tuple
             wc = M[mkey]
-            db.add(Operation(routing_id=r.id, sequence=seq, name=op_name,
-                             work_center_id=wc.id,
-                             machine_setup_mins=setup_min, job_setup_mins=0,
-                             setup_time_mins=setup_min,
-                             work_time_hrs=work_hrs, is_optional=False))
+            db.add(Operation(
+                routing_id=r.id, sequence=seq_no, name=name,
+                work_center_id=wc.id,
+                machine_setup_mins=0, job_setup_mins=setup,
+                setup_time_mins=setup,
+                work_time_hrs=0, work_time_mins=0,
+                is_optional=False,
+                formula_type=ftype,
+                mrr=None,
+                depth_mm=float(depth) if depth is not None else None,
+                dim_x_source=None, dim_y_source=None,
+            ))
+
+        db.flush()
         created.append(rdef["name"])
+
     db.commit(); db.close()
-    return {"msg":f"Seeded {len(created)} Punch routings (inactive — review before activating)",
-            "created":created,"skipped_existing":skipped}
+    return {
+        "msg": f"Created {len(created)} Punch routing template(s). "
+               f"Go to Routings page to review.",
+        "created": created,
+        "skipped_existing": skipped,
+    }
+
 
 if __name__ == "__main__":
     import uvicorn

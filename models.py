@@ -95,12 +95,20 @@ class Operation(Base):
     sequence           = Column(Integer, nullable=False)
     name               = Column(String, nullable=False)
     work_center_id     = Column(Integer, ForeignKey("work_centers.id"), nullable=False)
-    machine_setup_mins = Column(Float, default=0)   # waived for consecutive same-worker ops
-    job_setup_mins     = Column(Float, default=0)   # always required per job
+    machine_setup_mins = Column(Float, default=0)
+    job_setup_mins     = Column(Float, default=0)
     work_time_hrs      = Column(Float, default=0)
-    work_time_mins     = Column(Float, default=0)   # canonical — always = work_time_hrs * 60
+    work_time_mins     = Column(Float, default=0)
     is_optional        = Column(Boolean, default=False)
-    setup_time_mins    = Column(Float, default=0)   # legacy = machine + job
+    setup_time_mins    = Column(Float, default=0)
+    # ── Formula-based time calculation ──────────────────────────────────────
+    # formula_type: none | volume_milling | area | perimeter_side | perimeter_weld | fixed
+    formula_type       = Column(String, nullable=True)
+    mrr                = Column(Float, nullable=True)    # removal/feed rate
+    depth_mm           = Column(Float, nullable=True)    # depth or passes
+    dim_x_source       = Column(String, nullable=True)   # length | width | thickness
+    dim_y_source       = Column(String, nullable=True)   # length | width | thickness
+    # ────────────────────────────────────────────────────────────────────────
     routing            = relationship("Routing", back_populates="operations")
     work_center        = relationship("WorkCenter")
 
