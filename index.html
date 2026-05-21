@@ -678,6 +678,9 @@ input.valid,select.valid{border-color:var(--green)}
     <div class="nav-item" onclick="showPage('capacity')">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>Capacity
     </div>
+    <div class="nav-item" onclick="showPage('floorplan')">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>Floor Plan
+    </div>
     <div class="nav-group">Setup</div>
     <div class="nav-item" onclick="showPage('routings')">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>Routings
@@ -989,8 +992,8 @@ function sBadge(s){const m={pending:'badge-pending',scheduled:'badge-scheduled',
 function navActive(p){document.querySelectorAll('.nav-item').forEach(el=>el.classList.toggle('active',!!(el.getAttribute('onclick')?.includes(`'${p}'`))))}
 function showPage(p){
   currentPage=p;navActive(p);
-  document.getElementById('pageTitle').textContent={dashboard:'Dashboard',today:"Today's Work",upcoming:'Upcoming Tasks',jobs:'Jobs',orders:'Orders',schedule:'Gantt Schedule',capacity:'Capacity Heatmap',routings:'Routing Templates','routing-stats':'Routing Stats — Estimated vs Actual',machines:'Machines',workers:'Workers & Leave',customers:'Customers',reports:'Reports',settings:'Settings'}[p]||p;
-  const pageRenderer = ({dashboard:renderDashboard,today:renderToday,upcoming:renderUpcoming,jobs:renderJobs,orders:renderOrders,schedule:renderSchedule,capacity:renderCapacity,routings:renderRoutings,'routing-stats':renderRoutingStats,machines:renderMachines,workers:renderWorkers,customers:renderCustomers,reports:renderReports,settings:renderSettings})[p];
+  document.getElementById('pageTitle').textContent={dashboard:'Dashboard',today:"Today's Work",upcoming:'Upcoming Tasks',jobs:'Jobs',orders:'Orders',schedule:'Gantt Schedule',capacity:'Capacity Heatmap',floorplan:'Floor Plan',routings:'Routing Templates','routing-stats':'Routing Stats — Estimated vs Actual',machines:'Machines',workers:'Workers & Leave',customers:'Customers',reports:'Reports',settings:'Settings'}[p]||p;
+  const pageRenderer = ({dashboard:renderDashboard,today:renderToday,upcoming:renderUpcoming,jobs:renderJobs,orders:renderOrders,schedule:renderSchedule,capacity:renderCapacity,floorplan:renderFloorPlan,routings:renderRoutings,'routing-stats':renderRoutingStats,machines:renderMachines,workers:renderWorkers,customers:renderCustomers,reports:renderReports,settings:renderSettings})[p];
   if(pageRenderer) pageRenderer().catch(e=>{
     console.error('Page render error:', e);
     document.getElementById('content').innerHTML=`<div style="padding:40px;text-align:center;color:var(--muted)"><div style="font-size:14px;margin-bottom:8px">Error loading page</div><div style="font-size:12px">${e.message}</div><button class="btn btn-secondary" style="margin-top:12px" onclick="showPage('${p}')">↻ Retry</button></div>`;
@@ -1020,7 +1023,8 @@ async function scheduleAll(){
   try{
     const r=await api('POST','/api/schedule-all');
     let msg=`Scheduled ${r.scheduled} jobs`;
-    if(r.skipped_active>0) msg+=` · ${r.skipped_active} active jobs protected`;
+    if(r.skipped_active>0) msg+=` · ${r.skipped_active} active/frozen jobs protected`;
+    if(r.frozen_count>0) msg+=` · 🔒 ${r.frozen_count} frozen`;
     if(r.preempted>0) msg+=` · ⚡ ${r.preempted} ops paused for urgent`;
     if(r.unassigned_ops>0) msg+=` · ⚠ ${r.unassigned_ops} ops have no worker`;
     toast(msg, r.unassigned_ops>0?'error':'success');
@@ -1498,6 +1502,7 @@ function jobRowHTML(j, inGroup=false){
 
       <div style="flex:0 0 110px;min-width:0">
         <div class="mono" style="font-size:12px;font-weight:600">${j.job_number}</div>
+        ${j.is_frozen?'<span class="badge" style="background:var(--blue-soft,#dbeafe);color:var(--blue,#1d4ed8);margin-left:4px" title="Frozen — excluded from Schedule All">🔒 Frozen</span>':""}
         ${j.piece_number?`<div style="font-size:10px;color:var(--muted)">Piece ${j.piece_number}</div>`:''}
       </div>
 
@@ -1529,6 +1534,7 @@ function jobRowHTML(j, inGroup=false){
 
       <div style="flex:0 0 auto;display:flex;gap:5px;flex-wrap:wrap" onclick="event.stopPropagation()">
         ${j.priority_flag?'':'<button class="btn btn-danger btn-icon" title="Urgent" onclick="setUrgent('+j.id+')">🚨</button>'}
+        <button class="btn btn-ghost btn-icon" title="${j.is_frozen?'Unfreeze — allow rescheduling':'Freeze — skip in Schedule All'}" onclick="toggleFreeze(${j.id})">${j.is_frozen?'🔓':'🔒'}</button>
         <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="openJobModal(${j.id})">Edit</button>
         <button class="btn btn-ghost btn-icon" title="Duplicate" onclick="duplicateJob(${j.id})">⧉</button>
         ${j.status==='pending'?`<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="scheduleJob(${j.id})">Schedule</button>`:''}
@@ -1599,6 +1605,13 @@ async function duplicateJob(id){
 
 async function scheduleJob(id){try{await api('POST',`/api/schedule/${id}`);toast('Scheduled!');await loadAll();showPage('jobs')}catch(e){toast(e.message,'error')}}
 async function setUrgent(id){try{await api('PUT',`/api/jobs/${id}`,{priority_flag:true});toast('Marked urgent!');await loadAll();showPage('jobs')}catch(e){toast(e.message,'error')}}
+async function toggleFreeze(id){
+  try{
+    const r=await api('POST',`/api/jobs/${id}/toggle-freeze`);
+    toast(r.is_frozen?'🔒 Job frozen — will be skipped by Schedule All':'🔓 Job unfrozen — will be included in Schedule All');
+    await loadAll();showPage('jobs');
+  }catch(e){toast(e.message,'error')}
+}
 async function delJob(id){
   const ok=await confirm2('Delete this job? This cannot be undone.');if(!ok)return;
   try{await api('DELETE',`/api/jobs/${id}`);toast('Deleted');await loadAll();showPage('jobs')}catch(e){toast(e.message,'error')}
@@ -2388,7 +2401,7 @@ function buildMachineOpts(selId){
 function openRoutingModal(editId){
   const r=editId?allRoutings.find(x=>x.id===editId):null;
   routingOps=r?r.operations.map(o=>({...o})):[];
-  const PTYPES=['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate','Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
+  const PTYPES=['Punch','Lower Punch','Upper Punch','Iso Lower Punch','Iso Upper Punch','Die Frame','Liner Set','Complete Mould','Custom Plate','Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
   showModal(r?'Edit Routing':'New Routing',
     `<div class="form-section">Routing Details</div>
     <div class="form-row cols-2">
@@ -3676,7 +3689,12 @@ async function filterOrderRouting(){
   const ptype = document.getElementById('ord_ptype')?.value||'';
   const sel   = document.getElementById('ord_routing');
   if(!sel) return;
-  const opts  = allRoutings.filter(r=>!ptype||r.product_type===ptype||r.product_type.toLowerCase()===ptype.toLowerCase());
+  const isPunchOrder = ptype.toLowerCase().includes('punch');
+  const opts = allRoutings.filter(r=>{
+    if(!ptype) return true;
+    if(isPunchOrder) return r.product_type.toLowerCase().includes('punch');
+    return r.product_type.toLowerCase()===ptype.toLowerCase();
+  });
   sel.innerHTML = `<option value="">— Select routing —</option>`+opts.map(r=>`<option value="${r.id}">${r.name}</option>`).join('');
   orderFormOps = [];
   document.getElementById('ordOpsWrap').innerHTML=`<div style="color:var(--muted);font-size:12px;padding:4px 0">Select a routing to edit operation times</div>`;
@@ -3711,46 +3729,47 @@ async function loadOrderOps(){
 
 // ── Punch dimension calculator ──
 async function calcPunchTimes(){
-  const ptype = (document.getElementById('ord_ptype')?.value||'Lower Punch');
   const L = parseFloat(document.getElementById('ord_length')?.value)||0;
   const W = parseFloat(document.getElementById('ord_width')?.value)||0;
   const T = parseFloat(document.getElementById('ord_thickness')?.value)||35;
 
   if(!L||!W){toast('Enter length and width first','error');return;}
+  if(!orderFormOps.length){toast('Select a routing template first','error');return;}
 
-  // punch_type for API: 'Lower' or 'Upper'
-  const apiPunchType = ptype.toLowerCase().includes('upper') ? 'Upper' : 'Lower';
-
-  const machineMap={};
-  orderFormOps.forEach(op=>{ if(op.name&&op.work_center_id) machineMap[op.name]=op.work_center_id; });
+  // Send the CURRENT routing ops to the API — it calculates times using each op's
+  // own formula_type, mrr, and depth_mm. Does NOT replace ops with a hardcoded list.
+  const payload = {
+    length: L, width: W, thickness: T,
+    routing_ops: orderFormOps.map(op=>({
+      operation_id:    op.operation_id||null,
+      name:            op.name,
+      formula_type:    op.formula_type||'fixed',
+      mrr:             op.mrr||null,
+      depth_mm:        op.depth_mm||null,
+      setup_time_mins: op.setup_time_mins||0,
+      machining_mins:  op.work_time_mins||0,
+      work_center_id:  op.work_center_id||null,
+      included:        op.included!==false,
+    }))
+  };
 
   try{
-    const r = await api('POST','/api/punch-calc',{
-      punch_type:apiPunchType, length:L, width:W, thickness:T, machine_map:machineMap
-    });
+    const r = await api('POST','/api/punch-calc', payload);
 
-    const calcByName={};
-    r.ops.forEach(o=>{ calcByName[o.name]=o; });
-
-    orderFormOps = r.ops.map(calcOp=>{
-      const existing = orderFormOps.find(o=>o.name===calcOp.name);
+    // Update times IN PLACE — keep routing structure, only update work_time_mins
+    orderFormOps = r.ops.map((calcOp, i)=>{
+      const existing = orderFormOps[i] || {};
       return {
-        operation_id: existing?.operation_id||null,
-        name:         calcOp.name,
-        wc_name:      existing?.wc_name||'',
-        work_center_id: calcOp.work_center_id || existing?.work_center_id || null,
-        setup_time_mins: calcOp.setup_time_mins,
+        ...existing,
         work_time_mins:  calcOp.work_time_mins,
-        work_time_hrs:   calcOp.work_time_mins/60,
-        is_optional: false, included: true,
-        formula_type:    calcOp.formula_type,
+        work_time_hrs:   calcOp.work_time_mins / 60,
         _formula_desc:   calcOp.formula_desc,
       };
     });
 
     renderOrderOpsTable();
     triggerEstimate();
-    toast(`Calculated ${r.ops.length} operations — total ${Math.round(r.total_mins)}min (${r.total_hrs.toFixed(1)}h)`);
+    toast(`Calculated ${r.ops.length} ops · total ${Math.round(r.total_mins)} min (${r.total_hrs.toFixed(1)} h)`);
   }catch(e){toast(e.message,'error');}
 }
 
@@ -4268,6 +4287,314 @@ function _routingStatsCard(r){
       </tbody>
     </table>
   </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLOOR PLAN PAGE
+// ─────────────────────────────────────────────────────────────────────────────
+const floorPlan = {
+  machines: {}, load: {}, assignments: {}, machineStatus: {}, selected: null, showWorkers: true, timer: null,
+
+  async fetchDetails() {
+    const d = await api('GET', '/api/machines/details');
+    this.machines = d;
+  },
+
+  async fetchData() {
+    try {
+      const [load, assign, status] = await Promise.all([
+        api('GET', '/api/machines/load-today'),
+        api('GET', '/api/machines/assignments/now'),
+        api('GET', '/api/machines/status-today'),
+      ]);
+      this.load = load;
+      this.assignments = assign;
+      this.machineStatus = status;
+      this.applyColors();
+      this.applyBadges();
+      if (this.selected) await this.renderDetail(this.selected);
+    } catch(e) { console.warn('Floor plan update failed:', e); }
+  },
+
+  colorFor(code) {
+    const st = this.machineStatus[code];
+    if (st === 'breakdown') return '#3b82f6';
+    if (st === 'maintenance') return '#8b5cf6';
+    if (st === 'in_progress') return '#ef4444';
+    if (st === 'scheduled') return '#f59e0b';
+    const pct = Math.round(((this.load[code] || 0) / 10) * 100);
+    if (pct > 70) return '#ef4444';
+    if (pct > 30) return '#f59e0b';
+    return '#22c55e';
+  },
+
+  statusLabel(code) {
+    const st = this.machineStatus[code];
+    if (st === 'breakdown') return 'Down';
+    if (st === 'maintenance') return 'Maintenance';
+    if (st === 'in_progress') return 'Running';
+    if (st === 'scheduled') return 'Scheduled';
+    return 'Available';
+  },
+
+  buildSVG() {
+    // ViewBox 1460 x 590. Two sections split by pathway at y≈300.
+    const layout = {
+      'M21': {x:15,  y:100, w:90,  h:110},
+      'M7':  {x:140, y:165, w:85,  h:80},
+      'M8':  {x:255, y:145, w:130, h:110},
+      'M9':  {x:415, y:145, w:130, h:110},
+      'M10': {x:575, y:145, w:95,  h:65},
+      'M20': {x:575, y:220, w:95,  h:60},
+      'M11': {x:690, y:145, w:95,  h:110},
+      'M12': {x:800, y:145, w:95,  h:110},
+      'M13': {x:910, y:145, w:95,  h:110},
+      'M14': {x:1040,y:145, w:150, h:110},
+      'M17': {x:1255,y:145, w:95,  h:110},
+      'M15': {x:995, y:20,  w:300, h:85},
+      'M22': {x:1360,y:20,  w:85,  h:85},
+      'M16': {x:1360,y:120, w:85,  h:135},
+      'M6':  {x:15,  y:320, w:85,  h:130},
+      'M5':  {x:15,  y:465, w:85,  h:100},
+      'M4':  {x:255, y:345, w:130, h:120},
+      'M3':  {x:415, y:345, w:130, h:120},
+      'M2':  {x:580, y:345, w:175, h:120},
+      'M1':  {x:870, y:345, w:130, h:120},
+      'M19': {x:1020,y:380, w:95,  h:70},
+      'M18': {x:1255,y:330, w:100, h:110},
+    };
+
+    const cell = (code) => {
+      const pos = layout[code];
+      if (!pos) return '';
+      const { x, y, w, h } = pos;
+      const d = this.machines[code] || {};
+      // Full machine name — use all words, wrap at 14 chars per line
+      const fullName = d.name || code;
+      const words = fullName.split(' ');
+      let line1 = '', line2 = '';
+      for (const word of words) {
+        if (!line1 || (line1 + ' ' + word).length <= 14) line1 = line1 ? line1 + ' ' + word : word;
+        else { line2 = line2 ? line2 + ' ' + word : word; break; }
+      }
+      const fill = this.colorFor(code);
+      const pct  = Math.round(((this.load[code]||0)/10)*100);
+      const asgn = this.assignments[code];
+      const st   = this.statusLabel(code);
+      const fs   = w >= 130 ? 12 : 11;
+
+      // Worker badge below the box
+      const badge = (asgn && this.showWorkers)
+        ? `<rect x="${x+w/2-22}" y="${y+h+3}" width="44" height="17" rx="3" fill="#1d4ed8" opacity="0.92"/>
+           <text x="${x+w/2}" y="${y+h+15}" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">${asgn.worker_code}</text>`
+        : '';
+
+      const nameY1 = line2 ? y+h/2+3 : y+h/2+9;
+      const codeY  = line2 ? y+h/2-14 : y+h/2-8;
+      return `<g class="fp-machine" data-code="${code}" onclick="floorPlan.select('${code}')" style="cursor:pointer">
+        <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6" fill="${fill}" stroke="rgba(0,0,0,.2)" stroke-width="1"/>
+        <text x="${x+w/2}" y="${codeY}" text-anchor="middle" dominant-baseline="middle" font-size="13" font-weight="700" fill="#fff">${code}</text>
+        <text x="${x+w/2}" y="${nameY1}" text-anchor="middle" dominant-baseline="middle" font-size="${fs}" fill="rgba(255,255,255,.9)">${line1}</text>
+        ${line2 ? `<text x="${x+w/2}" y="${y+h/2+17}" text-anchor="middle" dominant-baseline="middle" font-size="${fs}" fill="rgba(255,255,255,.9)">${line2}</text>` : ''}
+        <text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" dominant-baseline="middle" font-size="9" fill="rgba(255,255,255,.75)">${st} · ${pct}%</text>
+        ${badge}
+      </g>`;
+    };
+
+    const cells = Object.keys(layout).map(cell).join('');
+
+    // Pathway: thick grey band between rows
+    const pathway = `
+      <rect x="110" y="295" width="1345" height="22" rx="0" fill="var(--bg)" opacity="0.5"/>
+      <line x1="110" y1="295" x2="1455" y2="295" stroke="var(--border)" stroke-width="1.5"/>
+      <line x1="110" y1="317" x2="1455" y2="317" stroke="var(--border)" stroke-width="1.5"/>
+      <text x="680" y="309" text-anchor="middle" dominant-baseline="middle" font-size="9" fill="var(--muted)" letter-spacing="4">· · · · · · · · · AISLE · · · · · · · · ·</text>
+      <line x1="110" y1="120" x2="110" y2="580" stroke="var(--border)" stroke-width="1.2" stroke-dasharray="6 4" opacity="0.5"/>
+    `;
+
+    return `<svg id="fpSvg" viewBox="0 0 1460 590" style="width:100%;min-width:900px">
+      ${pathway}
+      ${cells}
+    </svg>`;
+  },
+
+  applyColors() {
+    document.querySelectorAll('.fp-machine').forEach(g => {
+      const code = g.dataset.code;
+      const rect = g.querySelector('rect');
+      if (rect) rect.setAttribute('fill', this.colorFor(code));
+      // Update status+pct text (last text in group)
+      const texts = g.querySelectorAll('text');
+      const last = texts[texts.length - 1];
+      if (last && !last.dataset.worker) {
+        const pct = Math.round(((this.load[code]||0)/10)*100);
+        last.textContent = `${this.statusLabel(code)} · ${pct}%`;
+      }
+    });
+  },
+
+  applyBadges() {
+    document.querySelectorAll('.fp-machine').forEach(g => {
+      const code = g.dataset.code;
+      // Remove old dynamic badges
+      g.querySelectorAll('[data-worker]').forEach(el => el.remove());
+      const asgn = this.assignments[code];
+      if (asgn && this.showWorkers) {
+        const ns = 'http://www.w3.org/2000/svg';
+        const rect = g.querySelector('rect');
+        const bx = +rect.getAttribute('x') + +rect.getAttribute('width') / 2;
+        const by = +rect.getAttribute('y') + +rect.getAttribute('height');
+        const bg = document.createElementNS(ns, 'rect');
+        bg.setAttribute('x', bx - 22); bg.setAttribute('y', by + 3);
+        bg.setAttribute('width', 44); bg.setAttribute('height', 17);
+        bg.setAttribute('rx', 3); bg.setAttribute('fill', '#1d4ed8');
+        bg.setAttribute('opacity', '0.92'); bg.dataset.worker = '1';
+        const t = document.createElementNS(ns, 'text');
+        t.setAttribute('x', bx); t.setAttribute('y', by + 15);
+        t.setAttribute('text-anchor', 'middle');
+        t.setAttribute('font-size', '10'); t.setAttribute('font-weight', '700');
+        t.setAttribute('fill', '#fff'); t.dataset.worker = '1';
+        t.textContent = asgn.worker_code;
+        g.appendChild(bg); g.appendChild(t);
+      }
+    });
+  },
+
+  select(code) {
+    document.querySelectorAll('.fp-machine rect:first-child').forEach(r => {
+      r.setAttribute('stroke', 'rgba(0,0,0,.2)');
+      r.setAttribute('stroke-width', '1');
+    });
+    const sel = document.querySelector(`.fp-machine[data-code="${code}"] rect`);
+    if (sel) { sel.setAttribute('stroke', '#fff'); sel.setAttribute('stroke-width', '3'); }
+    this.selected = code;
+    this.renderDetail(code);
+  },
+
+  async renderDetail(code) {
+    const el = document.getElementById('fpDetail');
+    if (!el) return;
+    const d = this.machines[code] || {};
+    const hours = this.load[code] || 0;
+    const pct = Math.round((hours / 10) * 100);
+    const asgn = this.assignments[code];
+    const color = this.colorFor(code);
+    const st = this.statusLabel(code);
+
+    let html = `
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">
+        <div style="width:52px;height:52px;border-radius:8px;background:${color};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px;flex-shrink:0;flex-direction:column;gap:1px">
+          <span>${pct}%</span><span style="font-size:9px;font-weight:500;opacity:.8">${hours.toFixed(1)}h</span>
+        </div>
+        <div>
+          <div style="font-size:17px;font-weight:600;margin-bottom:3px">${d.name||code} <span style="font-size:13px;color:var(--muted);font-weight:400">(${code})</span></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <span style="font-size:11px;padding:2px 8px;border-radius:20px;background:${color};color:#fff;font-weight:600">${st}</span>
+            <span style="font-size:11px;color:var(--muted)">${d.type||'—'} · Skill L${d.skill_level||1}</span>
+          </div>
+        </div>
+      </div>`;
+
+    if (asgn) {
+      html += `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
+        <div style="width:36px;height:36px;border-radius:6px;background:#1d4ed8;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700;flex-shrink:0">${asgn.worker_code}</div>
+        <div>
+          <div style="font-size:14px;font-weight:600">${asgn.worker_name}</div>
+          <div style="font-size:12px;color:var(--muted)">${asgn.job_number} · ${asgn.op_name}</div>
+        </div>
+        <div style="margin-left:auto;font-size:11px;padding:2px 8px;background:var(--orange,#f59e0b);color:#fff;border-radius:20px;font-weight:600">In progress</div>
+      </div>`;
+    }
+
+    el.innerHTML = html + `<div id="fpOpsLoading" style="color:var(--muted);font-size:13px">Loading operations…</div>`;
+
+    try {
+      const res = await api('GET', `/api/machines/${code}/today`);
+      const ops = res.ops || [];
+      const statusColor = {completed:'#22c55e', in_progress:'#f59e0b', paused:'#ef4444', scheduled:'#6b7280'};
+      const statusLabel = {completed:'Done', in_progress:'Running', paused:'Paused', scheduled:'Scheduled'};
+      let opsHtml = `<div style="border-top:1px solid var(--border);padding-top:14px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">Today's operations <span style="color:var(--muted);font-weight:400">(${ops.length})</span></div>`;
+      if (ops.length === 0) {
+        opsHtml += `<div style="color:var(--muted);font-size:13px;padding:8px 0">No operations scheduled for today</div>`;
+      } else {
+        ops.forEach(op => {
+          const t = op.scheduled_start ? new Date(op.scheduled_start).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
+          const sc = statusColor[op.status] || '#6b7280';
+          const sl = statusLabel[op.status] || op.status;
+          opsHtml += `<div style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);align-items:flex-start">
+            <div style="width:8px;height:8px;border-radius:50%;background:${sc};flex-shrink:0;margin-top:5px"></div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:600;margin-bottom:2px">${op.job_number} · ${op.operation_name}</div>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:2px">${op.worker_name} · ${op.estimated_duration}h · ${t}</div>
+            </div>
+            <span style="font-size:10px;padding:2px 7px;border-radius:20px;background:${sc};color:#fff;font-weight:600;flex-shrink:0;margin-top:2px">${sl}</span>
+          </div>`;
+        });
+      }
+      opsHtml += `</div>`;
+      document.getElementById('fpOpsLoading').outerHTML = opsHtml;
+    } catch(e) {
+      const el2 = document.getElementById('fpOpsLoading');
+      if (el2) el2.textContent = 'Could not load operations.';
+    }
+  },
+
+  toggleWorkers() {
+    this.showWorkers = document.getElementById('fpWorkerToggle').checked;
+    this.applyBadges();
+  },
+
+  start() { this.timer = setInterval(() => this.fetchData(), 5000); },
+  stop()  { if (this.timer) { clearInterval(this.timer); this.timer = null; } },
+};
+
+async function renderFloorPlan() {
+  floorPlan.stop();
+  if (Object.keys(floorPlan.machines).length === 0) {
+    try { await floorPlan.fetchDetails(); } catch(e) { console.warn('Floor plan details failed:', e); }
+  }
+  await floorPlan.fetchData();
+
+  document.getElementById('content').innerHTML = `
+    <div style="padding:28px 32px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+        <div>
+          <div style="font-size:22px;font-weight:600;margin-bottom:2px">Factory Floor Plan</div>
+          <div style="font-size:13px;color:var(--muted)">Live machine capacity &amp; worker assignments · auto-refresh 5s</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;color:var(--fg)">
+            <input type="checkbox" id="fpWorkerToggle" ${floorPlan.showWorkers?'checked':''} onchange="floorPlan.toggleWorkers()"> Show workers
+          </label>
+          <button class="btn btn-secondary" onclick="floorPlan.fetchData()" style="font-size:12px;padding:5px 12px">↻ Refresh</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;font-size:12px">
+        <div style="display:flex;align-items:center;gap:5px"><div style="width:12px;height:12px;border-radius:3px;background:#22c55e"></div>Available</div>
+        <div style="display:flex;align-items:center;gap:5px"><div style="width:12px;height:12px;border-radius:3px;background:#f59e0b"></div>Scheduled</div>
+        <div style="display:flex;align-items:center;gap:5px"><div style="width:12px;height:12px;border-radius:3px;background:#ef4444"></div>Running / Full</div>
+        <div style="display:flex;align-items:center;gap:5px"><div style="width:12px;height:12px;border-radius:3px;background:#8b5cf6"></div>Maintenance</div>
+        <div style="display:flex;align-items:center;gap:5px"><div style="width:12px;height:12px;border-radius:3px;background:#3b82f6"></div>Breakdown</div>
+      </div>
+
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:24px;overflow-x:auto">
+        ${floorPlan.buildSVG()}
+      </div>
+
+      <div id="fpDetail" style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:20px;min-height:80px;font-size:13px;color:var(--muted)">
+        Click any machine to view today's operations and worker details
+      </div>
+    </div>`;
+
+  const style = document.createElement('style');
+  style.id = 'fpStyle';
+  document.getElementById('fpStyle')?.remove();
+  style.textContent = `.fp-machine{cursor:pointer}.fp-machine:hover>rect{filter:brightness(1.1)}.fp-machine rect,.fp-machine text{transition:all .15s}`;
+  document.head.appendChild(style);
+
+  floorPlan.start();
 }
 
 </script>
