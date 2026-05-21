@@ -104,7 +104,8 @@ class Operation(Base):
     # ── Formula-based time calculation ──────────────────────────────────────
     # formula_type: none | volume_milling | area | perimeter_side | perimeter_weld | fixed
     formula_type       = Column(String, nullable=True)
-    mrr                = Column(Float, nullable=True)    # removal/feed rate
+    mrr                = Column(Float, nullable=True)    # material removal rate
+    feed_rate          = Column(Float, nullable=True)    # feed rate mm/min (for perimeter milling, step milling)
     depth_mm           = Column(Float, nullable=True)    # depth or passes
     dim_x_source       = Column(String, nullable=True)   # length | width | thickness
     dim_y_source       = Column(String, nullable=True)   # length | width | thickness

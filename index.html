@@ -2401,7 +2401,7 @@ function buildMachineOpts(selId){
 function openRoutingModal(editId){
   const r=editId?allRoutings.find(x=>x.id===editId):null;
   routingOps=r?r.operations.map(o=>({...o})):[];
-  const PTYPES=['Punch','Lower Punch','Upper Punch','Iso Lower Punch','Iso Upper Punch','Die Frame','Liner Set','Complete Mould','Custom Plate','Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
+  const PTYPES=['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate','Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
   showModal(r?'Edit Routing':'New Routing',
     `<div class="form-section">Routing Details</div>
     <div class="form-row cols-2">
@@ -2456,29 +2456,47 @@ function renderOpRows(){
   if(e) e.style.display=routingOps.length?'none':'';
   if(!c) return;
 
-  const FTYPES={volume_milling:'Volume Milling',area:'Area',perimeter_side:'Perimeter Side',perimeter_weld:'Perimeter Weld',fixed:'Fixed (setup only)'};
+  const FTYPES={
+    'Fixed':                         'Fixed (constant time)',
+    'Volume Milling':                'Volume Milling — L×W×Depth / MRR',
+    'Perimeter Milling Single Side': 'Perimeter Milling Single Side — Dim×Depth / MRR',
+    'Perimeter Milling Full':        'Perimeter Milling Full — 2×(L+W)×(T-8)/0.3/Feed',
+    'Perimeter Side Milling':        'Perimeter Side Milling — 2×(L+W)×Passes / Feed',
+    'Perimeter Milling':             'Perimeter Milling — 2×(L+W)×3 / Feed',
+    'Perimeter Welding':             'Perimeter Welding — 2×(L+W) / 200',
+    'Surface Grinding':              'Surface Grinding — Passes×(Dim+250) / 20000',
+    'Sandblasting':                  'Sandblasting — L×W / MRR',
+  };
   const DIMS=['length','width','thickness'];
 
   c.innerHTML=routingOps.map((op,i)=>{
     const hasFormula=!!(op.formula_type&&op.formula_type!=='none');
     const wMins=op.work_time_mins!=null?Math.round(op.work_time_mins):Math.round((op.work_time_hrs||0)*60);
     const ft=op.formula_type||'';
-    const needsDimX = ft && ft!=='fixed' && ft!=='perimeter_weld';
-    const needsDimY = ft==='volume_milling'||ft==='area';
-    const needsDepth= ft && ft!=='fixed'&&ft!=='area'&&ft!=='perimeter_weld';
-    const needsMRR  = ft && ft!=='fixed';
+    // Which inputs each formula needs — keyed on Excel display names
+    const needsDimX  = ['Volume Milling','Perimeter Milling Single Side','Surface Grinding'].includes(ft);
+    const needsDimY  = ['Volume Milling'].includes(ft);
+    const needsDepth = ['Volume Milling','Perimeter Milling Single Side','Perimeter Side Milling','Surface Grinding'].includes(ft);
+    const needsMRR   = ['Volume Milling','Perimeter Milling Single Side','Sandblasting'].includes(ft);
+    const needsFeed  = ['Perimeter Milling Full','Perimeter Side Milling','Perimeter Milling'].includes(ft);
+    const needsPasses= ['Perimeter Side Milling'].includes(ft);
+    const isStepMilling = ft === 'Perimeter Milling Full';  // depth = T-8 auto from thickness
 
-    // Formula preview string
+    // Formula preview string — uses Excel display names
     let preview='';
-    if(hasFormula&&ft&&ft!=='fixed'){
-      const dx=(op.dim_x_source||'L').slice(0,1).toUpperCase();
-      const dy=(op.dim_y_source||'W').slice(0,1).toUpperCase();
+    if(hasFormula&&ft&&ft!=='Fixed'){
+      const dx=(op.dim_x_source||'length').slice(0,1).toUpperCase();
+      const dy=(op.dim_y_source||'width').slice(0,1).toUpperCase();
       const d=op.depth_mm||'?'; const r=op.mrr||'?';
-      if(ft==='volume_milling')   preview=`(${dx} × ${dy} × ${d}) ÷ ${r}`;
-      else if(ft==='area')        preview=`(${dx} × ${dy}) ÷ ${r}`;
-      else if(ft==='perimeter_side') preview=`(${dx} × T × ${d}) ÷ ${r}`;
-      else if(ft==='perimeter_weld') preview=`(2×(L+W)) ÷ ${r}`;
-    } else if(hasFormula&&ft==='fixed') preview='Setup time only — no machining';
+      if(ft==='Volume Milling')                preview=`(${dx}×${dy}×${d}) ÷ ${r}`;
+      else if(ft==='Perimeter Milling Single Side') preview=`${dx}×${d}×T ÷ ${r}`;
+      else if(ft==='Perimeter Milling Full')    preview=`2×(L+W)÷0.3×(T-8)÷Feed`;
+      else if(ft==='Perimeter Side Milling')   preview=`2×(L+W)×${d} passes ÷ Feed`;
+      else if(ft==='Perimeter Milling')        preview=`2×(L+W)×3 ÷ 250`;
+      else if(ft==='Perimeter Welding')        preview=`2×(L+W) ÷ 200`;
+      else if(ft==='Surface Grinding')         preview=`(${dx}+50)×${d}×2÷2.5 × (L+250)÷20000`;
+      else if(ft==='Sandblasting')             preview=`L×W ÷ ${r}`;
+    } else if(hasFormula&&ft==='Fixed') preview='Fixed time — enter Work(min) above';
 
     return `
     <div style="border:1px solid var(--border);border-radius:7px;margin-bottom:6px;overflow:hidden">
@@ -2513,7 +2531,7 @@ function renderOpRows(){
       </div>
 
       <!-- BOTTOM ROW: formula params — only shown when formula ON -->
-      <div id="oped_formula_${i}" style="${hasFormula?'':'display:none'}background:var(--surface);border-top:1px solid var(--border);padding:8px 12px;display:${hasFormula?'grid':'none'};grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;align-items:end">
+      <div id="oped_formula_${i}" style="${hasFormula?'':'display:none'}background:var(--surface);border-top:1px solid var(--border);padding:8px 12px;display:${hasFormula?'grid':'none'};grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;align-items:end">
 
         <div class="form-group" style="margin:0">
           <div class="fld-label" style="font-size:10px">Formula Type</div>
@@ -2524,30 +2542,51 @@ function renderOpRows(){
         </div>
 
         ${needsDimX?`<div class="form-group" style="margin:0">
-          <div class="fld-label" style="font-size:10px">Dim X</div>
+          <div class="fld-label" style="font-size:10px">${ft==='Perimeter Milling Single Side'?'Cut Direction (Dim)':'Dim X (length axis)'}</div>
           <select id="oped_dimx_${i}" style="font-size:12px">
             ${DIMS.map(d=>`<option value="${d}" ${op.dim_x_source===d?'selected':''}>${d.charAt(0).toUpperCase()+d.slice(1)}</option>`).join('')}
           </select>
         </div>`:''}
 
         ${needsDimY?`<div class="form-group" style="margin:0">
-          <div class="fld-label" style="font-size:10px">Dim Y</div>
+          <div class="fld-label" style="font-size:10px">Dim Y (width axis)</div>
           <select id="oped_dimy_${i}" style="font-size:12px">
             ${DIMS.map(d=>`<option value="${d}" ${op.dim_y_source===d?'selected':''}>${d.charAt(0).toUpperCase()+d.slice(1)}</option>`).join('')}
           </select>
         </div>`:''}
 
         ${needsDepth?`<div class="form-group" style="margin:0">
-          <div class="fld-label" style="font-size:10px">Depth (mm)</div>
-          <input type="number" id="oped_depth_${i}" value="${op.depth_mm||''}" min="0" step="0.5" placeholder="e.g. 10" style="font-size:12px">
+          <div class="fld-label" style="font-size:10px">${needsPasses?'Passes':'Depth (mm)'}</div>
+          <input type="number" id="oped_depth_${i}" value="${op.depth_mm||''}" min="0" step="0.5" placeholder="${needsPasses?'e.g. 10 passes':'e.g. 5'}" style="font-size:12px">
+        </div>`:''}
+
+        ${needsFeed?`<div class="form-group" style="margin:0">
+          <div class="fld-label" style="font-size:10px">Feed Rate (mm/min)</div>
+          <input type="number" id="oped_feed_${i}" value="${op.feed_rate||(ft==='Perimeter Milling Full'?1000:250)}" min="1" step="50" placeholder="${ft==='Perimeter Milling Full'?'e.g. 1000':'e.g. 250'}" style="font-size:12px">
         </div>`:''}
 
         ${needsMRR?`<div class="form-group" style="margin:0">
-          <div class="fld-label" style="font-size:10px">MRR (mm³/min or mm²/min)</div>
-          <input type="number" id="oped_mrr_${i}" value="${op.mrr||''}" min="0" step="1" placeholder="e.g. 37500" style="font-size:12px">
+          <div class="fld-label" style="font-size:10px">MRR (mm³/min)</div>
+          <input type="number" id="oped_mrr_${i}" value="${op.mrr||''}" min="0" step="100" placeholder="e.g. 6300" style="font-size:12px">
+        </div>`:''}
+        ${isStepMilling?`<div style="font-size:10px;color:var(--muted);align-self:center;padding:4px 0">
+          Depth = T − 8 mm (auto from thickness at order time). Step-over = 0.3 mm fixed.
         </div>`:''}
 
-        ${ft==='fixed'?`<div style="font-size:11px;color:var(--muted);align-self:center">No machining time — only setup minutes above apply.</div>`:''}
+        ${ft==='Fixed'?`<div style="font-size:11px;color:var(--muted);align-self:center;padding:4px 0">
+          Fixed time — enter minutes in the Work(min) field above. No auto-calculation.
+        </div>`:''}
+
+        ${ft&&ft!=='Fixed'?`<div style="font-size:10px;color:var(--accent);align-self:center;padding:4px 0;font-style:italic">
+          ${ft==='Volume Milling'?'Time = DimX × DimY × Depth / MRR':
+            ft==='Perimeter Milling Single Side'?'Time = Dim × Depth × T / MRR':
+            ft==='Perimeter Milling Full'?'Time = 2×(L+W) ÷ 0.3 × (T−8) ÷ Feed Rate  (Depth auto-computed as T−8)':
+            ft==='Perimeter Side Milling'?'Time = 2×(L+W) × Passes / Feed':
+            ft==='Perimeter Milling'?'Time = 2×(L+W) × 3 ÷ Feed Rate':
+            ft==='Perimeter Welding'?'Time = 2×(L+W) / 200':
+            ft==='Surface Grinding'?'Time = (Dim+50)×Depth×2/2.5 × (L+250)/20000':
+            ft==='Sandblasting'?'Time = L × W / MRR':''}
+        </div>`:''}
 
       </div>
 
@@ -2557,8 +2596,8 @@ function renderOpRows(){
 
 function toggleOpFormula(i, on){
   syncRoutingOps();
-  if(on && (!routingOps[i].formula_type||routingOps[i].formula_type==='none')){
-    routingOps[i].formula_type='volume_milling';
+  if(on && (!routingOps[i].formula_type||routingOps[i].formula_type==='none'||routingOps[i].formula_type==='volume_milling')){
+    routingOps[i].formula_type='Volume Milling';
     routingOps[i].dim_x_source='length';
     routingOps[i].dim_y_source='width';
   }
@@ -2589,6 +2628,7 @@ function syncRoutingOps(){
       formula_type:   useFormula?(ftype||null):null,
       mrr:            parseFloat(document.getElementById(`oped_mrr_${i}`)?.value)||null,
       depth_mm:       parseFloat(document.getElementById(`oped_depth_${i}`)?.value)||null,
+      feed_rate:      parseFloat(document.getElementById(`oped_feed_${i}`)?.value)||null,
       dim_x_source:   document.getElementById(`oped_dimx_${i}`)?.value||null,
       dim_y_source:   document.getElementById(`oped_dimy_${i}`)?.value||null,
     };
@@ -3552,8 +3592,7 @@ let orderFormOps = [];  // routing ops for order creation
 
 async function openOrderModal(){
   await loadAll();
-  const PTYPES = ['Lower Punch','Upper Punch','Iso Lower Punch','Iso Upper Punch',
-                  'Die Frame','Liner Set','Complete Mould','Custom Plate',
+  const PTYPES = ['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate',
                   'Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
   const SIZES  = ['600x600','600x900','600x1200','900x900','900x1200','1200x1200'];
   const custOpts = allCustomers.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
@@ -3689,12 +3728,7 @@ async function filterOrderRouting(){
   const ptype = document.getElementById('ord_ptype')?.value||'';
   const sel   = document.getElementById('ord_routing');
   if(!sel) return;
-  const isPunchOrder = ptype.toLowerCase().includes('punch');
-  const opts = allRoutings.filter(r=>{
-    if(!ptype) return true;
-    if(isPunchOrder) return r.product_type.toLowerCase().includes('punch');
-    return r.product_type.toLowerCase()===ptype.toLowerCase();
-  });
+  const opts = allRoutings.filter(r=>!ptype || r.product_type===ptype);
   sel.innerHTML = `<option value="">— Select routing —</option>`+opts.map(r=>`<option value="${r.id}">${r.name}</option>`).join('');
   orderFormOps = [];
   document.getElementById('ordOpsWrap').innerHTML=`<div style="color:var(--muted);font-size:12px;padding:4px 0">Select a routing to edit operation times</div>`;
@@ -3746,6 +3780,7 @@ async function calcPunchTimes(){
       formula_type:    op.formula_type||'fixed',
       mrr:             op.mrr||null,
       depth_mm:        op.depth_mm||null,
+      feed_rate:       op.feed_rate||null,
       setup_time_mins: op.setup_time_mins||0,
       machining_mins:  op.work_time_mins||0,
       work_center_id:  op.work_center_id||null,

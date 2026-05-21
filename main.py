@@ -1240,6 +1240,7 @@ def routing_dict(r, db=None):
             "formula_type":  o.formula_type,
             "mrr":           o.mrr,
             "depth_mm":      o.depth_mm,
+            "feed_rate":     getattr(o, 'feed_rate', None),
             "dim_x_source":  o.dim_x_source,
             "dim_y_source":  o.dim_y_source,
             } for o in r.operations]
@@ -1310,6 +1311,7 @@ def create_routing(data: dict):
                          formula_type=op.get("formula_type") or None,
                          mrr=float(op["mrr"]) if op.get("mrr") else None,
                          depth_mm=float(op["depth_mm"]) if op.get("depth_mm") else None,
+                         feed_rate=float(op["feed_rate"]) if op.get("feed_rate") else None,
                          dim_x_source=op.get("dim_x_source") or None,
                          dim_y_source=op.get("dim_y_source") or None,
                          ))
@@ -1357,6 +1359,7 @@ def update_routing(rid: int, data: dict):
                              formula_type=op.get("formula_type") or None,
                              mrr=float(op["mrr"]) if op.get("mrr") else None,
                              depth_mm=float(op["depth_mm"]) if op.get("depth_mm") else None,
+                             feed_rate=float(op["feed_rate"]) if op.get("feed_rate") else None,
                              dim_x_source=op.get("dim_x_source") or None,
                              dim_y_source=op.get("dim_y_source") or None,
                              ))
@@ -2234,10 +2237,12 @@ DIM_SOURCES = ["length", "width", "thickness"]
 
 def calc_op_time(formula_type, mrr, depth_mm,
                  dim_x_source, dim_y_source,
-                 length, width, thickness) -> float:
+                 length, width, thickness,
+                 feed_rate=None) -> float:
     """Return machining time in MINUTES.
     Accepts both internal keys ('volume_milling') and Excel display names ('Volume Milling').
     All formulas verified cell-by-cell against punch_lead_time.xlsx.
+    feed_rate: mm/min used by Perimeter Milling Full and Perimeter Side Milling.
     """
     # Resolve Excel display name → internal key
     ft = FORMULA_TYPE_ALIAS.get(formula_type, formula_type)
@@ -2289,18 +2294,21 @@ def calc_op_time(formula_type, mrr, depth_mm,
 
     elif ft == "step_milling_full":
         # Perimeter Milling Full (Big punch Step Milling):
-        # Total_Passes = 2*(L+W) * (T-8) / 0.3
-        # Excel: Big punch 670x1200, T=35, Depth=27, Feed=1000 mm/min
-        # Time = 2*(L+W) * Depth / 0.3 / Feed * 1000
-        feed = 1000.0
-        return 2.0 * (L + W) * D / 0.3 / feed * 1000.0
+        # Excel: Total_Passes = 2*(L+W) / step_over * (T-8)
+        #        step_over = 0.3mm, feed = 1000 mm/min (configurable)
+        # Verified: 2*(670+1200)/0.3*(35-8)/1000 = 336.6 min ✓
+        # Depth = T-8 (auto from thickness), NOT stored
+        step_over = 0.3
+        feed = feed_rate or 1000.0
+        return 2.0 * (L + W) / step_over * (T - 8) / feed
 
     elif ft == "edge_sizing":
         # Perimeter Side Milling (Edge Sizing for big punch):
-        # Total_Length = 2*(L+W) * Passes, Feed = 250 mm/min
-        # Excel: 670x1200, Passes=10, Total_Length=37400, Time=149.6
+        # Total_Length = 2*(L+W) * Passes, Feed = configurable (default 250 mm/min)
+        # Excel: 670x1200, Passes=10, Feed=250, Time=149.6 min ✓
         passes = depth_mm or 10.0
-        return 2.0 * (L + W) * passes / 250.0
+        feed = feed_rate or 250.0
+        return 2.0 * (L + W) * passes / feed
 
     elif ft == "step_milling_side":
         # Step Milling Single Side L (Small punch): L * Depth / MRR
@@ -2324,9 +2332,10 @@ def calc_op_time(formula_type, mrr, depth_mm,
         return (L * W * D) / R
 
     elif ft == "radius_milling":
-        # Perimeter Milling (Radius Milling): Total_Length / Feed
-        # Excel: 670x670, Total_Length=8040=2*(L+W)*3, Feed=250, Time=32.16
-        return 2.0 * (L + W) * 3.0 / 250.0
+        # Perimeter Milling (Radius Milling): 2*(L+W)*3 / Feed
+        # Excel: 670x670, Total_Length=8040=2*(L+W)*3, Feed=250, Time=32.16 ✓
+        feed = feed_rate or 250.0
+        return 2.0 * (L + W) * 3.0 / feed
 
     elif ft == "sand_blasting":
         # Sandblasting: Total_Area / MRR  (MRR = 12000)
@@ -2455,6 +2464,7 @@ def punch_calc(data: dict):
             ftype      = op.get("formula_type") or "fixed"
             mrr        = op.get("mrr")
             depth      = op.get("depth_mm")
+            feed_rate  = op.get("feed_rate")
             setup_mins = float(op.get("setup_time_mins") or op.get("setup_mins") or 0)
             mach_fixed = float(op.get("machining_mins") or 0)
             wc_id      = op.get("work_center_id")
@@ -2465,16 +2475,17 @@ def punch_calc(data: dict):
             ft_key = FORMULA_TYPE_ALIAS.get(ftype, ftype)
 
             if ft_key == "fixed":
-                work_mins = mach_fixed  # use stored machining time for fixed ops
+                work_mins = mach_fixed
             else:
                 work_mins = round(calc_op_time(ftype, mrr, depth, None, None,
-                                               length, width, thickness), 2)
+                                               length, width, thickness, feed_rate), 2)
 
             result.append({
                 "name":            name,
                 "formula_type":    ftype,
                 "depth_mm":        depth,
                 "mrr":             mrr,
+                "feed_rate":       feed_rate,
                 "setup_time_mins": setup_mins,
                 "work_time_mins":  work_mins,
                 "total_mins":      round(work_mins + setup_mins, 2),
@@ -2527,8 +2538,9 @@ def update_op_formula(rid: int, oid: int, data: dict):
     op = db.query(Operation).filter(Operation.id == oid, Operation.routing_id == rid).first()
     if not op: db.close(); raise HTTPException(404, "Operation not found")
     op.formula_type = data.get("formula_type") or None
-    op.mrr          = float(data["mrr"])      if data.get("mrr")      else None
-    op.depth_mm     = float(data["depth_mm"]) if data.get("depth_mm") else None
+    op.mrr          = float(data["mrr"])        if data.get("mrr")        else None
+    op.depth_mm     = float(data["depth_mm"])   if data.get("depth_mm")   else None
+    op.feed_rate    = float(data["feed_rate"])   if data.get("feed_rate")  else None
     op.dim_x_source = data.get("dim_x_source") or None
     op.dim_y_source = data.get("dim_y_source") or None
     db.commit(); db.close()
@@ -2922,82 +2934,84 @@ def seed_punch_routings():
             f"Please run 'Load Real Setup' first.")
 
     # ── Op definitions from punch_lead_time.xlsx ──────────────────────────────
-    # Tuple: (name, machine_key, setup_mins, formula_type, mrr, depth_mm, mach_fixed_mins)
-    # formula_type uses Excel display names — resolved to internal keys at calc time
-    # mach_fixed_mins: only used for formula_type="Fixed", ignored otherwise
+    # Tuple: (name, machine_key, setup_mins, formula_type, mrr, depth_mm, feed_rate, mach_fixed_mins)
+    # formula_type: Excel display name — resolved to internal key at calc time
+    # feed_rate: mm/min — for Perimeter Milling Full (default 1000) and Perimeter Side Milling (default 250)
+    # mach_fixed_mins: only used for formula_type="Fixed"
     # ─────────────────────────────────────────────────────────────────────────
 
     # Shared ops (same across all 8 variants)
-    LIFTING = ("Lifting Holes",    "radial_drill",  20, "Fixed",                   None,    None, 30)
-    FACING  = ("Facing",           "dc_vmc",        20, "Volume Milling",           35000,   5,    0)
-    SIDE1   = ("Side Cutting 1",   "big_edge_mill", 20, "Perimeter Milling Single Side", 6300, 10,  0)
-    SIDE2   = ("Side Cutting 2",   "big_edge_mill", 20, "Perimeter Milling Single Side", 6300, 10,  0)
-    WELD    = ("Welding",          "welding",       20, "Perimeter Welding",        None,    None, 0)
-    SURF_GR = ("Surface Grinding", "dc_surface",    10, "Surface Grinding",         None,    2,    0)
-    SAND_S  = ("Sandblasting",     "sandblasting",  20, "Sandblasting",             12000,   None, 0)
-    RUB_FIN = ("Rubberizing",      "rubberizing",   20, "Fixed",                    None,    None, 40)
+    #                                                                     mrr    depth feed  fixed
+    LIFTING = ("Lifting Holes",    "radial_drill",  20, "Fixed",                   None,  None, None, 30)
+    FACING  = ("Facing",           "dc_vmc",        20, "Volume Milling",           35000, 5,    None, 0)
+    SIDE1   = ("Side Cutting 1",   "big_edge_mill", 20, "Perimeter Milling Single Side", 6300, 10, None, 0)
+    SIDE2   = ("Side Cutting 2",   "big_edge_mill", 20, "Perimeter Milling Single Side", 6300, 10, None, 0)
+    WELD    = ("Welding",          "welding",       20, "Perimeter Welding",        None,  None, None, 0)
+    SURF_GR = ("Surface Grinding", "dc_surface",    10, "Surface Grinding",         None,  2,    None, 0)
+    SAND_S  = ("Sandblasting",     "sandblasting",  20, "Sandblasting",             12000, None, None, 0)
+    RUB_FIN = ("Rubberizing",      "rubberizing",   20, "Fixed",                    None,  None, None, 40)
 
     # Non-Iso Small ops
-    EDGEGR1   = ("Edge Grinding Side 1",  "edge_grinder", 10, "Surface Grinding",             None, 5,  0)
-    EDGEGR2   = ("Edge Grinding Side 2",  "edge_grinder", 10, "Surface Grinding",             None, 5,  0)
-    STEP_L1_S = ("Step Milling Side 1",   "edge_mill",    20, "Perimeter Milling Single Side", 6300, 4, 0)  # Lower depth=4
-    STEP_U1_S = ("Step Milling Side 1",   "edge_mill",    20, "Perimeter Milling Single Side", 6300, 2, 0)  # Upper depth=2
-    STEP_L2_S = ("Step Milling Side 2",   "edge_mill",    20, "Perimeter Milling Single Side", 6300, 4, 0)  # Lower depth=4
-    STEP_U2_S = ("Step Milling Side 2",   "edge_mill",    20, "Perimeter Milling Single Side", 6300, 2, 0)  # Upper depth=2
-    RUB_MILL_S= ("Rubber Depth Milling",  "kafo_vmc",     20, "Volume Milling",                9375, 0.5, 0)
-    RAD_S     = ("Radius Milling",        "kafo_vmc",      5, "Perimeter Milling",             None, None, 0)
-    RMOV      = ("Removal Slot",          "univ_mill2",   20, "Fixed",                         None, None, 30)
+    EDGEGR1   = ("Edge Grinding Side 1",  "edge_grinder", 10, "Surface Grinding",              None,  5,    None, 0)
+    EDGEGR2   = ("Edge Grinding Side 2",  "edge_grinder", 10, "Surface Grinding",              None,  5,    None, 0)
+    STEP_L1_S = ("Step Milling Side 1",   "edge_mill",    20, "Perimeter Milling Single Side", 6300,  4,    None, 0)
+    STEP_U1_S = ("Step Milling Side 1",   "edge_mill",    20, "Perimeter Milling Single Side", 6300,  2,    None, 0)
+    STEP_L2_S = ("Step Milling Side 2",   "edge_mill",    20, "Perimeter Milling Single Side", 6300,  4,    None, 0)
+    STEP_U2_S = ("Step Milling Side 2",   "edge_mill",    20, "Perimeter Milling Single Side", 6300,  2,    None, 0)
+    RUB_MILL_S= ("Rubber Depth Milling",  "kafo_vmc",     20, "Volume Milling",                9375,  0.5,  None, 0)
+    RAD_S     = ("Radius Milling",        "kafo_vmc",      5, "Perimeter Milling",             None,  None, 250,  0)
+    RMOV      = ("Removal Slot",          "univ_mill2",   20, "Fixed",                         None,  None, None, 30)
 
     # Non-Iso Big ops
-    STEP_FULL = ("Step Milling",          "dc_vmc",       10, "Perimeter Milling Full",        None, 27,  0)
-    EDGE_SIZ  = ("Edge Sizing",           "kafo_vmc",     10, "Perimeter Side Milling",        None, 10,  0)
-    RUB_MILL_B= ("Rubber Depth Milling",  "kafo_vmc",     20, "Volume Milling",                9375, 0.5, 0)
-    RAD_B     = ("Radius Milling",        "kafo_vmc",      5, "Perimeter Milling",             None, None, 0)
-    SAND_B    = ("Sandblasting",          "sandblasting", 20, "Sandblasting",                  12000, None, 0)
+    STEP_FULL = ("Step Milling",          "dc_vmc",       10, "Perimeter Milling Full",        None,  None, 1000, 0)  # depth=T-8 auto
+    EDGE_SIZ  = ("Edge Sizing",           "kafo_vmc",     10, "Perimeter Side Milling",        None,  10,   250,  0)
+    RUB_MILL_B= ("Rubber Depth Milling",  "kafo_vmc",     20, "Volume Milling",                9375,  0.5,  None, 0)
+    RAD_B     = ("Radius Milling",        "kafo_vmc",      5, "Perimeter Milling",             None,  None, 250,  0)
+    SAND_B    = ("Sandblasting",          "sandblasting", 20, "Sandblasting",                  12000, None, None, 0)
 
     # Iso-only op
-    ISO_MILL  = ("Iso Depth Milling",     "dc_vmc",       20, "Volume Milling",                56250, 11, 0)
+    ISO_MILL  = ("Iso Depth Milling",     "dc_vmc",       20, "Volume Milling",                56250, 11, None, 0)
 
     def make_ops(ops_list):
-        """Assign sequential numbers."""
+        """Assign sequential numbers as first element (seq_no, name, mkey, setup, ftype, mrr, depth, feed_rate, mach_fixed)."""
         return [(i+1,)+op for i, op in enumerate(ops_list)]
 
     ROUTINGS = [
         # ── Non-Iso ───────────────────────────────────────────────────────────
-        {"name": "Lower Punch — Small (≤ 600×600)", "product_type": "Lower Punch",
+        {"name": "Lower Punch — Small (≤ 600×600)", "product_type": "Punch",
          "description": "Non-Iso Lower Punch, small size (≤600mm).", "lead_days": 2.0,
          "ops": make_ops([LIFTING, FACING, SIDE1, SIDE2, WELD, SURF_GR,
                           EDGEGR1, EDGEGR2, STEP_L1_S, STEP_L2_S,
                           RUB_MILL_S, RAD_S, RMOV, SAND_S, RUB_FIN])},
-        {"name": "Upper Punch — Small (≤ 600×600)", "product_type": "Upper Punch",
+        {"name": "Upper Punch — Small (≤ 600×600)", "product_type": "Punch",
          "description": "Non-Iso Upper Punch, small size (≤600mm).", "lead_days": 2.0,
          "ops": make_ops([LIFTING, FACING, SIDE1, SIDE2, WELD, SURF_GR,
                           EDGEGR1, EDGEGR2, STEP_U1_S, STEP_U2_S,
                           RUB_MILL_S, RAD_S, RMOV, SAND_S, RUB_FIN])},
-        {"name": "Lower Punch — Big (> 600×600)", "product_type": "Lower Punch",
+        {"name": "Lower Punch — Big (> 600×600)", "product_type": "Punch",
          "description": "Non-Iso Lower Punch, large size (>600mm).", "lead_days": 3.0,
          "ops": make_ops([LIFTING, FACING, SIDE1, SIDE2, WELD, SURF_GR,
                           STEP_FULL, EDGE_SIZ, RUB_MILL_B, RAD_B, SAND_B, RUB_FIN])},
-        {"name": "Upper Punch — Big (> 600×600)", "product_type": "Upper Punch",
+        {"name": "Upper Punch — Big (> 600×600)", "product_type": "Punch",
          "description": "Non-Iso Upper Punch, large size (>600mm).", "lead_days": 3.0,
          "ops": make_ops([LIFTING, FACING, SIDE1, SIDE2, WELD, SURF_GR,
                           STEP_FULL, EDGE_SIZ, RUB_MILL_B, RAD_B, SAND_B, RUB_FIN])},
         # ── Iso ──────────────────────────────────────────────────────────────
-        {"name": "Iso Lower Punch — Small (≤ 600×600)", "product_type": "Iso Lower Punch",
+        {"name": "Iso Lower Punch — Small (≤ 600×600)", "product_type": "Punch",
          "description": "Isostatic Lower Punch, small size (≤600mm).", "lead_days": 2.0,
          "ops": make_ops([LIFTING, FACING, SIDE1, SIDE2, ISO_MILL, WELD, SURF_GR,
                           EDGEGR1, EDGEGR2, STEP_L1_S, STEP_L2_S,
                           RAD_S, RMOV, SAND_S, RUB_FIN])},
-        {"name": "Iso Upper Punch — Small (≤ 600×600)", "product_type": "Iso Upper Punch",
+        {"name": "Iso Upper Punch — Small (≤ 600×600)", "product_type": "Punch",
          "description": "Isostatic Upper Punch, small size (≤600mm).", "lead_days": 2.0,
          "ops": make_ops([LIFTING, FACING, SIDE1, SIDE2, ISO_MILL, WELD, SURF_GR,
                           EDGEGR1, EDGEGR2, STEP_U1_S, STEP_U2_S,
                           RAD_S, RMOV, SAND_S, RUB_FIN])},
-        {"name": "Iso Lower Punch — Big (> 600×600)", "product_type": "Iso Lower Punch",
+        {"name": "Iso Lower Punch — Big (> 600×600)", "product_type": "Punch",
          "description": "Isostatic Lower Punch, large size (>600mm).", "lead_days": 3.0,
          "ops": make_ops([LIFTING, FACING, SIDE1, SIDE2, ISO_MILL, WELD, SURF_GR,
                           STEP_FULL, EDGE_SIZ, RAD_B, SAND_B, RUB_FIN])},
-        {"name": "Iso Upper Punch — Big (> 600×600)", "product_type": "Iso Upper Punch",
+        {"name": "Iso Upper Punch — Big (> 600×600)", "product_type": "Punch",
          "description": "Isostatic Upper Punch, large size (>600mm).", "lead_days": 3.0,
          "ops": make_ops([LIFTING, FACING, SIDE1, SIDE2, ISO_MILL, WELD, SURF_GR,
                           STEP_FULL, EDGE_SIZ, RAD_B, SAND_B, RUB_FIN])},
@@ -3016,7 +3030,7 @@ def seed_punch_routings():
         db.add(r); db.flush()
 
         for op_tuple in rdef["ops"]:
-            seq_no, name, mkey, setup, ftype, mrr, depth, mach_fixed = op_tuple
+            seq_no, name, mkey, setup, ftype, mrr, depth, feed_rate_val, mach_fixed = op_tuple
             wc = M[mkey]
             db.add(Operation(
                 routing_id=r.id, sequence=seq_no, name=name,
@@ -3025,9 +3039,10 @@ def seed_punch_routings():
                 setup_time_mins=setup,
                 work_time_hrs=0, work_time_mins=0,
                 is_optional=False,
-                formula_type=ftype,          # stored as Excel display name
+                formula_type=ftype,
                 mrr=float(mrr) if mrr else None,
                 depth_mm=float(depth) if depth is not None else None,
+                feed_rate=float(feed_rate_val) if feed_rate_val else None,
                 dim_x_source=None, dim_y_source=None,
             ))
 
