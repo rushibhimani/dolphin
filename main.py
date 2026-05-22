@@ -2,6 +2,7 @@ import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta, date
@@ -815,6 +816,10 @@ def _update_order_status(db, order_id):
 # ─────────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Dolphin ERP")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Serve css/ and js/ as static directories
+app.mount("/css", StaticFiles(directory="css"), name="css")
+app.mount("/js",  StaticFiles(directory="js"),  name="js")
 
 @app.get("/")
 def root(): return FileResponse("index.html")
