@@ -111,6 +111,9 @@ class Operation(Base):
     dim_y_source       = Column(String, nullable=True)   # length | width | thickness
     # ────────────────────────────────────────────────────────────────────────
     routing            = relationship("Routing", back_populates="operations")
+    sub_operations     = relationship("SubOperation", back_populates="operation",
+                                      cascade="all, delete-orphan",
+                                      order_by="SubOperation.sequence")
     work_center        = relationship("WorkCenter")
 
 
@@ -178,6 +181,31 @@ class Job(Base):
         "ScheduledOp", back_populates="job",
         cascade="all, delete-orphan"
     )
+
+
+class SubOperation(Base):
+    """
+    Sub-operations within a parent Operation.
+    All sub-ops share the parent's machine and setup time.
+    Scheduler sums sub-op work_time_hrs for the total block duration.
+    Sub-ops have independent formula types, MRR, depth, dim sources.
+    """
+    __tablename__ = 'sub_operations'
+    id           = Column(Integer, primary_key=True)
+    operation_id = Column(Integer, ForeignKey('operations.id', ondelete='CASCADE'), nullable=False)
+    sequence     = Column(Integer, nullable=False, default=1)
+    name         = Column(String(200), nullable=False)
+    formula_type = Column(String(100), nullable=True)
+    mrr          = Column(Float, nullable=True)
+    depth_mm     = Column(Float, nullable=True)
+    feed_rate    = Column(Float, nullable=True)
+    dim_x_source = Column(String(20), nullable=True)
+    dim_y_source = Column(String(20), nullable=True)
+    work_time_mins = Column(Float, nullable=True, default=0)
+    work_time_hrs  = Column(Float, nullable=True, default=0)
+    is_optional  = Column(Boolean, default=False)
+
+    operation = relationship('Operation', back_populates='sub_operations')
 
 
 class ScheduledOp(Base):

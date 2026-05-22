@@ -2475,7 +2475,7 @@ function renderOpRows(){
     const ft=op.formula_type||'';
     // Which inputs each formula needs — keyed on Excel display names
     const needsDimX  = ['Volume Milling','Perimeter Milling Single Side','Surface Grinding'].includes(ft);
-    const needsDimY  = ['Volume Milling'].includes(ft);
+    const needsDimY  = ['Volume Milling','Surface Grinding'].includes(ft);
     const needsDepth = ['Volume Milling','Perimeter Milling Single Side','Perimeter Side Milling','Surface Grinding'].includes(ft);
     const needsMRR   = ['Volume Milling','Perimeter Milling Single Side','Sandblasting'].includes(ft);
     const needsFeed  = ['Perimeter Milling Full','Perimeter Side Milling','Perimeter Milling'].includes(ft);
@@ -2494,7 +2494,7 @@ function renderOpRows(){
       else if(ft==='Perimeter Side Milling')   preview=`2×(L+W)×${d} passes ÷ Feed`;
       else if(ft==='Perimeter Milling')        preview=`2×(L+W)×3 ÷ 250`;
       else if(ft==='Perimeter Welding')        preview=`2×(L+W) ÷ 200`;
-      else if(ft==='Surface Grinding')         preview=`(${dx}+50)×${d}×2÷2.5 × (L+250)÷20000`;
+      else if(ft==='Surface Grinding')         preview=`(${dy}+50)×${d}×2÷2.5 × (${dx}+250)÷20000`;
       else if(ft==='Sandblasting')             preview=`L×W ÷ ${r}`;
     } else if(hasFormula&&ft==='Fixed') preview='Fixed time — enter Work(min) above';
 
@@ -2542,14 +2542,14 @@ function renderOpRows(){
         </div>
 
         ${needsDimX?`<div class="form-group" style="margin:0">
-          <div class="fld-label" style="font-size:10px">${ft==='Perimeter Milling Single Side'?'Cut Direction (Dim)':'Dim X (length axis)'}</div>
+          <div class="fld-label" style="font-size:10px">${ft==='Perimeter Milling Single Side'?'Cut Direction (Dim)':ft==='Surface Grinding'?'Dim X (pass direction — L or W)':'Dim X (length axis)'}</div>
           <select id="oped_dimx_${i}" style="font-size:12px">
             ${DIMS.map(d=>`<option value="${d}" ${op.dim_x_source===d?'selected':''}>${d.charAt(0).toUpperCase()+d.slice(1)}</option>`).join('')}
           </select>
         </div>`:''}
 
         ${needsDimY?`<div class="form-group" style="margin:0">
-          <div class="fld-label" style="font-size:10px">Dim Y (width axis)</div>
+          <div class="fld-label" style="font-size:10px">${ft==='Surface Grinding'?'Dim Y (traverse axis — W or T)':'Dim Y (width axis)'}</div>
           <select id="oped_dimy_${i}" style="font-size:12px">
             ${DIMS.map(d=>`<option value="${d}" ${op.dim_y_source===d?'selected':''}>${d.charAt(0).toUpperCase()+d.slice(1)}</option>`).join('')}
           </select>
@@ -2584,14 +2584,103 @@ function renderOpRows(){
             ft==='Perimeter Side Milling'?'Time = 2×(L+W) × Passes / Feed':
             ft==='Perimeter Milling'?'Time = 2×(L+W) × 3 ÷ Feed Rate':
             ft==='Perimeter Welding'?'Time = 2×(L+W) / 200':
-            ft==='Surface Grinding'?'Time = (Dim+50)×Depth×2/2.5 × (L+250)/20000':
+            ft==='Surface Grinding'?'Time = (DimY+50)×Depth×2/2.5 × (DimX+250)/20000  [DimX=pass direction, DimY=traverse direction]':
             ft==='Sandblasting'?'Time = L × W / MRR':''}
         </div>`:''}
 
       </div>
 
+      <!-- SUB-OPS SECTION -->
+      <div id="oped_subops_${i}" style="background:var(--surface2);border-top:1px solid var(--border);padding:8px 12px">
+        ${(op.sub_operations||[]).length > 0 ? `
+          <div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">
+            Sub-operations · machine &amp; setup shared from above · work times summed for scheduling
+          </div>
+          ${(op.sub_operations||[]).map((s,si)=>renderSubOpRow(i,si,s,FTYPES,DIMS)).join('')}
+        ` : ''}
+        <button onclick="addSubOp(${i})" style="font-size:11px;padding:3px 10px;border:1px dashed var(--border);border-radius:5px;background:none;color:var(--muted);cursor:pointer;margin-top:${(op.sub_operations||[]).length?'4px':'0'}">
+          + Add sub-operation
+        </button>
+        ${(op.sub_operations||[]).length>0?`
+          <span style="font-size:11px;color:var(--muted);margin-left:12px">
+            Total work: <b>${(op.sub_operations||[]).filter(s=>!s.is_optional).reduce((a,s)=>a+(s.work_time_mins||0),0).toFixed(1)} min</b>
+            ${(op.sub_operations||[]).some(s=>s.is_optional)?'(+ optional)':''}
+          </span>
+        `:''}
+      </div>
+
     </div>`;
   }).join('');
+}
+
+function renderSubOpRow(oi, si, s, FTYPES, DIMS){
+  const ft = s.formula_type||'';
+  const needsDimX  = ['Volume Milling','Perimeter Milling Single Side','Surface Grinding'].includes(ft);
+  const needsDimY  = ['Volume Milling','Surface Grinding'].includes(ft);
+  const needsDepth = ['Volume Milling','Perimeter Milling Single Side','Perimeter Side Milling','Surface Grinding'].includes(ft);
+  const needsMRR   = ['Volume Milling','Perimeter Milling Single Side','Sandblasting'].includes(ft);
+  const needsFeed  = ['Perimeter Milling Full','Perimeter Side Milling','Perimeter Milling'].includes(ft);
+  const hasFormula = !!ft && ft !== 'none';
+  const wMins = s.work_time_mins != null ? Math.round(s.work_time_mins) : 0;
+
+  return `<div style="border:1px solid var(--border);border-radius:6px;margin-bottom:5px;overflow:hidden;margin-left:12px">
+    <div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:var(--card)">
+      <span style="font-size:10px;color:var(--muted);flex-shrink:0;width:18px;text-align:center">${si+1}</span>
+      <input id="sop_name_${oi}_${si}" value="${s.name||''}" placeholder="Sub-op name"
+        style="flex:2 1 120px;min-width:80px;font-size:12px">
+      ${hasFormula
+        ? `<span style="flex:1;font-size:10px;color:var(--accent);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ft}</span>`
+        : `<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:1px">
+             <span style="font-size:9px;color:var(--muted)">Work(min)</span>
+             <input type="number" id="sop_work_${oi}_${si}" value="${wMins}" min="0" step="5" style="width:60px;font-size:12px">
+           </div>`
+      }
+      <label style="font-size:10px;color:var(--muted);white-space:nowrap;cursor:pointer;display:flex;align-items:center;gap:3px;flex-shrink:0">
+        <input type="checkbox" id="sop_formula_${oi}_${si}" ${hasFormula?'checked':''}
+          onchange="toggleSubOpFormula(${oi},${si},this.checked)"
+          style="accent-color:var(--accent);width:12px;height:12px"> ⚡
+      </label>
+      <label style="font-size:10px;color:var(--amber);white-space:nowrap;cursor:pointer;display:flex;align-items:center;gap:3px;flex-shrink:0" title="Optional — can be excluded per order">
+        <input type="checkbox" id="sop_opt_${oi}_${si}" ${s.is_optional?'checked':''}
+          style="accent-color:var(--amber);width:12px;height:12px"> opt
+      </label>
+      <button onclick="removeSubOp(${oi},${si})" style="background:none;border:none;color:var(--red);font-size:12px;cursor:pointer;padding:1px 3px;line-height:1;flex-shrink:0">✕</button>
+    </div>
+    ${hasFormula?`
+    <div style="background:var(--surface);border-top:1px solid var(--border);padding:6px 10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px;align-items:end">
+      <div class="form-group" style="margin:0">
+        <div class="fld-label" style="font-size:10px">Formula Type</div>
+        <select id="sop_ftype_${oi}_${si}" style="font-size:11px" onchange="syncRoutingOps();renderOpRows()">
+          <option value="">— select —</option>
+          ${Object.entries(FTYPES).map(([v,l])=>`<option value="${v}" ${ft===v?'selected':''}>${v}</option>`).join('')}
+        </select>
+      </div>
+      ${needsDimX?`<div class="form-group" style="margin:0">
+        <div class="fld-label" style="font-size:10px">Dim X</div>
+        <select id="sop_dimx_${oi}_${si}" style="font-size:11px">
+          ${DIMS.map(d=>`<option value="${d}" ${s.dim_x_source===d?'selected':''}>${d.charAt(0).toUpperCase()+d.slice(1)}</option>`).join('')}
+        </select>
+      </div>`:''}
+      ${needsDimY?`<div class="form-group" style="margin:0">
+        <div class="fld-label" style="font-size:10px">${ft==='Surface Grinding'?'Dim Y (traverse — W or T)':'Dim Y'}</div>
+        <select id="sop_dimy_${oi}_${si}" style="font-size:11px">
+          ${DIMS.map(d=>`<option value="${d}" ${s.dim_y_source===d?'selected':''}>${d.charAt(0).toUpperCase()+d.slice(1)}</option>`).join('')}
+        </select>
+      </div>`:''}
+      ${needsDepth?`<div class="form-group" style="margin:0">
+        <div class="fld-label" style="font-size:10px">Depth (mm)</div>
+        <input type="number" id="sop_depth_${oi}_${si}" value="${s.depth_mm||''}" min="0" step="0.5" placeholder="e.g. 10" style="font-size:11px">
+      </div>`:''}
+      ${needsFeed?`<div class="form-group" style="margin:0">
+        <div class="fld-label" style="font-size:10px">Feed Rate (mm/min)</div>
+        <input type="number" id="sop_feed_${oi}_${si}" value="${s.feed_rate||250}" min="1" step="50" style="font-size:11px">
+      </div>`:''}
+      ${needsMRR?`<div class="form-group" style="margin:0">
+        <div class="fld-label" style="font-size:10px">MRR (mm³/min)</div>
+        <input type="number" id="sop_mrr_${oi}_${si}" value="${s.mrr||''}" min="0" step="100" placeholder="e.g. 6300" style="font-size:11px">
+      </div>`:''}
+    </div>`:''}
+  </div>`;
 }
 
 function toggleOpFormula(i, on){
@@ -2605,18 +2694,67 @@ function toggleOpFormula(i, on){
   renderOpRows();
 }
 
+function toggleSubOpFormula(oi, si, on){
+  syncRoutingOps();
+  const s = (routingOps[oi].sub_operations||[])[si];
+  if(!s) return;
+  s.formula_type = on ? 'Perimeter Milling Single Side' : null;
+  if(on){ s.dim_x_source='length'; s.dim_y_source='thickness'; }
+  renderOpRows();
+}
+
+function addSubOp(oi){
+  syncRoutingOps();
+  if(!routingOps[oi].sub_operations) routingOps[oi].sub_operations=[];
+  routingOps[oi].sub_operations.push({
+    name:'', formula_type:null, mrr:null, depth_mm:null, feed_rate:null,
+    dim_x_source:null, dim_y_source:null, work_time_mins:0, is_optional:false
+  });
+  renderOpRows();
+}
+
+function removeSubOp(oi, si){
+  syncRoutingOps();
+  routingOps[oi].sub_operations.splice(si,1);
+  renderOpRows();
+}
+
 function syncRoutingOps(){
   routingOps=routingOps.map((op,i)=>{
     const useFormula=document.getElementById(`oped_useformula_${i}`)?.checked;
     const ftype=document.getElementById(`oped_ftype_${i}`)?.value||null;
+    const hasSubs = (op.sub_operations||[]).length > 0;
     let wMins=0;
-    if(useFormula&&ftype){
-      // work_time_mins will be calculated at order time from dimensions
-      // store 0 here — the formula fields carry the real config
-      wMins=0;
+    if(hasSubs){
+      // work time = sum of sub-ops (read-only, auto-calculated)
+      wMins = (op.sub_operations||[]).reduce((a,s)=>a+(s.work_time_mins||0),0);
+    } else if(useFormula&&ftype){
+      wMins=0; // calculated at order time from dimensions
     } else {
       wMins=parseFloat(document.getElementById(`oped_work_${i}`)?.value)||0;
     }
+
+    // Sync sub-ops from DOM
+    const syncedSubs = (op.sub_operations||[]).map((s,si)=>{
+      const useFm = document.getElementById(`sop_formula_${i}_${si}`)?.checked??!!s.formula_type;
+      const sftype = useFm?(document.getElementById(`sop_ftype_${i}_${si}`)?.value||s.formula_type):null;
+      const sw = useFm ? 0 : (parseFloat(document.getElementById(`sop_work_${i}_${si}`)?.value)||0);
+      return {
+        ...s,
+        id:           s.id||null,
+        name:         document.getElementById(`sop_name_${i}_${si}`)?.value?.trim()||s.name,
+        formula_type: sftype||null,
+        mrr:          parseFloat(document.getElementById(`sop_mrr_${i}_${si}`)?.value)||null,
+        depth_mm:     parseFloat(document.getElementById(`sop_depth_${i}_${si}`)?.value)||null,
+        feed_rate:    parseFloat(document.getElementById(`sop_feed_${i}_${si}`)?.value)||null,
+        dim_x_source: document.getElementById(`sop_dimx_${i}_${si}`)?.value||null,
+        dim_y_source: document.getElementById(`sop_dimy_${i}_${si}`)?.value||null,
+        work_time_mins: sw,
+        work_time_hrs:  sw/60,
+        is_optional:  !!document.getElementById(`sop_opt_${i}_${si}`)?.checked,
+      };
+    });
+
     return {
       ...op,
       name:           document.getElementById(`oped_name_${i}`)?.value?.trim()||op.name,
@@ -2631,6 +2769,7 @@ function syncRoutingOps(){
       feed_rate:      parseFloat(document.getElementById(`oped_feed_${i}`)?.value)||null,
       dim_x_source:   document.getElementById(`oped_dimx_${i}`)?.value||null,
       dim_y_source:   document.getElementById(`oped_dimy_${i}`)?.value||null,
+      sub_operations: syncedSubs,
     };
   });
 }
@@ -2642,7 +2781,7 @@ function moveOp(i,dir){
   [routingOps[i],routingOps[j]]=[routingOps[j],routingOps[i]];
   renderOpRows();
 }
-function addOpRow(){syncRoutingOps();routingOps.push({name:'',work_center_id:allMachines[0]?.id,setup_time_mins:0,work_time_mins:0,work_time_hrs:0,is_optional:false});renderOpRows();}
+function addOpRow(){syncRoutingOps();routingOps.push({name:'',work_center_id:allMachines[0]?.id,setup_time_mins:0,work_time_mins:0,work_time_hrs:0,is_optional:false,sub_operations:[]});renderOpRows();}
 function removeOp(i){syncRoutingOps();routingOps.splice(i,1);renderOpRows();}
 
 async function saveRouting(editId){
@@ -3742,15 +3881,43 @@ async function loadOrderOps(){
   const rid = parseInt(document.getElementById('ord_routing')?.value);
   if(!rid){ orderFormOps=[]; return; }
   const rt = await api('GET',`/api/routings/${rid}`);
-  orderFormOps = rt.operations.map(op=>({
-    operation_id: op.id, name: op.name, wc_name: op.work_center_name,
-    work_center_id: op.work_center_id, machine_type: op.machine_type||'',
-    setup_time_mins: op.setup_time_mins,
-    work_time_mins: op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60,
-    work_time_hrs: op.work_time_hrs, is_optional: op.is_optional, included: true,
-    formula_type: op.formula_type, mrr: op.mrr, depth_mm: op.depth_mm,
-    dim_x_source: op.dim_x_source, dim_y_source: op.dim_y_source,
-  }));
+  orderFormOps = rt.operations.map(op=>{
+    const subs = (op.sub_operations||[]).map(s=>({
+      id:            s.id,
+      name:          s.name,
+      formula_type:  s.formula_type || null,
+      mrr:           s.mrr          ?? null,
+      depth_mm:      s.depth_mm     ?? null,
+      feed_rate:     s.feed_rate    ?? null,
+      dim_x_source:  s.dim_x_source || null,
+      dim_y_source:  s.dim_y_source || null,
+      work_time_mins: s.work_time_mins || 0,
+      is_optional:   s.is_optional,
+      included:      !s.is_optional, // optional sub-ops excluded by default
+    }));
+    // If sub-ops exist, work_time_mins = sum of included (non-optional) sub-ops
+    const hasSubs = subs.length > 0;
+    const subTotal = hasSubs ? subs.filter(s=>s.included).reduce((a,s)=>a+(s.work_time_mins||0),0) : null;
+    return {
+      operation_id:    op.id,
+      name:            op.name,
+      wc_name:         op.work_center_name,
+      work_center_id:  op.work_center_id,
+      machine_type:    op.machine_type||'',
+      setup_time_mins: op.setup_time_mins,
+      work_time_mins:  hasSubs ? subTotal : (op.work_time_mins!=null ? op.work_time_mins : (op.work_time_hrs||0)*60),
+      work_time_hrs:   hasSubs ? subTotal/60 : (op.work_time_hrs||0),
+      is_optional:     op.is_optional,
+      included:        true,
+      formula_type:    op.formula_type  || null,
+      mrr:             op.mrr           ?? null,
+      depth_mm:        op.depth_mm      ?? null,
+      feed_rate:       op.feed_rate     ?? null,
+      dim_x_source:    op.dim_x_source  || null,
+      dim_y_source:    op.dim_y_source  || null,
+      sub_operations:  subs,
+    };
+  });
 
   // Show punch calc panel whenever product type is a punch type
   const ptype = document.getElementById('ord_ptype')?.value||'';
@@ -3781,24 +3948,54 @@ async function calcPunchTimes(){
       mrr:             op.mrr||null,
       depth_mm:        op.depth_mm||null,
       feed_rate:       op.feed_rate||null,
+      dim_x_source:    op.dim_x_source||null,
+      dim_y_source:    op.dim_y_source||null,
       setup_time_mins: op.setup_time_mins||0,
       machining_mins:  op.work_time_mins||0,
       work_center_id:  op.work_center_id||null,
       included:        op.included!==false,
+      sub_operations:  (op.sub_operations||[]).map(s=>({
+        id:            s.id||null,
+        name:          s.name,
+        formula_type:  s.formula_type||'fixed',
+        mrr:           s.mrr||null,
+        depth_mm:      s.depth_mm||null,
+        feed_rate:     s.feed_rate||null,
+        dim_x_source:  s.dim_x_source||null,
+        dim_y_source:  s.dim_y_source||null,
+        work_time_mins:s.work_time_mins||0,
+        is_optional:   s.is_optional||false,
+        included:      s.included!==false,
+      })),
     }))
   };
 
   try{
     const r = await api('POST','/api/punch-calc', payload);
 
-    // Update times IN PLACE — keep routing structure, only update work_time_mins
-    orderFormOps = r.ops.map((calcOp, i)=>{
-      const existing = orderFormOps[i] || {};
+    // Update times IN PLACE — match by operation_id to avoid index mismatch
+    // r.ops mirrors the routing_ops we sent, so same length and order
+    if(r.ops.length !== orderFormOps.length){
+      toast('Formula result mismatch — please re-select routing template','error');
+      return;
+    }
+    orderFormOps = orderFormOps.map((existing, i)=>{
+      const calcOp = r.ops[i];
+      // Also update sub-op times if returned
+      let updatedSubs = existing.sub_operations || [];
+      if(calcOp.sub_operations && calcOp.sub_operations.length === updatedSubs.length){
+        updatedSubs = updatedSubs.map((s, si)=>({
+          ...s,
+          work_time_mins: calcOp.sub_operations[si].work_time_mins,
+          work_time_hrs:  calcOp.sub_operations[si].work_time_mins / 60,
+        }));
+      }
       return {
         ...existing,
         work_time_mins:  calcOp.work_time_mins,
         work_time_hrs:   calcOp.work_time_mins / 60,
         _formula_desc:   calcOp.formula_desc,
+        sub_operations:  updatedSubs,
       };
     });
 
@@ -3811,28 +4008,62 @@ async function calcPunchTimes(){
 function renderOrderOpsTable(){
   if(!orderFormOps.length){ document.getElementById('ordOpsWrap').innerHTML='<div style="color:var(--muted);font-size:12px">No operations</div>'; return; }
   const rows = orderFormOps.map((op,i)=>{
-    const wMins = op.work_time_mins!=null?op.work_time_mins:((op.work_time_hrs||0)*60);
+    const hasSubs = (op.sub_operations||[]).length > 0;
+    const wMins = hasSubs
+      ? (op.sub_operations||[]).filter(s=>s.included!==false).reduce((a,s)=>a+(s.work_time_mins||0),0)
+      : (op.work_time_mins!=null ? op.work_time_mins : (op.work_time_hrs||0)*60);
     const sMins = op.setup_time_mins||0;
-    const hasFormula = op.formula_type&&op.formula_type!=='none';
+    const hasFormula = !hasSubs && op.formula_type && op.formula_type!=='none';
     const formulaBadge = hasFormula
       ? `<span style="font-size:10px;background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 5px;margin-left:4px" title="${op._formula_desc||op.formula_type}">⚡ formula</span>`
-      : '';
+      : hasSubs ? `<span style="font-size:10px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:1px 5px;margin-left:4px">${(op.sub_operations||[]).length} sub-ops</span>` : '';
     const wcOpts = allMachines.map(m=>`<option value="${m.id}" ${op.work_center_id==m.id?'selected':''}>${m.name}</option>`).join('');
+
+    // Sub-op rows (indented) — shown if any sub-ops defined
+    const subRows = hasSubs ? (op.sub_operations||[]).map((s,si)=>{
+      const sInc = s.included!==false;
+      const sOpt = s.is_optional;
+      const sFmBadge = s.formula_type
+        ? `<span style="font-size:9px;background:var(--accent-soft);color:var(--accent);border-radius:3px;padding:1px 4px;margin-left:3px">⚡</span>` : '';
+      return `<tr style="background:var(--surface2);${sInc?'':'opacity:.45'}">
+        <td style="padding-left:24px">
+          ${sOpt?`<input type="checkbox" ${sInc?'checked':''} onchange="toggleSubOrderOp(${i},${si},this.checked)" style="width:12px;height:12px;accent-color:var(--amber)" title="Optional — toggle to include/exclude">`:'<span style="display:inline-block;width:12px">·</span>'}
+        </td>
+        <td class="mono" style="color:var(--muted);font-size:10px;text-align:center">${i+1}.${si+1}</td>
+        <td colspan="3" style="font-size:11px;color:var(--fg);padding-left:8px">
+          ${sOpt?'<span style="color:var(--amber);font-size:9px;margin-right:4px">opt</span>':''}${s.name}${sFmBadge}
+        </td>
+        <td style="font-size:11px;color:var(--muted);text-align:center">${Math.round(s.work_time_mins||0)}</td>
+        <td style="font-size:11px;color:var(--muted);text-align:right">${fmtTotal(s.work_time_mins||0)}</td>
+      </tr>`;
+    }).join('') : '';
+
     return `<tr id="ooprow_${i}" class="${op.included?'':'excluded'}">
       <td><input type="checkbox" id="oopchk_${i}" ${op.included?'checked':''} onchange="toggleOrderOp(${i},this.checked)" style="width:14px;height:14px;accent-color:var(--accent)"></td>
       <td class="mono" style="color:var(--muted);text-align:center;font-size:11px">${i+1}</td>
       <td style="font-size:12px;font-weight:500">${op.name}${formulaBadge}</td>
       <td><select id="oopwc_${i}" onchange="updateOrderOpWC(${i},this.value)" style="font-size:11px;min-width:120px">${wcOpts}</select></td>
       <td><input type="number" id="oopsetup_${i}" value="${Math.round(sMins)}" min="0" step="5" onchange="recalcOrderOp(${i})" ${op.included?'':'disabled'} style="width:60px"></td>
-      <td><input type="number" id="oopwork_${i}"  value="${Math.round(wMins)}" min="0" step="10" onchange="recalcOrderOp(${i})" ${op.included?'':'disabled'} style="width:70px" ${hasFormula?'title="Auto-calculated — edit to override"':''}></td>
+      <td><input type="number" id="oopwork_${i}"  value="${Math.round(wMins)}" min="0" step="10" onchange="recalcOrderOp(${i})" ${op.included&&!hasSubs?'':'disabled'} style="width:70px" ${hasSubs?'title="Auto-sum of sub-operations"':hasFormula?'title="Auto-calculated — edit to override"':''}></td>
       <td style="font-size:11px;color:var(--muted);text-align:right" id="ooptot_${i}">${fmtTotal(sMins+wMins)}</td>
-    </tr>`;
+    </tr>${subRows}`;
   }).join('');
   document.getElementById('ordOpsWrap').innerHTML=`
     <table class="op-ov-table">
       <thead><tr><th>✓</th><th>#</th><th>Operation</th><th>Machine</th><th>Setup(min)</th><th>Work(min)</th><th>Total</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
+}
+
+function toggleSubOrderOp(oi, si, checked){
+  if(!orderFormOps[oi].sub_operations) return;
+  orderFormOps[oi].sub_operations[si].included = checked;
+  // Recalc parent work time
+  const newTotal = orderFormOps[oi].sub_operations.filter(s=>s.included!==false).reduce((a,s)=>a+(s.work_time_mins||0),0);
+  orderFormOps[oi].work_time_mins = newTotal;
+  orderFormOps[oi].work_time_hrs = newTotal/60;
+  renderOrderOpsTable();
+  debounceEstimate();
 }
 
 function updateOrderOpWC(i, wcId){
