@@ -249,3 +249,18 @@ class OrderCounter(Base):
     id   = Column(Integer, primary_key=True)
     year = Column(Integer, nullable=False)
     seq  = Column(Integer, nullable=False, default=0)
+
+
+class User(Base):
+    __tablename__ = "users"
+    id            = Column(Integer, primary_key=True)
+    username      = Column(String, unique=True, nullable=False)
+    display_name  = Column(String, nullable=True)
+    password_hash = Column(String, nullable=True)   # pbkdf2 hash:salt
+    pin_hash      = Column(String, nullable=True)   # pbkdf2 hash:salt for PIN
+    role          = Column(String, default="operator")   # admin | manager | operator
+    worker_id     = Column(Integer, ForeignKey("workers.id"), nullable=True)
+    is_active     = Column(Boolean, default=True)
+    last_login    = Column(DateTime, nullable=True)
+    created_at    = Column(DateTime, default=now_ist)
+    worker        = relationship("Worker", foreign_keys=[worker_id])

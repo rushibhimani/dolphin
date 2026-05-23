@@ -3,7 +3,7 @@
  * Central fetch wrapper + global data store.
  */
 
-const API = 'http://localhost:8000';
+const API = '';   // Same-origin — no hardcoded localhost
 
 // Global data cache — loaded once, used everywhere
 let allMachines  = [];
@@ -18,26 +18,29 @@ let routingOps = [];
 let jobFormOps = [];
 
 /**
- * Core fetch wrapper. Throws on non-ok responses with server error message.
- * @param {string} method GET|POST|PUT|DELETE
- * @param {string} path   API path e.g. '/api/jobs'
- * @param {object} body   Optional request body
+ * Core fetch wrapper. Injects auth token. Throws on non-ok responses.
  */
 async function api(method, path, body) {
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-  };
-  if (body !== undefined) opts.body = JSON.stringify(body);
+  const headers = { 'Content-Type': 'application/json' };
+  const token = authGetToken();
+  if(token) headers['Authorization'] = `Bearer ${token}`;
+
+  const opts = { method, headers };
+  if(body !== undefined) opts.body = JSON.stringify(body);
 
   const res = await fetch(API + path, opts);
-  if (!res.ok) {
+
+  if(res.status === 401){
+    authHandle401();
+    throw new Error('Session expired. Please log in again.');
+  }
+
+  if(!res.ok){
     let msg = `${method} ${path} → ${res.status}`;
     try { const j = await res.json(); msg = j.detail || j.message || msg; } catch {}
     throw new Error(msg);
   }
-  // 204 No Content
-  if (res.status === 204) return null;
+  if(res.status === 204) return null;
   return res.json();
 }
 
@@ -61,20 +64,15 @@ async function loadAll() {
     allCustomers = customers || [];
     allWorkers   = workers   || [];
     allOrders    = orders    || [];
-  } catch (e) {
+  } catch(e) {
     console.error('loadAll failed:', e);
     setServerStatus(false);
   }
 }
 
-/**
- * Check server connectivity and update status indicator.
- */
 async function checkServer() {
   try {
-    await fetch(API + '/api/workcenters', { method: 'HEAD' }).catch(() =>
-      fetch(API + '/api/workcenters')
-    );
+    await api('GET', '/api/health');
     setServerStatus(true);
   } catch {
     setServerStatus(false);
@@ -84,11 +82,10 @@ async function checkServer() {
 function setServerStatus(online) {
   const dot  = document.getElementById('statusDot');
   const text = document.getElementById('serverStatus');
-  if (dot)  dot.className  = online ? 'dot dot-green' : 'dot dot-red';
-  if (text) text.textContent = online ? 'Connected' : 'Offline';
+  if(dot)  dot.className   = online ? 'dot dot-green' : 'dot dot-red';
+  if(text) text.textContent = online ? 'Connected' : 'Offline';
 }
 
-// Helper: build <option> list for machine selector
 function buildMachineOpts(selectedId) {
   return allMachines.map(m =>
     `<option value="${m.id}" ${m.id == selectedId ? 'selected' : ''}>${m.name}</option>`

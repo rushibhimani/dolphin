@@ -34,6 +34,9 @@ const ROUTES = [
   { pattern: /^#\/routings\/(\d+)$/,         page: 'routing-edit', title: 'Edit Routing', param: 'routingId' },
   { pattern: /^#\/routing-stats$/,           page: 'routing-stats', title: 'Routing Stats' },
 
+  // Users (admin only)
+  { pattern: /^#\/users$/,                   page: 'users',        title: 'Users' },
+
   // Setup pages
   { pattern: /^#\/machines$/,                page: 'machines',     title: 'Machines' },
   { pattern: /^#\/workers$/,                 page: 'workers',      title: 'Workers' },
@@ -82,6 +85,12 @@ async function handleRoute() {
   document.title = `${title} — Dolphin ERP`;
   document.getElementById('pageTitle').textContent = title;
 
+  // Operator guard — operators can only see today's work
+  const currentUser = authGetUser();
+  if(currentUser?.role === 'operator' && page !== 'today'){
+    navigate('/today', true); return;
+  }
+
   // Highlight active nav item
   navActive(page);
 
@@ -122,6 +131,13 @@ async function handleRoute() {
       case 'customers':    await renderCustomers(); break;
       case 'reports':      await renderReports(); break;
       case 'settings':     await renderSettings(); break;
+      case 'users':
+        if(authGetUser()?.role !== 'admin'){
+          content.innerHTML = `<div class="empty" style="padding:40px">Access denied. Admin only.</div>`;
+        } else {
+          await renderUsers();
+        }
+        break;
       default:             await renderDashboard();
     }
   } catch (e) {

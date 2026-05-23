@@ -71,25 +71,7 @@ async function toggleFreeze(id) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-// ── BOTTOM NAV (mobile) ───────────────────────────────────────────────────────
-
-function buildBottomNav() {
-  const nav = document.getElementById('bottomNav');
-  if (!nav) return;
-  const items = [
-    { page: 'dashboard', icon: '⊞', label: 'Home' },
-    { page: 'today',     icon: '⏱', label: 'Today' },
-    { page: 'jobs',      icon: '📋', label: 'Jobs' },
-    { page: 'orders',    icon: '📦', label: 'Orders' },
-    { page: 'schedule',  icon: '📅', label: 'Gantt' },
-  ];
-  nav.innerHTML = items.map(it =>
-    `<button class="bn-item" data-page="${it.page}" onclick="navigate('/${it.page}')">
-      <span class="bn-icon">${it.icon}</span>
-      <span class="bn-label">${it.label}</span>
-    </button>`
-  ).join('');
-}
+// ── BOTTOM NAV (updated by applyRoleUI based on role) ────────────────────────
 
 function updateBottomNav(page) {
   document.querySelectorAll('.bn-item').forEach(el => {
@@ -97,22 +79,97 @@ function updateBottomNav(page) {
   });
 }
 
+// ── Role-based UI: hide/show nav items and bottom nav ─────────────────────────
+
+function applyRoleUI(user) {
+  const role = user?.role || 'operator';
+  const perms = user?.permissions || {};
+  const allowedPages = new Set(perms.pages || []);
+
+  // ── Sidebar nav items ──
+  document.querySelectorAll('.nav-item[data-page]').forEach(el => {
+    const page = el.dataset.page;
+    const show = allowedPages.has(page) ||
+                 // sub-routes: job-new/job-edit fall under 'jobs', order under 'orders'
+                 (page === 'jobs' && allowedPages.has('jobs')) ||
+                 (page === 'orders' && allowedPages.has('orders'));
+    el.style.display = show ? '' : 'none';
+  });
+
+  // ── Section labels: hide "Setup" group label if nothing under it is visible ──
+  document.querySelectorAll('.nav-group').forEach(label => {
+    // Find all nav-items until the next nav-group
+    let sibling = label.nextElementSibling;
+    let anyVisible = false;
+    while (sibling && !sibling.classList.contains('nav-group')) {
+      if (sibling.classList.contains('nav-item') && sibling.style.display !== 'none') {
+        anyVisible = true; break;
+      }
+      sibling = sibling.nextElementSibling;
+    }
+    label.style.display = anyVisible ? '' : 'none';
+  });
+
+  // ── Bottom nav: only show items this role can access ──
+  const BOT_NAV_ITEMS = [
+    { page: 'dashboard', icon: '⊞', label: 'Home' },
+    { page: 'today',     icon: '⏱', label: 'Today' },
+    { page: 'jobs',      icon: '📋', label: 'Jobs' },
+    { page: 'orders',    icon: '📦', label: 'Orders' },
+    { page: 'schedule',  icon: '📅', label: 'Gantt' },
+  ];
+  const nav = document.getElementById('bottomNav');
+  if (nav) {
+    const visible = BOT_NAV_ITEMS.filter(it => allowedPages.has(it.page));
+    nav.innerHTML = visible.map(it =>
+      `<button class="bn-item" data-page="${it.page}" onclick="navigate('/${it.page}')">
+        <span class="bn-icon">${it.icon}</span>
+        <span class="bn-label">${it.label}</span>
+      </button>`
+    ).join('');
+  }
+
+  // ── Operator: hide entire sidebar shell, show only Today ──
+  if (role === 'operator') {
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.style.display = 'none';
+  }
+}
+
 // ── APP INIT ──────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // Build bottom nav for mobile
-  buildBottomNav();
+  // ── Auth gate ──
+  if(!authLoadFromStorage()){
+    window.location.href = '/login';
+    return;
+  }
 
-  // Load all data then start router
+  const user = authGetUser();
+
+  // Show user name + logout button in topbar
+  const nameEl  = document.getElementById('topbarUserName');
+  const logoutEl = document.getElementById('btnLogout');
+  if(nameEl)   { nameEl.textContent = user?.display_name || user?.username || ''; nameEl.style.display = ''; }
+  if(logoutEl) { logoutEl.style.display = ''; }
+
+  // Apply role-based nav (sidebar + bottom nav)
+  applyRoleUI(user);
+
+  // Operator: go straight to Today's Work
+  if(user?.role === 'operator'){
+    await loadAll();
+    navigate('/today', true);
+    setInterval(checkServer, 30000);
+    return;
+  }
+
+  // Manager / Admin: full app
   await loadAll();
-
-  // If no hash set, default to dashboard
-  if (!window.location.hash || window.location.hash === '#') {
+  if(!window.location.hash || window.location.hash === '#'){
     navigate('/dashboard', true);
   } else {
     handleRoute();
   }
-
-  // Poll server status every 30 seconds
   setInterval(checkServer, 30000);
 });

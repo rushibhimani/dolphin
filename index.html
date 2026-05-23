@@ -47,6 +47,7 @@
     <div class="nav-item" data-page="customers" onclick="navigate('/customers')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>Customers</div>
     <div class="nav-item" data-page="reports" onclick="navigate('/reports')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>Reports</div>
     <div class="nav-item" data-page="settings" onclick="navigate('/settings')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</div>
+    <div class="nav-item" data-page="users" id="navUsers" style="display:none" onclick="navigate('/users')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>Users</div>
   </nav>
   <div class="sidebar-foot">
     <div class="status-row"><span class="dot" id="statusDot"></span><span id="serverStatus">Connecting...</span></div>
@@ -63,6 +64,14 @@
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
       <div class="topbar-actions" id="topbarActions"></div>
+      <div id="topbarUser" style="display:flex;align-items:center;gap:8px">
+        <span id="topbarUserName" style="font-size:12px;color:var(--muted);display:none"></span>
+        <button id="btnLogout" onclick="authLogout()" title="Sign out"
+          style="display:none;background:none;border:1px solid var(--border);border-radius:6px;
+                 padding:5px 10px;font-size:12px;color:var(--muted);cursor:pointer">
+          Sign out
+        </button>
+      </div>
       <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
         <svg id="themeIconSun" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display:none"><circle cx="12" cy="12" r="4" stroke-width="2"/><path stroke-linecap="round" stroke-width="2" d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
         <svg id="themeIconMoon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -95,6 +104,8 @@
 
 <div id="toast"></div>
 
+<!-- Auth (must be first — api.js depends on authGetToken) -->
+<script src="js/auth.js"></script>
 <!-- Foundation -->
 <script src="js/api.js"></script>
 <script src="js/utils.js"></script>
@@ -117,6 +128,7 @@
 <script src="js/pages/reports.js"></script>
 <script src="js/pages/settings.js"></script>
 <script src="js/pages/routing_stats.js"></script>
+<script src="js/pages/users.js"></script>
 
 <!-- Full-page editors -->
 <script src="js/editors/routing_editor.js"></script>

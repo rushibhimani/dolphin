@@ -1,5 +1,5 @@
 import json
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -8,8 +8,13 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta, date
 from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
                     Customer, Routing, Operation, SubOperation, Job, ScheduledOp,
-                    JobCounter, CustomerOrder, OrderCounter, now_ist)
+                    JobCounter, CustomerOrder, OrderCounter, User, now_ist)
 import json, os, subprocess, sys
+from auth import (
+    create_token, verify_token, hash_password, verify_password,
+    hash_pin, verify_pin, get_current_user, require_roles,
+    require_admin, require_manager, require_any, ensure_admin_user, PERMISSIONS
+)
 
 DATABASE_URL = "sqlite:///./dolphin.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -32,6 +37,14 @@ def run_migrations():
         Base.metadata.create_all(bind=engine)
 
 run_migrations()
+
+# Bootstrap: create default admin user if none exist
+try:
+    _boot_db = SessionLocal()
+    ensure_admin_user(_boot_db)
+    _boot_db.close()
+except Exception as _e:
+    print(f"⚠  Auth bootstrap error: {_e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PARSING HELPERS
@@ -821,6 +834,60 @@ def _update_order_status(db, order_id):
 app = FastAPI(title="Dolphin ERP")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# ── Auth Middleware ────────────────────────────────────────────────────────────
+# Protects ALL /api/ routes except the public allowlist below.
+# Also enforces operator restrictions at the route level.
+PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/pin-login", "/api/auth/pin-users"}
+
+# Routes operators are NOT allowed to access
+OPERATOR_BLOCKED = {
+    "/api/jobs", "/api/orders", "/api/customers", "/api/workers",
+    "/api/workcenters", "/api/routings", "/api/schedule-all", "/api/gantt",
+    "/api/capacity", "/api/reports", "/api/estimate", "/api/users",
+    "/api/shift-settings",
+}
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+
+        # Allow non-API paths (static files, frontend)
+        if not path.startswith("/api/"):
+            return await call_next(request)
+
+        # Allow public API paths
+        if path in PUBLIC_PATHS:
+            return await call_next(request)
+
+        # Extract and verify token
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        try:
+            claims = verify_token(auth[7:])
+        except Exception:
+            return JSONResponse({"detail": "Invalid or expired token"}, status_code=401)
+
+        # Operators: only allowed to access today, their own ops, and auth/me
+        if claims.get("role") == "operator":
+            allowed_for_operator = {"/api/today", "/api/auth/me", "/api/auth/change-password"}
+            # Allow /api/ops/:id/status and /api/scheduled-ops/:id/status for marking their own ops
+            is_op_action = (
+                path.startswith("/api/scheduled-ops/") or
+                path.startswith("/api/ops/")
+            )
+            if path not in allowed_for_operator and not is_op_action:
+                return JSONResponse({"detail": "Access denied for operator role"}, status_code=403)
+
+        # Attach user claims to request state for use in route handlers
+        request.state.user = claims
+        return await call_next(request)
+
+app.add_middleware(AuthMiddleware)
+
 # Serve css/ and js/ as static directories
 app.mount("/css", StaticFiles(directory="css"), name="css")
 app.mount("/js",  StaticFiles(directory="js"),  name="js")
@@ -828,8 +895,209 @@ app.mount("/js",  StaticFiles(directory="js"),  name="js")
 @app.get("/")
 def root(): return FileResponse("index.html")
 
+@app.get("/login")
+def login_page(): return FileResponse("login.html")
+
 @app.get("/api/health")
 def health(): return {"status": "ok", "time_ist": now_ist().isoformat()}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTH ENDPOINTS (public — no token required)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _user_dict(u):
+    return {
+        "id": u.id, "username": u.username, "display_name": u.display_name or u.username,
+        "role": u.role, "worker_id": u.worker_id,
+        "worker_name": u.worker.name if u.worker else None,
+        "is_active": u.is_active,
+        "last_login": u.last_login.isoformat() if u.last_login else None,
+        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "has_pin": bool(u.pin_hash),
+        "has_password": bool(u.password_hash),
+    }
+
+@app.post("/api/auth/login")
+def login(data: dict):
+    """Password login — returns JWT token."""
+    username = (data.get("username") or "").strip().lower()
+    password = data.get("password") or ""
+    if not username or not password:
+        raise HTTPException(400, "Username and password required")
+    db = SessionLocal()
+    u = db.query(User).filter(
+        User.username == username,
+        User.is_active == True
+    ).first()
+    if not u or not u.password_hash or not verify_password(password, u.password_hash):
+        db.close()
+        raise HTTPException(401, "Invalid username or password")
+    u.last_login = now_ist()
+    db.commit()
+    token = create_token(u.id, u.username, u.role, u.worker_id)
+    perms = PERMISSIONS.get(u.role, PERMISSIONS["operator"])
+    result = {"token": token, "role": u.role, "username": u.username,
+              "display_name": u.display_name or u.username,
+              "worker_id": u.worker_id, "permissions": perms}
+    db.close(); return result
+
+@app.post("/api/auth/pin-login")
+def pin_login(data: dict):
+    """PIN login for operators on shared tablet — returns short-lived token."""
+    pin = str(data.get("pin") or "").strip()
+    worker_id = data.get("worker_id")
+    if not pin:
+        raise HTTPException(400, "PIN required")
+    db = SessionLocal()
+    # Find user by worker_id + verify PIN
+    q = db.query(User).filter(User.is_active == True, User.pin_hash != None)
+    if worker_id:
+        q = q.filter(User.worker_id == worker_id)
+    candidates = q.all()
+    matched = None
+    for u in candidates:
+        if verify_pin(pin, u.pin_hash):
+            matched = u; break
+    if not matched:
+        db.close()
+        raise HTTPException(401, "Invalid PIN")
+    matched.last_login = now_ist()
+    db.commit()
+    token = create_token(matched.id, matched.username, matched.role, matched.worker_id)
+    perms = PERMISSIONS.get(matched.role, PERMISSIONS["operator"])
+    result = {"token": token, "role": matched.role, "username": matched.username,
+              "display_name": matched.display_name or matched.username,
+              "worker_id": matched.worker_id, "permissions": perms}
+    db.close(); return result
+
+@app.get("/api/auth/pin-users")
+def pin_users():
+    """Public endpoint — returns list of users with PINs set (for worker picker on login screen).
+    Only exposes: id, username, display_name, worker_id. No hashes or sensitive data."""
+    db = SessionLocal()
+    users = db.query(User).filter(
+        User.is_active == True,
+        User.pin_hash != None,
+    ).order_by(User.display_name).all()
+    result = [
+        {"id": u.id, "username": u.username,
+         "display_name": u.display_name or u.username,
+         "worker_id": u.worker_id}
+        for u in users
+    ]
+    db.close()
+    return {"users": result}
+
+@app.get("/api/auth/me")
+def get_me(user: dict = Depends(get_current_user)):
+    """Return current user info from token."""
+    perms = PERMISSIONS.get(user.get("role","operator"), PERMISSIONS["operator"])
+    return {"user": user, "permissions": perms}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# USER MANAGEMENT (admin only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/users")
+def list_users(user: dict = Depends(require_admin)):
+    db = SessionLocal()
+    users = db.query(User).order_by(User.role, User.username).all()
+    result = [_user_dict(u) for u in users]
+    db.close(); return result
+
+@app.post("/api/users")
+def create_user(data: dict, user: dict = Depends(require_admin)):
+    username = (data.get("username") or "").strip().lower()
+    if not username:
+        raise HTTPException(400, "Username required")
+    role = data.get("role", "operator")
+    if role not in ("admin", "manager", "operator"):
+        raise HTTPException(400, "Invalid role")
+    db = SessionLocal()
+    existing = db.query(User).filter(User.username == username).first()
+    if existing:
+        db.close(); raise HTTPException(400, "Username already taken")
+
+    u = User(
+        username     = username,
+        display_name = data.get("display_name", "").strip() or username.title(),
+        role         = role,
+        worker_id    = int(data["worker_id"]) if data.get("worker_id") else None,
+        is_active    = True,
+        created_at   = now_ist(),
+    )
+    if data.get("password"):
+        u.password_hash = hash_password(data["password"])
+    if data.get("pin"):
+        pin = str(data["pin"]).strip()
+        if not (pin.isdigit() and 4 <= len(pin) <= 6):
+            db.close(); raise HTTPException(400, "PIN must be 4-6 digits")
+        u.pin_hash = hash_pin(pin)
+    db.add(u); db.commit(); db.refresh(u)
+    result = _user_dict(u); db.close(); return result
+
+@app.put("/api/users/{user_id}")
+def update_user(user_id: int, data: dict, user: dict = Depends(require_admin)):
+    db = SessionLocal()
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u: db.close(); raise HTTPException(404, "User not found")
+
+    # Prevent removing admin role from last admin
+    if u.role == "admin" and data.get("role") != "admin":
+        admin_count = db.query(User).filter(User.role == "admin", User.is_active == True).count()
+        if admin_count <= 1:
+            db.close(); raise HTTPException(400, "Cannot remove the last admin")
+
+    if "display_name" in data: u.display_name = data["display_name"].strip()
+    if "role"         in data:
+        if data["role"] not in ("admin","manager","operator"):
+            db.close(); raise HTTPException(400, "Invalid role")
+        u.role = data["role"]
+    if "worker_id" in data:
+        u.worker_id = int(data["worker_id"]) if data.get("worker_id") else None
+    if "is_active" in data: u.is_active = bool(data["is_active"])
+
+    if data.get("password"):
+        u.password_hash = hash_password(data["password"])
+    if data.get("clear_password"): u.password_hash = None
+    if data.get("pin"):
+        pin = str(data["pin"]).strip()
+        if not (pin.isdigit() and 4 <= len(pin) <= 6):
+            db.close(); raise HTTPException(400, "PIN must be 4-6 digits")
+        u.pin_hash = hash_pin(pin)
+    if data.get("clear_pin"): u.pin_hash = None
+
+    db.commit(); result = _user_dict(u); db.close(); return result
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: int, user: dict = Depends(require_admin)):
+    db = SessionLocal()
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u: db.close(); raise HTTPException(404, "User not found")
+    if str(u.id) == str(user.get("sub")):
+        db.close(); raise HTTPException(400, "Cannot delete your own account")
+    if u.role == "admin":
+        count = db.query(User).filter(User.role == "admin", User.is_active == True).count()
+        if count <= 1:
+            db.close(); raise HTTPException(400, "Cannot delete the last admin")
+    db.delete(u); db.commit(); db.close()
+    return {"ok": True}
+
+@app.post("/api/auth/change-password")
+def change_password(data: dict, user: dict = Depends(get_current_user)):
+    """Any logged-in user can change their own password."""
+    current_pw = data.get("current_password","")
+    new_pw     = data.get("new_password","")
+    if len(new_pw) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    db = SessionLocal()
+    u = db.query(User).filter(User.id == int(user["sub"])).first()
+    if not u: db.close(); raise HTTPException(404, "User not found")
+    if u.password_hash and not verify_password(current_pw, u.password_hash):
+        db.close(); raise HTTPException(401, "Current password incorrect")
+    u.password_hash = hash_password(new_pw)
+    db.commit(); db.close()
+    return {"ok": True, "message": "Password changed successfully"}
 
 @app.get("/api/shift-settings")
 def get_shift_settings_endpoint():
@@ -2223,20 +2491,30 @@ def get_gantt():
     db.close(); return result
 
 @app.get("/api/today")
-def get_today():
+def get_today(user: dict = Depends(require_any)):
     db = SessionLocal()
     today = now_ist().date()
     t_start = datetime(today.year, today.month, today.day, 0, 0)
     t_end   = datetime(today.year, today.month, today.day, 23, 59)
-    # Include scheduled + in_progress ops for today, AND any paused ops (regardless of date)
-    today_ops = db.query(ScheduledOp).filter(
+
+    # Operators only see their own assigned ops
+    worker_filter_id = None
+    if user.get("role") == "operator" and user.get("worker_id"):
+        worker_filter_id = int(user["worker_id"])
+
+    q = db.query(ScheduledOp).filter(
         ScheduledOp.status.in_(["scheduled","in_progress"]),
         ScheduledOp.scheduled_start != None,
         ScheduledOp.scheduled_end   != None,
-    ).order_by(ScheduledOp.scheduled_start).all()
-    paused_ops = db.query(ScheduledOp).filter(
-        ScheduledOp.status == "paused"
-    ).order_by(ScheduledOp.scheduled_start).all()
+    )
+    if worker_filter_id:
+        q = q.filter(ScheduledOp.worker_id == worker_filter_id)
+    today_ops = q.order_by(ScheduledOp.scheduled_start).all()
+
+    pq = db.query(ScheduledOp).filter(ScheduledOp.status == "paused")
+    if worker_filter_id:
+        pq = pq.filter(ScheduledOp.worker_id == worker_filter_id)
+    paused_ops = pq.order_by(ScheduledOp.scheduled_start).all()
 
     ops = [s for s in today_ops
            if s.scheduled_start <= t_end and s.scheduled_end >= t_start]
@@ -2349,10 +2627,18 @@ def get_heatmap():
     db.close(); return result
 
 @app.put("/api/ops/{op_id}/status")
-def update_op_status(op_id: int, data: dict):
+def update_op_status(op_id: int, data: dict, request: Request):
     db = SessionLocal()
     s = db.query(ScheduledOp).filter(ScheduledOp.id == op_id).first()
     if not s: raise HTTPException(404, "Not found")
+
+    # Operators can only update ops assigned to them
+    user = getattr(request.state, 'user', None)
+    if user and user.get('role') == 'operator':
+        worker_id = user.get('worker_id')
+        if not worker_id or s.worker_id != int(worker_id):
+            db.close()
+            raise HTTPException(403, "You can only update your own operations")
     new_status = data["status"]
     s.status = new_status
     now = now_ist()
