@@ -800,15 +800,19 @@ def _update_order_status(db, order_id):
     order = db.query(CustomerOrder).filter(CustomerOrder.id == order_id).first()
     if not order:
         return
-    statuses = {j.status for j in order.jobs}
-    if all(s == "completed" for s in statuses):
-        order.status = "completed"
-    elif any(s == "in_progress" for s in statuses):
-        order.status = "in_progress"
-    elif any(s == "scheduled" for s in statuses):
-        order.status = "in_progress"
+    jobs = list(order.jobs)
+    if not jobs:
+        order.status = "draft"
     else:
-        order.status = "pending"
+        statuses = {j.status for j in jobs}
+        if statuses and all(s == "completed" for s in statuses):
+            order.status = "completed"
+        elif any(s == "in_progress" for s in statuses):
+            order.status = "in_progress"
+        elif any(s == "scheduled" for s in statuses):
+            order.status = "in_progress"
+        else:
+            order.status = "pending"
     db.commit()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1495,27 +1499,66 @@ def routings_stats_all():
                         for op in r.operations)
         completed_jobs = db.query(Job).filter(Job.routing_id == r.id,
                                                Job.status == "completed").all()
+        # ── Per-job actual totals ────────────────────────────────────────────
         actual_totals = []
+        job_records = []   # [{job_number, completed_at, est_hrs, actual_hrs, sched_start, actual_end}]
         for j in completed_jobs:
             sops = db.query(ScheduledOp).filter(
                 ScheduledOp.job_id == j.id,
                 ScheduledOp.actual_start.isnot(None),
                 ScheduledOp.actual_end.isnot(None),
-            ).all()
+            ).order_by(ScheduledOp.sequence).all()
             if sops:
-                actual_totals.append(sum(
+                actual_hrs = sum(
                     (s.actual_end - s.actual_start).total_seconds() / 3600 for s in sops
-                ))
+                )
+                actual_totals.append(actual_hrs)
+                first_sched = min((s.scheduled_start for s in j.scheduled_ops if s.scheduled_start), default=None)
+                last_actual  = max((s.actual_end for s in sops), default=None)
+                job_records.append({
+                    "job_number": j.job_number,
+                    "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+                    "est_hrs": round(est_total, 2),
+                    "actual_hrs": round(actual_hrs, 2),
+                    "variance_pct": round((actual_hrs - est_total) / est_total * 100, 1) if est_total > 0 else None,
+                    "sched_start": first_sched.isoformat() if first_sched else None,
+                    "actual_end":  last_actual.isoformat() if last_actual else None,
+                })
+
+        # ── Per-operation actual breakdown ───────────────────────────────────
+        op_stats = []
+        for op in sorted(r.operations, key=lambda o: o.sequence):
+            est_hrs = round((op.machine_setup_mins + op.job_setup_mins) / 60 + op.work_time_hrs, 2)
+            # collect all scheduled ops for this operation across completed jobs
+            sched_ops = db.query(ScheduledOp).filter(
+                ScheduledOp.operation_id == op.id,
+                ScheduledOp.actual_start.isnot(None),
+                ScheduledOp.actual_end.isnot(None),
+            ).all()
+            actuals = [(s.actual_end - s.actual_start).total_seconds() / 3600 for s in sched_ops]
+            avg_op  = sum(actuals) / len(actuals) if actuals else None
+            var_op  = round((avg_op - est_hrs) / est_hrs * 100, 1) if avg_op and est_hrs > 0 else None
+            op_stats.append({
+                "sequence": op.sequence, "name": op.name,
+                "wc_name": op.work_center.name if op.work_center else "",
+                "estimated_hours": est_hrs,
+                "avg_actual_hours": round(avg_op, 2) if avg_op else None,
+                "variance_pct": var_op,
+                "sample_count": len(actuals),
+            })
+
         avg_actual = sum(actual_totals) / len(actual_totals) if actual_totals else None
         variance = round(((avg_actual - est_total) / est_total * 100), 1) if avg_actual and est_total > 0 else None
+        # confidence: low<3 samples, medium<10, high>=10
+        confidence = "none" if not actual_totals else ("low" if len(actual_totals) < 3 else ("medium" if len(actual_totals) < 10 else "high"))
         results.append({
             "id": r.id, "name": r.name, "product_type": r.product_type,
             "estimated_total_hours": round(est_total, 2),
             "avg_actual_total_hours": round(avg_actual, 2) if avg_actual else None,
             "sample_count": len(actual_totals), "variance_pct": variance,
-            "operations": [{"sequence": op.sequence, "name": op.name,
-                            "estimated_hours": round((op.machine_setup_mins + op.job_setup_mins) / 60 + op.work_time_hrs, 2)}
-                           for op in r.operations],
+            "confidence": confidence,
+            "operations": op_stats,
+            "job_history": sorted(job_records, key=lambda x: x["completed_at"] or "", reverse=True)[:20],
         })
     db.close(); return {"routings": results}
 
@@ -1544,10 +1587,12 @@ def order_dict(o, db):
     return {
         "id": o.id, "order_number": o.order_number,
         "customer_id": o.customer_id, "customer_name": o.customer_name,
+        "po_number": getattr(o, 'po_number', None),
         "product_type": o.product_type, "product_size": o.product_size,
         "product_variant": o.product_variant,
         "routing_id": o.routing_id,
         "quantity": o.quantity, "due_date": fmt(o.due_date),
+        "material_ready_date": fmt(pieces[0].material_ready_date) if pieces else None,
         "notes": o.notes, "total_price": o.total_price,
         "status": o.status, "created_at": fmt(o.created_at),
         "pieces_done": done, "pieces_inprog": inprog,
@@ -1643,28 +1688,30 @@ def create_order(data: dict):
     db.add(order); db.flush()
 
     # Generate piece jobs — each is an independent schedulable unit
-    piece_price  = (order.total_price / quantity) if order.total_price else None
-    op_overrides = json.dumps(data.get("op_overrides", [])) if data.get("op_overrides") else None
+    piece_price      = (order.total_price / quantity) if order.total_price else None
+    op_overrides     = json.dumps(data.get("op_overrides", [])) if data.get("op_overrides") else None
+    material_ready   = parse_dt(data.get("material_ready_date"))
     for i in range(1, quantity + 1):
         job_num = next_job_number(db)
         j = Job(
-            job_number     = job_num,
-            customer_id    = customer_id,
-            customer_name  = customer_name,
-            po_number      = data.get("po_number", ""),
-            product_type   = order.product_type,
-            product_size   = order.product_size or "",
-            product_variant= order.product_variant or "",
-            due_date       = due_date,
-            routing_id     = routing_id,
-            inline_ops     = order.inline_ops,
-            priority_flag  = bool(data.get("priority_flag", False)),
-            notes          = f"Piece {i}/{quantity} of {order_num}",
-            total_price    = piece_price,
-            order_id       = order.id,
-            piece_number   = i,
-            status         = "pending",
-            op_overrides   = op_overrides,
+            job_number          = job_num,
+            customer_id         = customer_id,
+            customer_name       = customer_name,
+            po_number           = data.get("po_number", ""),
+            product_type        = order.product_type,
+            product_size        = order.product_size or "",
+            product_variant     = order.product_variant or "",
+            due_date            = due_date,
+            material_ready_date = material_ready,
+            routing_id          = routing_id,
+            inline_ops          = order.inline_ops,
+            priority_flag       = bool(data.get("priority_flag", False)),
+            notes               = f"Piece {i}/{quantity} of {order_num}",
+            total_price         = piece_price,
+            order_id            = order.id,
+            piece_number        = i,
+            status              = "pending",
+            op_overrides        = op_overrides,
         )
         db.add(j)
 
@@ -1676,18 +1723,49 @@ def update_order(order_id: int, data: dict):
     db = SessionLocal()
     o = db.query(CustomerOrder).filter(CustomerOrder.id == order_id).first()
     if not o: raise HTTPException(404, "Order not found")
+
+    # Customer
+    if "customer_id" in data and data["customer_id"]:
+        o.customer_id = int(data["customer_id"])
+    if "customer_name" in data and data["customer_name"]:
+        o.customer_name = data["customer_name"]
+        for j in o.jobs: j.customer_name = data["customer_name"]
+
+    # Product
+    if "product_type"    in data: o.product_type    = data["product_type"]
+    if "product_size"    in data: o.product_size    = data["product_size"]
+    if "product_variant" in data: o.product_variant = data["product_variant"]
+    if "routing_id"      in data and data["routing_id"]:
+        o.routing_id = int(data["routing_id"])
+        for j in o.jobs: j.routing_id = int(data["routing_id"])
+
+    # PO / price / notes
+    if "po_number"    in data: o.notes = o.notes  # keep notes separate
+    if "notes"        in data: o.notes = data["notes"]
+    if "total_price"  in data: o.total_price = float(data["total_price"]) if data["total_price"] else None
+
+    # Dates — propagate to piece jobs too
     if "due_date" in data:
         new_due = parse_dt(data["due_date"])
         if new_due:
             o.due_date = new_due
-            # Propagate to all piece jobs
-            for j in o.jobs:
-                j.due_date = new_due
-    if "notes"       in data: o.notes       = data["notes"]
-    if "total_price" in data: o.total_price = float(data["total_price"]) if data["total_price"] else None
+            for j in o.jobs: j.due_date = new_due
+
+    if "material_ready_date" in data:
+        mat = parse_dt(data["material_ready_date"])
+        for j in o.jobs: j.material_ready_date = mat
+
     if "priority_flag" in data:
+        for j in o.jobs: j.priority_flag = bool(data["priority_flag"])
+
+    # Apply op_overrides to all pending/scheduled piece jobs
+    if data.get("op_overrides"):
+        import json as _json
+        ovs_json = _json.dumps(data["op_overrides"])
         for j in o.jobs:
-            j.priority_flag = bool(data["priority_flag"])
+            if j.status not in ("completed", "in_progress"):
+                j.op_overrides = ovs_json
+
     db.commit(); result = order_dict(o, db); db.close(); return result
 
 @app.delete("/api/orders/{order_id}")
@@ -2021,6 +2099,89 @@ def schedule_all():
     return {"scheduled": count, "unassigned_ops": unassigned,
             "skipped_active": skipped, "preempted": preempted,
             "frozen_count": len(frozen_set)}
+
+# ── Bulk job operations ────────────────────────────────────────────────────────
+@app.post("/api/jobs/bulk-delete")
+def bulk_delete_jobs(data: dict):
+    ids = [int(i) for i in data.get("ids", [])]
+    if not ids: raise HTTPException(400, "No job IDs provided")
+    db = SessionLocal()
+    deleted = skipped = 0
+    affected_orders = set()
+    for jid in ids:
+        j = db.query(Job).filter(Job.id == jid).first()
+        if not j: continue
+        if j.status == "in_progress":
+            skipped += 1; continue
+        if j.order_id: affected_orders.add(j.order_id)
+        db.delete(j); deleted += 1
+    db.flush()
+    for oid in affected_orders:
+        _update_order_status(db, oid)
+    db.commit(); db.close()
+    return {"deleted": deleted, "skipped": skipped}
+
+@app.post("/api/jobs/bulk-schedule")
+def bulk_schedule_jobs(data: dict):
+    ids = [int(i) for i in data.get("ids", [])]
+    if not ids: raise HTTPException(400, "No job IDs provided")
+    db = SessionLocal()
+    jobs = db.query(Job).filter(Job.id.in_(ids), Job.status.in_(["pending","scheduled"])).all()
+    # Clear pending ops before batch scheduling
+    for j in jobs:
+        active = any(s.status == "in_progress" for s in j.scheduled_ops)
+        if not active:
+            for s in list(j.scheduled_ops):
+                if s.status in ("pending","scheduled"): db.delete(s)
+            j._batch_cleared = True
+    db.flush()
+    count = failed = 0
+    for j in jobs:
+        try: _do_schedule(db, j); count += 1
+        except: failed += 1
+    order_ids = {j.order_id for j in jobs if j.order_id}
+    for oid in order_ids: _update_order_status(db, oid)
+    db.commit(); db.close()
+    return {"scheduled": count, "failed": failed}
+
+@app.post("/api/orders/bulk-delete")
+def bulk_delete_orders(data: dict):
+    ids = [int(i) for i in data.get("ids", [])]
+    if not ids: raise HTTPException(400, "No order IDs provided")
+    db = SessionLocal()
+    deleted = skipped = 0
+    for oid in ids:
+        o = db.query(CustomerOrder).filter(CustomerOrder.id == oid).first()
+        if not o: continue
+        active = any(j.status == "in_progress" for j in o.jobs)
+        if active: skipped += 1; continue
+        db.delete(o); deleted += 1
+    db.commit(); db.close()
+    return {"deleted": deleted, "skipped": skipped}
+
+@app.post("/api/orders/bulk-schedule")
+def bulk_schedule_orders(data: dict):
+    ids = [int(i) for i in data.get("ids", [])]
+    if not ids: raise HTTPException(400, "No order IDs provided")
+    db = SessionLocal()
+    orders = db.query(CustomerOrder).filter(CustomerOrder.id.in_(ids)).all()
+    scheduled = failed = 0
+    for o in orders:
+        for j in o.jobs:
+            if j.status in ("completed","in_progress"): continue
+            active = any(s.status=="in_progress" for s in j.scheduled_ops)
+            if not active:
+                for s in list(j.scheduled_ops):
+                    if s.status in ("pending","scheduled"): db.delete(s)
+                j._batch_cleared = True
+        db.flush()
+        for j in o.jobs:
+            if j.status in ("completed","in_progress"): continue
+            try: _do_schedule(db, j); scheduled += 1
+            except: failed += 1
+        _update_order_status(db, o.id)
+    db.commit(); db.close()
+    return {"scheduled": scheduled, "failed": failed}
 
 @app.get("/api/gantt")
 def get_gantt():
@@ -2680,11 +2841,18 @@ def estimate_order(data: dict):
     }
     """
     db = SessionLocal()
-    routing_id = data.get("routing_id")
-    quantity   = max(1, min(int(data.get("quantity", 1)), 50))
-    start_dt   = parse_dt(data.get("start_date")) or now_ist()
-    start_dt   = snap_to_shift(start_dt)
-    overrides  = {o.get("operation_id"): o for o in data.get("op_overrides", []) if o.get("operation_id")}
+    routing_id      = data.get("routing_id")
+    quantity        = max(1, min(int(data.get("quantity", 1)), 50))
+    material_ready  = parse_dt(data.get("material_ready_date"))
+    # Always simulate from NOW (IST) — never trust the frontend start_date which arrives as UTC
+    # and would be misinterpreted as IST, causing the simulation to start from the wrong time
+    # (e.g. 4:19 AM instead of 9:49 AM), making it ignore all jobs already scheduled today.
+    requested_start = now_ist()
+    # Respect material_ready_date: can't start before material arrives
+    earliest_start  = max(requested_start, material_ready) if material_ready else requested_start
+    start_dt        = snap_to_shift(earliest_start)
+    material_blocked = bool(material_ready and material_ready > requested_start)
+    overrides       = {o.get("operation_id"): o for o in data.get("op_overrides", []) if o.get("operation_id")}
 
     routing = db.query(Routing).filter(Routing.id == routing_id).first()
     if not routing:
@@ -2713,17 +2881,45 @@ def estimate_order(data: dict):
     # We keep a local dict of "extra blocked" slots added by this simulation
     sim_booked: dict[int, list] = {}  # work_center_id -> [(start,end)]
 
+    def working_intervals(slot_start, slot_end):
+        """Break a slot into actual working sub-intervals, skipping lunch and non-working time."""
+        intervals = []
+        cur = slot_start
+        for _ in range(200):
+            if cur >= slot_end:
+                break
+            shift_s, shift_e, lunch_s, lunch_e = get_shift(cur.date())
+            if shift_s == shift_e or cur >= shift_e:
+                cur = next_shift_start(cur); continue
+            if cur < shift_s:
+                cur = shift_s; continue
+            seg_end = min(slot_end, shift_e)
+            if lunch_s and lunch_e and cur < lunch_e and seg_end > lunch_s:
+                if cur < lunch_s:
+                    intervals.append((cur, min(seg_end, lunch_s)))
+                cur = lunch_e
+            else:
+                intervals.append((cur, seg_end))
+                cur = seg_end
+        return intervals
+
     def machine_free_sim(wc_id, slot_start, slot_end):
-        real = db.query(ScheduledOp).filter(
-            ScheduledOp.work_center_id == wc_id,
-            ScheduledOp.scheduled_end  > slot_start,
-            ScheduledOp.scheduled_start < slot_end,
-            ScheduledOp.status.in_(["scheduled","in_progress"])
-        ).first()
-        if real: return False
-        for bs, be in sim_booked.get(wc_id, []):
-            if bs < slot_end and be > slot_start:
-                return False
+        # Decompose simulated slot into actual working intervals (skips lunch/non-working)
+        # Then check each interval against real and simulated bookings
+        intervals = working_intervals(slot_start, slot_end)
+        if not intervals:
+            return True  # no working time in slot
+        for ws, we in intervals:
+            real = db.query(ScheduledOp).filter(
+                ScheduledOp.work_center_id == wc_id,
+                ScheduledOp.scheduled_end  > ws,
+                ScheduledOp.scheduled_start < we,
+                ScheduledOp.status.in_(["scheduled","in_progress"])
+            ).first()
+            if real: return False
+            for bs, be in sim_booked.get(wc_id, []):
+                if bs < we and be > ws:
+                    return False
         return True
 
     piece_results = []
@@ -2750,18 +2946,32 @@ def estimate_order(data: dict):
                     })
                     current = slot_end
                     break
-                # advance to next shift or after blocking slot
-                next_candidates = [next_shift_start(search)]
-                for bs, be in sim_booked.get(wc_id, []):
-                    if be > search: next_candidates.append(snap_to_shift(be))
-                real_blocks = db.query(ScheduledOp).filter(
-                    ScheduledOp.work_center_id == wc_id,
-                    ScheduledOp.scheduled_end  > search,
-                    ScheduledOp.status.in_(["scheduled","in_progress"])
-                ).order_by(ScheduledOp.scheduled_start).first()
-                if real_blocks and real_blocks.scheduled_end:
-                    next_candidates.append(snap_to_shift(real_blocks.scheduled_end))
-                search = min(next_candidates)
+                # Find the earliest blocking interval end so we can try right after it.
+                # Use working_intervals to get the actual occupied sub-ranges of our proposed slot.
+                intervals = working_intervals(search, slot_end)
+                earliest_block_end = None
+                for ws, we in intervals:
+                    # Check real DB blocks
+                    real_block = db.query(ScheduledOp).filter(
+                        ScheduledOp.work_center_id == wc_id,
+                        ScheduledOp.scheduled_end  > ws,
+                        ScheduledOp.scheduled_start < we,
+                        ScheduledOp.status.in_(["scheduled","in_progress"])
+                    ).order_by(ScheduledOp.scheduled_start).first()
+                    if real_block and real_block.scheduled_end:
+                        if earliest_block_end is None or real_block.scheduled_end < earliest_block_end:
+                            earliest_block_end = real_block.scheduled_end
+                    # Check sim blocks
+                    for bs, be in sim_booked.get(wc_id, []):
+                        if bs < we and be > ws:
+                            if earliest_block_end is None or be < earliest_block_end:
+                                earliest_block_end = be
+                    if earliest_block_end:
+                        break  # found earliest conflict, no need to check further intervals
+                if earliest_block_end:
+                    search = snap_to_shift(earliest_block_end)
+                else:
+                    search = next_shift_start(search)
             else:
                 piece_ops.append({"op_name": op["name"], "wc_name": op["wc_name"],
                                    "start": None, "end": None, "dur_mins": round(dur_hrs*60)})
@@ -2785,6 +2995,8 @@ def estimate_order(data: dict):
         "routing_name":   routing.name,
         "quantity":       quantity,
         "start_date":     start_dt.isoformat(),
+        "material_ready_date": material_ready.isoformat() if material_ready else None,
+        "material_blocked": material_blocked,
         "est_first_finish": first_finish,
         "est_last_finish":  last_finish,
         "total_work_mins":  round(total_mins),

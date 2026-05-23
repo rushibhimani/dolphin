@@ -4,12 +4,13 @@
 
 async function renderJobs(){
   await loadAll();
+  _jobSel = new Set(); // reset selection on page load
   // Load next-op data in background
   api('GET','/api/jobs/next-ops').then(d=>{ jobNextOps=d||{}; renderJobsTable(); }).catch(()=>{});
 
   document.getElementById('topbarActions').innerHTML=`
     <button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button>
-    <button class="btn btn-primary" onclick="openJobModal()">+ New Job</button>`;
+    <button class="btn btn-primary" onclick="navigate('/jobs/new')">+ New Job</button>`;
 
   renderJobsTable();
 }
@@ -53,6 +54,13 @@ function renderJobsTable(){
           <input type="checkbox" id="jobGroupToggle" onchange="renderJobsTable()" ${jobGroupByOrder?'checked':''}> Group by Order
         </label>
       </div>
+    </div>
+    <!-- Bulk action bar -->
+    <div id="jobBulkBar" style="display:none;background:var(--accent-soft);border-top:1px solid var(--accent);padding:8px 14px;align-items:center;gap:10px;flex-wrap:wrap">
+      <span id="jobBulkCount" style="font-size:13px;font-weight:600"></span>
+      <button class="btn btn-secondary" style="font-size:12px" onclick="bulkScheduleJobs()">⚡ Schedule Selected</button>
+      <button class="btn btn-danger"    style="font-size:12px" onclick="bulkDeleteJobs()">🗑 Delete Selected</button>
+      <button class="btn btn-ghost"     style="font-size:12px;margin-left:auto" onclick="clearJobSel()">✕ Clear</button>
     </div>`;
 
   const doGroup = document.getElementById('jobGroupToggle')?.checked ?? jobGroupByOrder;
@@ -99,6 +107,39 @@ function renderJobsTable(){
 }
 
 let jobGroupByOrder = true;
+let _jobSel = new Set();
+
+function _syncJobBulkBar(){
+  const bar = document.getElementById('jobBulkBar');
+  const cnt = document.getElementById('jobBulkCount');
+  if(!bar) return;
+  bar.style.display = _jobSel.size > 0 ? 'flex' : 'none';
+  if(cnt) cnt.textContent = `${_jobSel.size} job${_jobSel.size===1?'':'s'} selected`;
+}
+function toggleJobSel(id, checked){
+  if(checked) _jobSel.add(id); else _jobSel.delete(id);
+  _syncJobBulkBar();
+}
+function clearJobSel(){ _jobSel.clear(); _syncJobBulkBar(); }
+
+async function bulkScheduleJobs(){
+  if(!_jobSel.size) return;
+  try{
+    const r = await api('POST','/api/jobs/bulk-schedule',{ids:[..._jobSel]});
+    toast(`Scheduled ${r.scheduled} jobs${r.failed?` · ${r.failed} failed`:''}`);
+    clearJobSel(); await loadAll(); renderJobsTable();
+  }catch(e){ toast(e.message,'error'); }
+}
+async function bulkDeleteJobs(){
+  if(!_jobSel.size) return;
+  const ok = await confirm2(`Delete ${_jobSel.size} job${_jobSel.size===1?'':'s'}?`, 'Delete Jobs');
+  if(!ok) return;
+  try{
+    const r = await api('POST','/api/jobs/bulk-delete',{ids:[..._jobSel]});
+    toast(`Deleted ${r.deleted} job${r.deleted===1?'':'s'}${r.skipped?` · ${r.skipped} skipped (in progress)`:''}`);
+    clearJobSel(); await loadAll(); renderJobsTable();
+  }catch(e){ toast(e.message,'error'); }
+}
 
 function jobRowHTML(j, inGroup=false){
   const pct = j.ops_total ? Math.round(j.ops_done/j.ops_total*100) : 0;
@@ -113,10 +154,13 @@ function jobRowHTML(j, inGroup=false){
 
   const radius = inGroup ? '0' : '8px';
   return `<div id="jblock_${j.id}" style="border:1px solid var(--border);border-radius:${radius};margin-bottom:${inGroup?'0':'8px'};background:var(--card);${inGroup?'border-top:none;border-radius:0;':''}">
-    <div class="job-main-row" id="jrow_${j.id}" onclick="expandJob(${j.id})" style="cursor:pointer;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <svg class="expand-icon" id="jicon_${j.id}" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;flex-shrink:0;transition:transform .15s"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+    <div class="job-main-row" id="jrow_${j.id}" style="cursor:pointer;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <input type="checkbox" id="jchk_${j.id}" ${_jobSel.has(j.id)?'checked':''}
+        onchange="toggleJobSel(${j.id},this.checked);event.stopPropagation()"
+        style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;flex-shrink:0">
+      <svg class="expand-icon" id="jicon_${j.id}" fill="none" stroke="currentColor" viewBox="0 0 24 24" onclick="expandJob(${j.id})" style="width:14px;height:14px;flex-shrink:0;transition:transform .15s"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
 
-      <div style="flex:0 0 110px;min-width:0">
+      <div style="flex:0 0 110px;min-width:0" onclick="expandJob(${j.id})">
         <div class="mono" style="font-size:12px;font-weight:600">${j.job_number}</div>
         ${j.is_frozen?'<span class="badge" style="background:var(--blue-soft,#dbeafe);color:var(--blue,#1d4ed8);margin-left:4px" title="Frozen — excluded from Schedule All">🔒 Frozen</span>':""}
         ${j.piece_number?`<div style="font-size:10px;color:var(--muted)">Piece ${j.piece_number}</div>`:''}
@@ -151,13 +195,13 @@ function jobRowHTML(j, inGroup=false){
       <div style="flex:0 0 auto;display:flex;gap:5px;flex-wrap:wrap" onclick="event.stopPropagation()">
         ${j.priority_flag?'':'<button class="btn btn-danger btn-icon" title="Urgent" onclick="setUrgent('+j.id+')">🚨</button>'}
         <button class="btn btn-ghost btn-icon" title="${j.is_frozen?'Unfreeze — allow rescheduling':'Freeze — skip in Schedule All'}" onclick="toggleFreeze(${j.id})">${j.is_frozen?'🔓':'🔒'}</button>
-        <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="openJobModal(${j.id})">Edit</button>
+        <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="navigate('/jobs/${j.id}')">Edit</button>
         <button class="btn btn-ghost btn-icon" title="Duplicate" onclick="duplicateJob(${j.id})">⧉</button>
         ${j.status==='pending'?`<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="scheduleJob(${j.id})">Schedule</button>`:''}
         <button class="btn btn-danger btn-icon" title="Delete" onclick="delJob(${j.id})">✕</button>
       </div>
     </div>
-    <div class="job-detail-panel" id="jpanel_${j.id}"></div>
+    <div class="job-detail-panel" id="jpanel_${j.id}" onclick="expandJob(${j.id},true)"></div>
   </div>`;
 }
 

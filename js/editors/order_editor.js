@@ -8,16 +8,41 @@ async function renderOrderEditor(editId){
   const PTYPES = ['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate',
                   'Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
   const SIZES  = ['600x600','600x900','600x1200','900x900','900x1200','1200x1200'];
-  const custOpts = allCustomers.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
-  const routingOpts = allRoutings.map(r=>`<option value="${r.id}">${r.name} (${r.product_type})</option>`).join('');
+
+  // Fetch existing order if editing
+  let editOrder = null;
+  if(editId){ try{ editOrder = await api('GET',`/api/orders/${editId}`); }catch(e){ toast('Order not found','error'); navigate('/orders'); return; } }
+
+  const isEdit = !!editOrder;
   const defDue = new Date(Date.now()+30*86400000).toISOString().slice(0,10);
+
+  // Pre-select values for edit mode
+  const selCust    = editOrder?.customer_id || '';
+  const selPtype   = editOrder?.product_type || PTYPES[0];
+  const selSize    = editOrder?.product_size || SIZES[0];
+  const selDue     = editOrder?.due_date ? editOrder.due_date.slice(0,10) : defDue;
+  const selQty     = editOrder?.quantity || 1;
+  const selPrice   = editOrder?.total_price || '';
+  const selVariant = editOrder?.product_variant || '';
+  const selPo      = editOrder?.po_number || '';
+  const selNotes   = editOrder?.notes || '';
+  const selMatD    = editOrder?.material_ready_date ? editOrder.material_ready_date.slice(0,10) : '';
+  const selRouting = editOrder?.routing_id || '';
+  const isCustomSize = selSize && !SIZES.includes(selSize);
+
+  const custOpts = allCustomers.map(c=>`<option value="${c.id}" ${c.id==selCust?'selected':''}>${escHtml(c.name)}</option>`).join('');
+  const routingOpts = allRoutings.map(r=>`<option value="${r.id}" ${r.id==selRouting?'selected':''}>${escHtml(r.name)} (${escHtml(r.product_type)})</option>`).join('');
+  const ptypeOpts = PTYPES.map(p=>`<option ${p===selPtype?'selected':''}>${p}</option>`).join('');
+  const sizeOpts  = SIZES.map(s=>`<option ${s===selSize&&!isCustomSize?'selected':''}>${s}</option>`).join('')
+    + `<option value="custom" ${isCustomSize?'selected':''}>Custom…</option>`;
+
   orderFormOps = [];
 
   document.getElementById('content').innerHTML = `
     <div class="editor-page">
       <div class="editor-header">
-        <h2 class="editor-title">New Order</h2>
-        <div class="editor-subtitle">Create a new customer manufacturing order</div>
+        <h2 class="editor-title">${isEdit ? `Edit Order — ${editOrder.order_number}` : 'New Order'}</h2>
+        <div class="editor-subtitle">${isEdit ? `${editOrder.customer_name} · ${editOrder.product_type} · ${editOrder.quantity} pcs` : 'Create a new customer manufacturing order'}</div>
       </div>
       <div class="editor-body" style="max-width:100%;padding:20px 28px">
         <div style="display:grid;grid-template-columns:1fr 320px;gap:18px;align-items:start">
@@ -31,7 +56,7 @@ async function renderOrderEditor(editId){
       </div>
       <div class="form-group">
         <div class="fld-label">PO Number</div>
-        <input id="ord_po" placeholder="Customer PO reference">
+        <input id="ord_po" value="${escHtml(selPo)}" placeholder="Customer PO reference">
       </div>
     </div>
 
@@ -39,40 +64,47 @@ async function renderOrderEditor(editId){
     <div class="form-row cols-3">
       <div class="form-group">
         <div class="fld-label">Product Type <span style="color:var(--red)">*</span></div>
-        <select id="ord_ptype" onchange="filterOrderRouting()">${PTYPES.map(p=>`<option>${p}</option>`).join('')}</select>
+        <select id="ord_ptype" onchange="filterOrderRouting()">${ptypeOpts}</select>
       </div>
       <div class="form-group">
         <div class="fld-label">Size <span style="color:var(--red)">*</span></div>
-        <select id="ord_size">
-          ${SIZES.map(s=>`<option>${s}</option>`).join('')}
-          <option value="custom">Custom…</option>
-        </select>
+        <select id="ord_size">${sizeOpts}</select>
       </div>
       <div class="form-group">
         <div class="fld-label">Variant / Type</div>
-        <input id="ord_variant" placeholder="Plain, Carbide, Rustic…">
+        <input id="ord_variant" value="${escHtml(selVariant)}" placeholder="Plain, Carbide, Rustic…">
       </div>
     </div>
-    <div id="ord_size_custom_wrap" style="display:none" class="form-row cols-1">
+    <div id="ord_size_custom_wrap" style="display:${isCustomSize?'':'none'}" class="form-row cols-1">
       <div class="form-group">
         <div class="fld-label">Custom Size</div>
-        <input id="ord_size_custom" placeholder="e.g. 750x1000">
+        <input id="ord_size_custom" value="${isCustomSize?escHtml(selSize):''}" placeholder="e.g. 750x1000">
       </div>
     </div>
 
     <div class="form-section">Quantity & Schedule</div>
     <div class="form-row cols-3">
       <div class="form-group">
-        <div class="fld-label">Quantity <span style="color:var(--red)">*</span></div>
-        <input id="ord_qty" type="number" min="1" max="200" value="1" oninput="triggerEstimate()">
+        <div class="fld-label">Quantity <span style="color:var(--red)">*</span>${isEdit?'<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:6px">(changing quantity doesn\'t add/remove pieces)</span>':''}</div>
+        <input id="ord_qty" type="number" min="1" max="200" value="${selQty}" oninput="triggerEstimate()">
       </div>
       <div class="form-group">
         <div class="fld-label">Due Date <span style="color:var(--red)">*</span></div>
-        <input id="ord_due" type="date" value="${defDue}">
+        <input id="ord_due" type="date" value="${selDue}">
       </div>
       <div class="form-group">
         <div class="fld-label">Total Price (₹)</div>
-        <input id="ord_price" type="number" min="0" step="100" placeholder="All pieces">
+        <input id="ord_price" type="number" min="0" step="100" value="${selPrice}" placeholder="All pieces">
+      </div>
+    </div>
+    <div class="form-row cols-2">
+      <div class="form-group">
+        <div class="fld-label">Material Ready Date <span style="font-size:10px;color:var(--muted);font-weight:400">(leave blank if in stock)</span></div>
+        <input id="ord_mat_d" type="date" value="${selMatD}" onchange="triggerEstimate()" title="Pieces won't be scheduled before this date">
+      </div>
+      <div class="form-group">
+        <div class="fld-label">Not Before Date</div>
+        <input id="ord_nb_d" type="date" title="Earliest any operation can start">
       </div>
     </div>
 
@@ -116,7 +148,7 @@ async function renderOrderEditor(editId){
     </div>
     <div class="form-row cols-1">
       <div class="form-group"><div class="fld-label">Notes</div>
-        <textarea id="ord_notes" placeholder="Special instructions…" rows="2"></textarea>
+        <textarea id="ord_notes" placeholder="Special instructions…" rows="2">${escHtml(selNotes)}</textarea>
       </div>
     </div>
     </div><!-- end LEFT -->
@@ -133,15 +165,108 @@ async function renderOrderEditor(editId){
       </div>
       <div class="editor-footer">
         <button class="btn btn-ghost" onclick="navigate('/orders')">Cancel</button>
-        <button class="btn btn-primary" id="saveOrderBtn" onclick="saveOrder()">Create Order</button>
+        <button class="btn btn-primary" id="saveOrderBtn" onclick="saveOrder(${editId||'null'})">${isEdit?'Save Changes':'Create Order'}</button>
       </div>
     </div>`;
 
   // Wire size custom input
-  setTimeout(()=>{
+  setTimeout(async ()=>{
     document.getElementById('ord_size')?.addEventListener('change', function(){
       document.getElementById('ord_size_custom_wrap').style.display = this.value==='custom'?'':'none';
     });
+
+    // EDIT MODE: load routing ops for existing order
+    if(isEdit && selRouting){
+      const sel = document.getElementById('ord_routing');
+      if(sel) sel.value = selRouting;
+      await loadOrderOps();
+
+      // Apply saved op_overrides from the first piece job
+      // op_overrides hold the calculated/custom times that were saved when the order was created
+      try {
+        const firstPiece = editOrder.pieces?.[0];
+        let savedOvs = null;
+        if(firstPiece){
+          // Fetch the actual job to get op_overrides
+          const jobDetail = await api('GET', `/api/jobs/${firstPiece.id}`);
+          if(jobDetail.op_overrides){
+            savedOvs = typeof jobDetail.op_overrides === 'string'
+              ? JSON.parse(jobDetail.op_overrides) : jobDetail.op_overrides;
+          }
+        }
+        if(savedOvs && savedOvs.length > 0){
+          // Build a map by operation_id for fast lookup
+          const ovMap = {};
+          savedOvs.forEach(ov => { if(ov.operation_id) ovMap[ov.operation_id] = ov; });
+
+          // Apply overrides to orderFormOps
+          orderFormOps = orderFormOps.map(op => {
+            const ov = ovMap[op.operation_id];
+            if(!ov) return op;
+            const workMins = ov.work_time_mins != null ? parseFloat(ov.work_time_mins)
+                           : ov.work_time_hrs  != null ? parseFloat(ov.work_time_hrs) * 60
+                           : op.work_time_mins;
+            const setupMins = ov.setup_time_mins != null ? parseFloat(ov.setup_time_mins) : op.setup_time_mins;
+            const included  = ov.included !== false;
+            return { ...op, work_time_mins: workMins, setup_time_mins: setupMins, included };
+          });
+          renderOrderOpsTable();
+        }
+      } catch(e) { console.warn('Could not load op_overrides for edit:', e); }
+
+      // Punch calc panel visibility
+      const punchCalcPanel = document.getElementById('punchCalcPanel');
+      if(punchCalcPanel) punchCalcPanel.style.display = selPtype.toLowerCase().includes('punch') ? '' : 'none';
+      triggerEstimate();
+      return; // skip prefill logic when editing
+    }
+
+    // Apply quote prefill if coming from Quote page (new order only)
+    const prefillRaw = sessionStorage.getItem('dolphin_quote_prefill');
+    if (prefillRaw && !editId) {
+      try {
+        const pf = JSON.parse(prefillRaw);
+        sessionStorage.removeItem('dolphin_quote_prefill');
+        if (pf.customer_name) {
+          const sel = document.getElementById('ord_cust');
+          const opt = sel && [...sel.options].find(o => o.text === pf.customer_name);
+          if (opt) sel.value = opt.value;
+        }
+        if (pf.product_type) {
+          const el = document.getElementById('ord_ptype');
+          if (el) { el.value = pf.product_type; filterOrderRouting(); }
+        }
+        if (pf.product_size) {
+          const sel = document.getElementById('ord_size');
+          if (sel) {
+            const opt = [...sel.options].find(o => o.value === pf.product_size);
+            sel.value = opt ? pf.product_size : 'custom';
+            if (!opt) {
+              document.getElementById('ord_size_custom_wrap').style.display = '';
+              const ci = document.getElementById('ord_size_custom');
+              if (ci) ci.value = pf.product_size;
+            }
+          }
+        }
+        if (pf.product_variant) {
+          const el = document.getElementById('ord_variant');
+          if (el) el.value = pf.product_variant;
+        }
+        if (pf.quantity)  { const el = document.getElementById('ord_qty');  if(el) el.value = pf.quantity; }
+        if (pf.due_date)  { const el = document.getElementById('ord_due');  if(el) el.value = pf.due_date; }
+        if (pf.material_ready_date) {
+          const el = document.getElementById('ord_mat_d');
+          if (el) el.value = pf.material_ready_date.slice(0,10);
+        }
+        if (pf.routing_id) {
+          setTimeout(async () => {
+            const sel = document.getElementById('ord_routing');
+            if (sel) { sel.value = pf.routing_id; await loadOrderOps(); }
+          }, 200);
+        }
+        toast('Pre-filled from Quote simulation');
+      } catch(e) { /* ignore */ }
+    }
   }, 50);
 }
 
@@ -389,18 +514,33 @@ async function runEstimate(routingId, qty){
       work_time_mins:  parseFloat(document.getElementById(`oopwork_${i}`)?.value)||(op.work_time_mins||(op.work_time_hrs||0)*60),
       included: document.getElementById(`oopchk_${i}`)?.checked??op.included,
     }));
-    const r = await api('POST','/api/estimate',{routing_id:routingId, quantity:Math.min(qty,20), op_overrides:ovs});
+    // Get material ready date if set
+    const matD = document.getElementById('ord_mat_d')?.value;
+    const matPayload = matD ? `${matD}T00:00:00` : null;
+    const r = await api('POST','/api/estimate',{
+      routing_id: routingId,
+      quantity: Math.min(qty,20),
+      op_overrides: ovs,
+      material_ready_date: matPayload,
+    });
     const due = document.getElementById('ord_due')?.value;
     const dueDate = due ? new Date(due) : null;
     const finishDate = r.est_last_finish ? new Date(r.est_last_finish) : null;
     const isLate = dueDate && finishDate && finishDate > dueDate;
     const diffDays = dueDate && finishDate ? Math.round((finishDate-dueDate)/86400000) : null;
+    const matWarn = r.material_blocked
+      ? `<div style="background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:11px">
+           <strong style="color:var(--amber)">⚠ Material delay</strong> — start pushed to
+           <strong>${new Date(r.start_date).toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</strong>
+         </div>`
+      : '';
 
     el.innerHTML=`
+      ${matWarn}
       <div style="padding:10px;background:${isLate?'var(--red-soft)':'var(--accent-soft)'};border:1px solid ${isLate?'var(--red)':'var(--accent)'};border-radius:8px;margin-bottom:12px;text-align:center">
         <div style="font-size:11px;color:var(--muted);margin-bottom:2px">Est. completion (last piece)</div>
         <div style="font-size:18px;font-weight:700;color:${isLate?'var(--red)':'var(--accent)'}">${finishDate?finishDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'—'}</div>
-        ${diffDays!==null?`<div style="font-size:11px;margin-top:3px;color:${isLate?'var(--red)':'var(--green)'}">${isLate?'⚠ '+diffDays+' days LATE':'✓ '+Math.abs(diffDays)+' days buffer'}</div>`:''}
+        ${diffDays!==null?`<div style="font-size:11px;margin-top:3px;color:${isLate?'var(--red)':'var(--green)'}">${isLate?'⚠ '+Math.abs(diffDays)+' days LATE':'✓ '+Math.abs(diffDays)+' days buffer'}</div>`:''}
       </div>
       ${r.est_first_finish&&qty>1?`<div style="font-size:11px;color:var(--muted);margin-bottom:8px">First piece ready: <strong>${new Date(r.est_first_finish).toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</strong></div>`:''}
       <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600">Total work: ${fmtTotal(r.total_work_mins)} per piece</div>
@@ -416,7 +556,7 @@ async function runEstimate(routingId, qty){
   }
 }
 
-async function saveOrder(){
+async function saveOrder(editId){
   const custId   = document.getElementById('ord_cust').value;
   const ptype    = document.getElementById('ord_ptype').value;
   const sizeSel  = document.getElementById('ord_size').value;
@@ -426,6 +566,7 @@ async function saveOrder(){
   const qty      = parseInt(document.getElementById('ord_qty').value) || 1;
   const due      = document.getElementById('ord_due').value;
   const routingId= document.getElementById('ord_routing').value;
+  const isEdit   = editId && editId !== 'null';
 
   if(!custId)    { toast('Select a customer','error');   return; }
   if(!size)      { toast('Enter product size','error');   return; }
@@ -451,6 +592,7 @@ async function saveOrder(){
     product_variant:document.getElementById('ord_variant').value.trim(),
     quantity:       qty,
     due_date:       due + 'T08:00:00',
+    material_ready_date: document.getElementById('ord_mat_d')?.value ? document.getElementById('ord_mat_d').value + 'T08:00:00' : null,
     routing_id:     parseInt(routingId),
     op_overrides:   ovs.length ? ovs : undefined,
     total_price:    document.getElementById('ord_price').value || null,
@@ -460,8 +602,13 @@ async function saveOrder(){
 
   setLoading('saveOrderBtn', true);
   try{
-    const r = await api('POST', '/api/orders', data);
-    toast(`Order ${r.order_number} created — ${qty} piece jobs generated`);
+    if(isEdit){
+      await api('PUT', `/api/orders/${editId}`, data);
+      toast('Order updated!');
+    } else {
+      const r = await api('POST', '/api/orders', data);
+      toast(`Order ${r.order_number} created — ${qty} piece jobs generated`);
+    }
     await loadAll(); navigate('/orders');
   }catch(e){ toast(e.message, 'error'); }
   finally{ setLoading('saveOrderBtn', false); }

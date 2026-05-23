@@ -17,12 +17,16 @@ const ROUTES = [
 
   // Jobs
   { pattern: /^#\/jobs$/,                    page: 'jobs',         title: 'Jobs' },
+  { pattern: /^#\/jobs\/new$/,               page: 'job-new',      title: 'New Job' },
   { pattern: /^#\/jobs\/(\d+)$/,             page: 'job-edit',     title: 'Edit Job',    param: 'jobId' },
 
   // Orders
   { pattern: /^#\/orders$/,                  page: 'orders',       title: 'Orders' },
   { pattern: /^#\/orders\/new$/,             page: 'order-new',    title: 'New Order' },
   { pattern: /^#\/orders\/(\d+)$/,           page: 'order-edit',   title: 'Edit Order',  param: 'orderId' },
+
+  // Quote
+  { pattern: /^#\/quote$/,                   page: 'quote',        title: 'Quote' },
 
   // Routings
   { pattern: /^#\/routings$/,                page: 'routings',     title: 'Routings' },
@@ -100,10 +104,12 @@ async function handleRoute() {
       case 'today':        await renderToday(); break;
       case 'upcoming':     await renderUpcoming(); break;
       case 'jobs':         await renderJobs(); break;
-      case 'job-edit':     await renderJobs(); openJobModal(params.jobId); break;
+      case 'job-new':      await renderJobEditor(null); break;
+      case 'job-edit':     await renderJobEditor(params.jobId); break;
       case 'orders':       await renderOrders(); break;
       case 'order-new':    await renderOrderEditor(null); break;
       case 'order-edit':   await renderOrderEditor(params.orderId); break;
+      case 'quote':        await renderQuote(); break;
       case 'schedule':     await renderSchedule(); break;
       case 'capacity':     await renderCapacity(); break;
       case 'floorplan':    await renderFloorPlan(); break;
@@ -136,8 +142,10 @@ function renderTopbarActions(page, params = {}) {
 
   const actions = {
     'dashboard':    `<button class="btn btn-primary" onclick="scheduleAll()">⚡ Schedule All</button>`,
-    'jobs':         `<button class="btn btn-primary" onclick="navigate('/jobs/new')">+ New Job</button>`,
+    'jobs':         `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button><button class="btn btn-primary" onclick="navigate('/jobs/new')">+ New Job</button>`,
+    'job-new':      `<button class="btn btn-ghost" onclick="goBack('/jobs')">← Back</button>`,
     'orders':       `<button class="btn btn-primary" onclick="navigate('/orders/new')">+ New Order</button>`,
+    'quote':        `<button class="btn btn-secondary" onclick="navigate('/orders/new')">+ New Order</button>`,
     'routings':     `<button class="btn btn-primary" onclick="navigate('/routings/new')">+ New Routing</button>`,
     'machines':     `<button class="btn btn-primary" onclick="openMachineModal(null)">+ Add Machine</button>`,
     'workers':      `<button class="btn btn-primary" onclick="openWorkerModal(null)">+ Add Worker</button>`,
@@ -157,7 +165,7 @@ function navActive(page) {
       // Group: routings page also active for routing-new/edit
       (el.dataset.page === 'routings' && page.startsWith('routing')) ||
       (el.dataset.page === 'orders'   && page.startsWith('order')) ||
-      (el.dataset.page === 'jobs'     && page === 'job-edit')
+      (el.dataset.page === 'jobs'     && (page === 'job-edit' || page === 'job-new'))
     );
   });
 }
