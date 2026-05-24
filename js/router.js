@@ -135,10 +135,10 @@ function renderTopbarActions(page, params = {}) {
   const el = document.getElementById('topbarActions');
   if (!el) return;
   const actions = {
-    'dashboard':    `<button class="btn btn-primary" onclick="scheduleAll()">⚡ Schedule All</button>`,
+    'dashboard':    ``,
     'jobs':         `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button><button class="btn btn-primary" onclick="navigate('/jobs/new')">+ New Job</button>`,
     'job-new':      `<button class="btn btn-ghost" onclick="goBack('/jobs')">← Back</button>`,
-    'orders':       `<button class="btn btn-primary" onclick="navigate('/orders/new')">+ New Order</button>`,
+    'orders':       `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button><button class="btn btn-primary" onclick="navigate('/orders/new')">+ New Order</button>`,
     'quote':        `<button class="btn btn-secondary" onclick="navigate('/orders/new')">+ New Order</button>`,
     'routings':     `<button class="btn btn-primary" onclick="navigate('/routings/new')">+ New Routing</button>`,
     'machines':     `<button class="btn btn-primary" onclick="openMachineModal(null)">+ Add Machine</button>`,

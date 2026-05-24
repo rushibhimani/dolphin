@@ -44,7 +44,7 @@ PERMISSIONS = {
     "manager": {
         "pages": ["dashboard","today","upcoming","jobs","orders","quote","schedule",
                   "capacity","floorplan","routings","machines","workers","customers",
-                  "reports","routing-stats"],
+                  "reports","routing-stats","settings"],
         "can_see_all_workers": True,
         "can_delete": True,
         "can_manage_users": False,

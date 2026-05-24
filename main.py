@@ -3508,10 +3508,12 @@ def backfill_codes():
     db.commit(); db.close(); return {"updated": updated}
 
 @app.post("/api/seed-real")
-def seed_real():
+def seed_real(data: dict = {}):
     db = SessionLocal()
-    if db.query(Worker).count() > 0 or db.query(WorkCenter).count() > 0:
-        db.close(); return {"msg": "Already has data — clear first"}
+    force = data.get("force", False)
+    if not force and (db.query(Worker).count() > 0 or db.query(WorkCenter).count() > 0):
+        db.close()
+        return {"msg": "Already has data — pass force:true to overwrite", "has_data": True}
     workers_data = [
         ("W01","Shreyans","Operator","+91"),("W02","Sonu","Operator","+91"),
         ("W03","Anil","Operator","+91"),("W04","Jignesh","Operator","+91"),

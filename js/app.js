@@ -35,8 +35,15 @@ async function seedData() {
 
 async function seedRealSetup() {
   try {
-    const r = await api('POST', '/api/seed-real');
-    toast(r.msg || 'Real setup loaded');
+    const r = await api('POST', '/api/seed-real', {});
+    if (r.has_data) {
+      const ok = await confirm2('Workers/machines already exist. Load Real Setup anyway? This will add missing entries.', 'Load Real Setup');
+      if (!ok) return;
+      const r2 = await api('POST', '/api/seed-real', { force: true });
+      toast(r2.msg || 'Real setup loaded');
+    } else {
+      toast(r.msg || 'Real setup loaded');
+    }
     await loadAll();
     handleRoute();
   } catch (e) { toast(e.message, 'error'); }

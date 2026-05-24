@@ -154,6 +154,32 @@ async function renderSettings(){
         </div>
       </div>
 
+      <!-- Change password — admin and manager -->
+      ${(authGetUser()?.role === 'admin' || authGetUser()?.role === 'manager') ? `
+      <div class="card">
+        <div class="card-hdr"><div class="card-title">🔑 Change Password</div></div>
+        <div class="card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;align-items:end">
+            <div class="form-group" style="margin:0">
+              <div class="fld-label">Current Password</div>
+              <input type="password" id="cp_cur" placeholder="Current password" autocomplete="current-password">
+            </div>
+            <div class="form-group" style="margin:0">
+              <div class="fld-label">New Password</div>
+              <input type="password" id="cp_new" placeholder="Min 8 characters" autocomplete="new-password">
+            </div>
+            <div class="form-group" style="margin:0">
+              <div class="fld-label">Confirm New</div>
+              <input type="password" id="cp_cfm" placeholder="Repeat new password" autocomplete="new-password">
+            </div>
+          </div>
+          <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
+            <button class="btn btn-primary" id="cpBtn" onclick="changeMyPassword()">Update Password</button>
+            <span id="cpMsg" style="font-size:12px;display:none"></span>
+          </div>
+        </div>
+      </div>` : ''}
+
     </div>`;
 
   // Wire pref buttons
@@ -263,5 +289,39 @@ function resetPrefs(){
   applyPrefs(Object.assign({},DEFAULT_PREFS));
   if(window.location.pathname.includes('settings')) renderSettings();
   toast('Preferences reset');
+}
+
+async function changeMyPassword(){
+  const cur = document.getElementById('cp_cur')?.value;
+  const nw  = document.getElementById('cp_new')?.value;
+  const cfm = document.getElementById('cp_cfm')?.value;
+  const msg = document.getElementById('cpMsg');
+  const btn = document.getElementById('cpBtn');
+
+  const showMsg = (text, ok) => {
+    msg.textContent = text;
+    msg.style.display = '';
+    msg.style.color = ok ? 'var(--green)' : 'var(--red)';
+  };
+
+  if(!cur)           return showMsg('Enter your current password', false);
+  if(!nw)            return showMsg('Enter a new password', false);
+  if(nw.length < 8)  return showMsg('New password must be at least 8 characters', false);
+  if(nw !== cfm)     return showMsg('Passwords do not match', false);
+
+  btn.disabled = true; btn.textContent = 'Updating…';
+  try {
+    await api('POST', '/api/auth/change-password', {
+      current_password: cur, new_password: nw
+    });
+    showMsg('✓ Password changed successfully', true);
+    document.getElementById('cp_cur').value = '';
+    document.getElementById('cp_new').value = '';
+    document.getElementById('cp_cfm').value = '';
+  } catch(e) {
+    showMsg(e.message || 'Failed to change password', false);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Update Password';
+  }
 }
 // ── ROUTING STATS ──

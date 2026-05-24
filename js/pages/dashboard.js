@@ -22,10 +22,18 @@ async function renderDashboard(){
         urgent=allJobs.filter(j=>j.critical_ratio<1&&j.status!=='completed').length,
         late=allJobs.filter(j=>j.is_late&&j.status!=='completed').length,
         downMachines=allMachines.filter(m=>m.status&&m.status!=='active').length;
-  document.getElementById('topbarActions').innerHTML=`
-    <button class="btn btn-secondary" onclick="seedData()">Load Demo Data</button>
-    <button class="btn btn-ghost" onclick="seedRealData()" title="Load Dolphin's actual machines and workers">Load Real Setup</button>
-    <button class="btn btn-primary" onclick="scheduleAll()">⚡ Schedule All</button>`;
+  const _dashUser = authGetUser();
+  const _isAdmin  = _dashUser?.role === 'admin';
+  // Dashboard topbar: admin gets a compact "⚙ Admin" dropdown for seeding
+  document.getElementById('topbarActions').innerHTML=
+    _isAdmin ? `<div style="position:relative;display:inline-block" id="adminMenuWrap">
+      <button class="btn btn-ghost" onclick="toggleAdminMenu()" style="font-size:12px">⚙ Admin ▾</button>
+      <div id="adminMenu" style="display:none;position:absolute;right:0;top:110%;background:var(--card);
+           border:1px solid var(--border);border-radius:8px;padding:6px;min-width:170px;z-index:200;box-shadow:0 4px 16px rgba(0,0,0,.15)">
+        <button onclick="seedData();toggleAdminMenu()" style="display:block;width:100%;text-align:left;padding:8px 12px;font-size:13px;background:none;border:none;color:var(--text);cursor:pointer;border-radius:6px" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background='none'">Load Demo Data</button>
+        <button onclick="seedRealSetup();toggleAdminMenu()" style="display:block;width:100%;text-align:left;padding:8px 12px;font-size:13px;background:none;border:none;color:var(--text);cursor:pointer;border-radius:6px" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background='none'">Load Real Setup</button>
+      </div>
+    </div>` : '';
   // Load preemption alerts
   try{
     const alerts = await api('GET','/api/preemption-alerts');
@@ -81,16 +89,28 @@ async function renderDashboard(){
     <div class="card">
       <div class="card-hdr"><div class="card-title">Quick Actions</div></div>
       <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-primary" onclick="openJobModal()">+ New Job</button>
+        <button class="btn btn-primary" onclick="navigate('/jobs/new')">+ New Job</button>
         <button class="btn btn-secondary" onclick="navigate('/orders/new')">+ New Order</button>
-        <button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button>
         <button class="btn btn-secondary" onclick="navigate('/today')">🕐 Today</button>
         <button class="btn btn-secondary" onclick="navigate('/schedule')">📅 Gantt</button>
         <button class="btn btn-secondary" onclick="navigate('/capacity')">🔥 Capacity</button>
         <button class="btn btn-secondary" onclick="navigate('/workers')">👷 Workers</button>
-        <button class="btn btn-ghost" onclick="seedPunchRoutings()" title="Add 4 standard Punch routing templates with formula-based times">🥊 Load Punch Routings</button>
       </div>
     </div>`;
+}
+
+function toggleAdminMenu(){
+  const m=document.getElementById('adminMenu');
+  if(!m) return;
+  const open = m.style.display==='none'||!m.style.display;
+  m.style.display = open ? '' : 'none';
+  if(open){
+    // Close when clicking outside
+    setTimeout(()=>{
+      const close=()=>{ m.style.display='none'; document.removeEventListener('click',close); };
+      document.addEventListener('click',close);
+    },0);
+  }
 }
 
 // ── TODAY ──
