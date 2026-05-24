@@ -136,19 +136,19 @@ function renderTopbarActions(page, params = {}) {
   if (!el) return;
   const actions = {
     'dashboard':    ``,
-    'jobs':         `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button><button class="btn btn-primary" onclick="navigate('/jobs/new')">+ New Job</button>`,
-    'job-new':      `<button class="btn btn-ghost" onclick="goBack('/jobs')">← Back</button>`,
-    'orders':       `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button><button class="btn btn-primary" onclick="navigate('/orders/new')">+ New Order</button>`,
-    'quote':        `<button class="btn btn-secondary" onclick="navigate('/orders/new')">+ New Order</button>`,
-    'routings':     `<button class="btn btn-primary" onclick="navigate('/routings/new')">+ New Routing</button>`,
-    'machines':     `<button class="btn btn-primary" onclick="openMachineModal(null)">+ Add Machine</button>`,
-    'workers':      `<button class="btn btn-primary" onclick="openWorkerModal(null)">+ Add Worker</button>`,
-    'customers':    `<button class="btn btn-primary" onclick="openCustomerModal(null)">+ Add Customer</button>`,
-    'routing-new':  `<button class="btn btn-ghost" onclick="goBack('/routings')">← Back</button>`,
-    'routing-edit': `<button class="btn btn-ghost" onclick="goBack('/routings')">← Back</button>`,
-    'order-new':    `<button class="btn btn-ghost" onclick="goBack('/orders')">← Back</button>`,
-    'order-edit':   `<button class="btn btn-ghost" onclick="goBack('/orders')">← Back</button>`,
-    'job-edit':     `<button class="btn btn-ghost" onclick="goBack('/jobs')">← Back</button>`,
+    'jobs':         `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Schedule All</span></button><button class="btn btn-primary" onclick="navigate('/jobs/new')">+ <span class="btn-label-long">New Job</span><span class="btn-label-short" style="display:none">Job</span></button>`,
+    'job-new':      `<button class="btn btn-ghost" onclick="goBack('/jobs')">← <span class="btn-label-long">Back</span></button>`,
+    'orders':       `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Schedule All</span></button><button class="btn btn-primary" onclick="navigate('/orders/new')">+ <span class="btn-label-long">New Order</span><span class="btn-label-short" style="display:none">Order</span></button>`,
+    'quote':        `<button class="btn btn-secondary" onclick="navigate('/orders/new')">+ <span class="btn-label-long">New Order</span><span class="btn-label-short" style="display:none">Order</span></button>`,
+    'routings':     `<button class="btn btn-primary" onclick="navigate('/routings/new')">+ <span class="btn-label-long">New Routing</span><span class="btn-label-short" style="display:none">Routing</span></button>`,
+    'machines':     `<button class="btn btn-primary" onclick="openMachineModal(null)">+ <span class="btn-label-long">Add Machine</span><span class="btn-label-short" style="display:none">Machine</span></button>`,
+    'workers':      `<button class="btn btn-primary" onclick="openWorkerModal(null)">+ <span class="btn-label-long">Add Worker</span><span class="btn-label-short" style="display:none">Worker</span></button>`,
+    'customers':    `<button class="btn btn-primary" onclick="openCustomerModal(null)">+ <span class="btn-label-long">Add Customer</span><span class="btn-label-short" style="display:none">Customer</span></button>`,
+    'routing-new':  `<button class="btn btn-ghost" onclick="goBack('/routings')">← <span class="btn-label-long">Back</span></button>`,
+    'routing-edit': `<button class="btn btn-ghost" onclick="goBack('/routings')">← <span class="btn-label-long">Back</span></button>`,
+    'order-new':    `<button class="btn btn-ghost" onclick="goBack('/orders')">← <span class="btn-label-long">Back</span></button>`,
+    'order-edit':   `<button class="btn btn-ghost" onclick="goBack('/orders')">← <span class="btn-label-long">Back</span></button>`,
+    'job-edit':     `<button class="btn btn-ghost" onclick="goBack('/jobs')">← <span class="btn-label-long">Back</span></button>`,
   };
   el.innerHTML = actions[page] || '';
 }

@@ -5,7 +5,7 @@
 // ── SETTINGS PAGE ──
 async function renderSettings(){
   document.getElementById('topbarActions').innerHTML=
-    `<button class="btn btn-primary" onclick="saveShiftSettings()">💾 Save Working Hours</button>`;
+    `<button class="btn btn-primary" onclick="saveShiftSettings()">💾 <span class="btn-label-long">Save Working Hours</span><span class="btn-label-short" style="display:none">Save</span></button>`;
   const p=getPrefs();
   const opt=(v,l,cur)=>`<button type="button" class="pref-opt ${cur===v?'active':''}" data-value="${v}">${l}</button>`;
 
@@ -132,7 +132,10 @@ async function renderSettings(){
           </div>
           <div class="pref-row">
             <div class="pref-info"><div class="pref-label">Theme</div><div class="pref-help">Light for bright shop floors. Dark for night or office use.</div></div>
-            <div class="pref-opts" data-pref="theme">${opt('light','Light',p.theme)}${opt('dark','Dark',p.theme)}</div>
+            <div style="display:flex;gap:8px">
+              <button class="btn" style="${p.theme!=='dark'?'background:var(--accent);color:#000':''}" onclick="applyTheme('light')">☀ Light</button>
+              <button class="btn" style="${p.theme==='dark'?'background:var(--accent);color:#000':''}"  onclick="applyTheme('dark')">🌙 Dark</button>
+            </div>
           </div>
           <div class="pref-row">
             <div class="pref-info"><div class="pref-label">Font size</div><div class="pref-help">Larger text for monitors viewed from a distance.</div></div>
@@ -153,6 +156,20 @@ async function renderSettings(){
           <div style="margin-top:12px"><button class="btn btn-ghost" onclick="resetPrefs()">Reset display preferences</button></div>
         </div>
       </div>
+
+      <!-- Admin tools — admin only -->
+      ${authGetUser()?.role === 'admin' ? `
+      <div class="card">
+        <div class="card-hdr"><div class="card-title">⚙ Admin Tools</div></div>
+        <div class="card-body">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:14px">Use carefully on a live database.</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px">
+            <button class="btn btn-secondary" onclick="seedRealSetup()">🏭 Load Real Setup</button>
+            <button class="btn btn-secondary" onclick="seedPunchRoutings()">🥊 Punch Routings</button>
+            <button class="btn btn-ghost" onclick="seedData()">🧪 Demo Data</button>
+          </div>
+        </div>
+      </div>` : ''}
 
       <!-- Change password — admin and manager -->
       ${(authGetUser()?.role === 'admin' || authGetUser()?.role === 'manager') ? `

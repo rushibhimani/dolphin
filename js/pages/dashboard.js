@@ -19,18 +19,7 @@ async function renderDashboard(){
     return;
   }
 
-  const _dashUser = authGetUser();
-  const _isAdmin  = _dashUser?.role === 'admin';
-  document.getElementById('topbarActions').innerHTML = _isAdmin ? `
-    <div style="position:relative;display:inline-block" id="adminMenuWrap">
-      <button class="btn btn-ghost" onclick="toggleAdminMenu()" style="font-size:12px">⚙ Admin ▾</button>
-      <div id="adminMenu" style="display:none;position:absolute;right:0;top:110%;background:var(--card);
-           border:1px solid var(--border);border-radius:8px;padding:6px;min-width:180px;z-index:200;box-shadow:0 4px 16px rgba(0,0,0,.15)">
-        <button onclick="seedData();toggleAdminMenu()"    class="dash-admin-item">Load Demo Data</button>
-        <button onclick="seedRealSetup();toggleAdminMenu()" class="dash-admin-item">Load Real Setup</button>
-        <button onclick="seedPunchRoutings();toggleAdminMenu()" class="dash-admin-item">Load Punch Routings</button>
-      </div>
-    </div>` : '';
+  document.getElementById('topbarActions').innerHTML = '';
 
   // ── Compute all metrics ───────────────────────────────────────────────────
   const activeJobs  = allJobs.filter(j => j.status !== 'completed');

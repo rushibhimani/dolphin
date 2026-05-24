@@ -86,6 +86,26 @@ function updateBottomNav(page) {
   });
 }
 
+// ── User menu ─────────────────────────────────────────────────────────────────
+function toggleUserMenu(){
+  const m = document.getElementById('userMenu');
+  if(!m) return;
+  const isOpen = m.style.display === 'block';
+  m.style.display = isOpen ? 'none' : 'block';
+  if(!isOpen){
+    // Close on outside click
+    setTimeout(()=>{
+      const close = (e) => {
+        if(!document.getElementById('userMenuWrap')?.contains(e.target)){
+          m.style.display = 'none';
+          document.removeEventListener('click', close);
+        }
+      };
+      document.addEventListener('click', close);
+    }, 10);
+  }
+}
+
 // ── Role-based UI: hide/show nav items and bottom nav ─────────────────────────
 
 function applyRoleUI(user) {
@@ -154,11 +174,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const user = authGetUser();
 
-  // Show user name + logout button in topbar
-  const nameEl  = document.getElementById('topbarUserName');
-  const logoutEl = document.getElementById('btnLogout');
-  if(nameEl)   { nameEl.textContent = user?.display_name || user?.username || ''; nameEl.style.display = ''; }
-  if(logoutEl) { logoutEl.style.display = ''; }
+  // Show user avatar button with initial
+  const userBtn  = document.getElementById('userMenuBtn');
+  const initial  = document.getElementById('userInitial');
+  const menuName = document.getElementById('userMenuName');
+  if(userBtn){
+    userBtn.style.display = 'flex';
+    userBtn.style.alignItems = 'center';
+    userBtn.style.justifyContent = 'center';
+  }
+  if(initial)  initial.textContent = (user?.display_name || user?.username || 'A')[0].toUpperCase();
+  if(menuName) menuName.textContent = (user?.display_name || user?.username || '');
 
   // Apply role-based nav (sidebar + bottom nav)
   applyRoleUI(user);
