@@ -96,10 +96,10 @@ const floorPlan = {
       const st   = this.statusLabel(code);
       const fs   = w >= 130 ? 12 : 11;
 
-      // Worker badge below the box
+      // Worker badge — top-right corner INSIDE the box
       const badge = (asgn && this.showWorkers)
-        ? `<rect x="${x+w/2-22}" y="${y+h+3}" width="44" height="17" rx="3" fill="#1d4ed8" opacity="0.92"/>
-           <text x="${x+w/2}" y="${y+h+15}" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">${asgn.worker_code}</text>`
+        ? `<rect x="${x+w-36}" y="${y+4}" width="32" height="16" rx="3" fill="rgba(0,0,0,0.45)"/>
+           <text x="${x+w-20}" y="${y+13}" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">${asgn.worker_code}</text>`
         : '';
 
       const nameY1 = line2 ? y+h/2+3 : y+h/2+9;
@@ -149,23 +149,23 @@ const floorPlan = {
   applyBadges() {
     document.querySelectorAll('.fp-machine').forEach(g => {
       const code = g.dataset.code;
-      // Remove old dynamic badges
       g.querySelectorAll('[data-worker]').forEach(el => el.remove());
       const asgn = this.assignments[code];
       if (asgn && this.showWorkers) {
         const ns = 'http://www.w3.org/2000/svg';
         const rect = g.querySelector('rect');
-        const bx = +rect.getAttribute('x') + +rect.getAttribute('width') / 2;
-        const by = +rect.getAttribute('y') + +rect.getAttribute('height');
+        const bx = +rect.getAttribute('x') + +rect.getAttribute('width');
+        const by = +rect.getAttribute('y');
         const bg = document.createElementNS(ns, 'rect');
-        bg.setAttribute('x', bx - 22); bg.setAttribute('y', by + 3);
-        bg.setAttribute('width', 44); bg.setAttribute('height', 17);
-        bg.setAttribute('rx', 3); bg.setAttribute('fill', '#1d4ed8');
-        bg.setAttribute('opacity', '0.92'); bg.dataset.worker = '1';
+        bg.setAttribute('x', bx - 36); bg.setAttribute('y', by + 4);
+        bg.setAttribute('width', 32);  bg.setAttribute('height', 16);
+        bg.setAttribute('rx', 3);
+        bg.setAttribute('fill', 'rgba(0,0,0,0.45)');
+        bg.dataset.worker = '1';
         const t = document.createElementNS(ns, 'text');
-        t.setAttribute('x', bx); t.setAttribute('y', by + 15);
+        t.setAttribute('x', bx - 20); t.setAttribute('y', by + 13);
         t.setAttribute('text-anchor', 'middle');
-        t.setAttribute('font-size', '10'); t.setAttribute('font-weight', '700');
+        t.setAttribute('font-size', '9'); t.setAttribute('font-weight', '700');
         t.setAttribute('fill', '#fff'); t.dataset.worker = '1';
         t.textContent = asgn.worker_code;
         g.appendChild(bg); g.appendChild(t);
