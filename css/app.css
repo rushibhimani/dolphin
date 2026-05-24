@@ -936,7 +936,7 @@ input.valid,select.valid{border-color:var(--green)}
 
 @media (min-width: 641px) {
   .today-mobile-view  { display: none;  }
-  .today-desktop-view { display: grid;  }
+  .today-desktop-view { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); gap: 14px; }
 }
 
 /* ── Capacity page: show/hide mobile vs desktop views ───────── */

@@ -64,7 +64,7 @@ async function renderToday(){
     html += `</div>`;
 
     /* ── DESKTOP (≥641px): grouped machine cards with compact rows ───────── */
-    html += `<div class="today-desktop-view" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(480px,1fr));gap:14px">`;
+    html += `<div class="today-desktop-view">`;
     machines.forEach(m=>{
       const mops = byMachine[m];
       html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
