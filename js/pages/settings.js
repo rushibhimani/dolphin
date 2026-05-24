@@ -261,7 +261,7 @@ async function saveShiftSettings(){
 
 function resetPrefs(){
   applyPrefs(Object.assign({},DEFAULT_PREFS));
-  if(window.location.hash.includes('settings')) renderSettings();
+  if(window.location.pathname.includes('settings')) renderSettings();
   toast('Preferences reset');
 }
 // ── ROUTING STATS ──

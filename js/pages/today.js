@@ -74,7 +74,7 @@ async function renderToday(){
   }catch(e){document.getElementById('content').innerHTML=`<div class="empty">${e.message}</div>`;}
   const ts=document.getElementById('todayTs');
   if(ts) ts.textContent=`Updated ${istNow().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:false})}`;
-  todayRefreshTimer=setInterval(()=>{if(window.location.hash.includes('today'))renderToday();},60000);
+  todayRefreshTimer=setInterval(()=>{if(window.location.pathname.includes('today'))renderToday();},60000);
 }
 
 function pauseReasonLabel(r){

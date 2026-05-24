@@ -47,7 +47,7 @@ async function seedPunchRoutings() {
     const r = await api('POST', '/api/seed-punch-routings');
     toast(r.msg);
     await loadAll();
-    if (window.location.hash.includes('routing')) handleRoute();
+    if (window.location.pathname.includes('routing')) handleRoute();
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -166,7 +166,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Manager / Admin: full app
   await loadAll();
-  if(!window.location.hash || window.location.hash === '#'){
+  // If at root or no meaningful path, go to dashboard; otherwise honour the URL
+  const initPath = window.location.pathname;
+  if (!initPath || initPath === '/' || initPath === '/index.html') {
     navigate('/dashboard', true);
   } else {
     handleRoute();

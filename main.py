@@ -832,7 +832,29 @@ def _update_order_status(db, order_id):
 # APP
 # ─────────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Dolphin ERP")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+import os as _os
+_ALLOWED_ORIGINS = _os.environ.get("ALLOWED_ORIGINS", "").split(",")
+_ALLOWED_ORIGINS = [o.strip() for o in _ALLOWED_ORIGINS if o.strip()] or ["*"]
+app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED_ORIGINS,
+                   allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# ── Security headers middleware ────────────────────────────────────────────────
+from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
+from starlette.responses import Response as _Response
+
+class SecurityHeadersMiddleware(_BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # Only add HSTS if site is served over HTTPS (set HTTPS=1 env var)
+        if _os.environ.get("HTTPS") == "1":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # ── Auth Middleware ────────────────────────────────────────────────────────────
 # Protects ALL /api/ routes except the public allowlist below.
@@ -918,8 +940,22 @@ def _user_dict(u):
     }
 
 @app.post("/api/auth/login")
-def login(data: dict):
-    """Password login — returns JWT token."""
+@app.post("/api/auth/login")
+def login(data: dict, request: Request):
+    """Password login — returns JWT token. Rate-limited: 10 attempts per 15 min per IP."""
+    from collections import defaultdict
+    import time as _time
+    # Simple in-process rate limiter — resets on server restart (acceptable for small shop)
+    _login_attempts = getattr(app.state, '_login_attempts', defaultdict(list))
+    app.state._login_attempts = _login_attempts
+    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
+    now_ts = _time.time()
+    # Keep only attempts in last 15 minutes
+    _login_attempts[client_ip] = [t for t in _login_attempts[client_ip] if now_ts - t < 900]
+    if len(_login_attempts[client_ip]) >= 10:
+        raise HTTPException(429, "Too many login attempts. Try again in 15 minutes.")
+    _login_attempts[client_ip].append(now_ts)
+
     username = (data.get("username") or "").strip().lower()
     password = data.get("password") or ""
     if not username or not password:
@@ -932,6 +968,8 @@ def login(data: dict):
     if not u or not u.password_hash or not verify_password(password, u.password_hash):
         db.close()
         raise HTTPException(401, "Invalid username or password")
+    # Clear rate limit on success
+    _login_attempts[client_ip] = []
     u.last_login = now_ist()
     db.commit()
     token = create_token(u.id, u.username, u.role, u.worker_id)
@@ -942,14 +980,24 @@ def login(data: dict):
     db.close(); return result
 
 @app.post("/api/auth/pin-login")
-def pin_login(data: dict):
-    """PIN login for operators on shared tablet — returns short-lived token."""
+def pin_login(data: dict, request: Request):
+    """PIN login for operators — rate-limited: 10 attempts per 15 min per IP."""
+    from collections import defaultdict
+    import time as _time
+    _pin_attempts = getattr(app.state, '_pin_attempts', defaultdict(list))
+    app.state._pin_attempts = _pin_attempts
+    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
+    now_ts = _time.time()
+    _pin_attempts[client_ip] = [t for t in _pin_attempts[client_ip] if now_ts - t < 900]
+    if len(_pin_attempts[client_ip]) >= 10:
+        raise HTTPException(429, "Too many attempts. Try again in 15 minutes.")
+    _pin_attempts[client_ip].append(now_ts)
+
     pin = str(data.get("pin") or "").strip()
     worker_id = data.get("worker_id")
     if not pin:
         raise HTTPException(400, "PIN required")
     db = SessionLocal()
-    # Find user by worker_id + verify PIN
     q = db.query(User).filter(User.is_active == True, User.pin_hash != None)
     if worker_id:
         q = q.filter(User.worker_id == worker_id)
@@ -961,6 +1009,7 @@ def pin_login(data: dict):
     if not matched:
         db.close()
         raise HTTPException(401, "Invalid PIN")
+    _pin_attempts[client_ip] = []
     matched.last_login = now_ist()
     db.commit()
     token = create_token(matched.id, matched.username, matched.role, matched.worker_id)
@@ -3866,6 +3915,19 @@ def fp_machine_today(machine_code: str):
     return {'machine_code': machine_code, 'machine_name': m.name,
             'total_capacity_hours': 10, 'ops': ops_out}
 
+
+# ── SPA catch-all — MUST be the very last route ──────────────────────────────
+# FastAPI matches routes in registration order. This must come after ALL /api/*
+# routes so it only catches frontend paths like /dashboard, /jobs, /orders/123.
+# FastAPI strips the leading slash: full_path = "jobs" not "/jobs"
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str, request: Request):
+    if (full_path.startswith("api/") or full_path == "api"
+            or full_path.startswith("static/")
+            or full_path.endswith(".js") or full_path.endswith(".css")
+            or full_path.endswith(".ico") or full_path.endswith(".png")):
+        raise HTTPException(404, "Not found")
+    return FileResponse("index.html")
 
 if __name__ == "__main__":
     import uvicorn

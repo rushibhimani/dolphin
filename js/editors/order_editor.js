@@ -639,7 +639,7 @@ async function init(){
   navigate('/dashboard');
   // Auto-refresh dashboard every 5 minutes when idle
   setInterval(async()=>{
-    if(window.location.hash.includes('dashboard')){ try{await loadAll();navigate('/dashboard');}catch{} }
+    if(window.location.pathname.includes('dashboard')){ try{await loadAll();navigate('/dashboard');}catch{} }
   }, 300000);
 }
 document.getElementById('modalOverlay').addEventListener('click',function(e){if(e.target===this)closeModal();});
