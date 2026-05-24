@@ -241,11 +241,11 @@ async function expandJob(id,keepOpen=false){
         <span style="font-size:11px;color:var(--muted);font-family:var(--mono)">${op.scheduled_start?fmtDT(op.scheduled_start)+' → '+fmtDT(op.scheduled_end):'Not scheduled'}</span>
         <span>${sBadge(op.status)}</span>
         <span style="display:flex;gap:4px">
-          ${op.status==='scheduled'?`<button class="btn btn-success" style="font-size:11px;padding:3px 7px" onclick="updateOpStatus(${op.id},'in_progress')" title="Start">▶</button>`:''}
+          ${op.status==='scheduled'?`<button class="btn btn-success" style="font-size:11px;padding:3px 7px" onclick="promptStart(${op.id},'${op.scheduled_start||''}')" title="Start">▶ Start</button>`:''}
           ${op.status==='in_progress'?`
-            <button class="btn btn-secondary" style="font-size:11px;padding:3px 7px" onclick="updateOpStatus(${op.id},'paused')" title="Pause">⏸</button>
-            <button class="btn btn-primary" style="font-size:11px;padding:3px 7px" onclick="updateOpStatus(${op.id},'completed')" title="Complete">✓</button>`:''}
-          ${op.status==='paused'?`<button class="btn btn-success" style="font-size:11px;padding:3px 7px" onclick="updateOpStatus(${op.id},'in_progress')" title="Resume">▶ Resume</button>`:''}
+            <button class="btn btn-secondary" style="font-size:11px;padding:3px 7px" onclick="promptPause(${op.id})" title="Pause">⏸ Pause</button>
+            <button class="btn btn-primary" style="font-size:11px;padding:3px 7px" onclick="promptComplete(${op.id},'${op.actual_start||''}')" title="Complete">✓ Done</button>`:''}
+          ${op.status==='paused'?`<button class="btn btn-success" style="font-size:11px;padding:3px 7px" onclick="promptStart(${op.id},'${op.scheduled_start||''}')" title="Resume">▶ Resume</button>`:''}
         </span>
       </div>`;
     }).join(''):`<div style="color:var(--muted);font-size:12px;padding:8px 0">No operations scheduled yet</div>`}
