@@ -1,0 +1,11 @@
+__pycache__/ 
+*.pyc 
+*.pyo 
+dolphin.db 
+*.db 
+*.sqlite 
+*.sqlite3 
+secret.key 
+.env 
+venv/ 
+env/ 
