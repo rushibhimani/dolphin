@@ -638,7 +638,6 @@ input.valid,select.valid{border-color:var(--green)}
   .editor-body{padding:14px 16px!important}
   .editor-footer{padding:12px 16px!important}
 }
-</style>
 
 /* ============================================================
    EDITOR PAGES — Full-page editors (Routing, Order)

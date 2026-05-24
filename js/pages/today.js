@@ -4,6 +4,18 @@
  * iPhone 12 mini (375px) — zero horizontal scrolling.
  */
 
+
+/* Parse IST datetime strings from server safely across all browsers (incl. Safari).
+   Server sends "YYYY-MM-DD HH:MM:SS" (naive IST). Replace space with T and append
+   IST offset so Date() always treats it as IST regardless of device timezone. */
+function parseISTDate(s){
+  if(!s) return null;
+  // Already has T or Z — use as-is
+  if(s.includes('T') || s.includes('Z')) return new Date(s);
+  // "2026-05-24 19:12:00" → "2026-05-24T19:12:00+05:30"
+  return new Date(s.trim().replace(' ', 'T') + '+05:30');
+}
+
 async function renderToday(){
   if(todayRefreshTimer) clearInterval(todayRefreshTimer);
   document.getElementById('topbarActions').innerHTML=`
@@ -92,7 +104,7 @@ function renderTimelineCard(op, nowISO){
   if(isNow && op.actual_start){
     // actual_start is an IST string; new Date() parses it as local time on device (also IST),
     // so getTime() already gives correct UTC ms — no offset adjustment needed.
-    const elapsedMs = Date.now() - new Date(op.actual_start).getTime();
+    const elapsedMs = Date.now() - parseISTDate(op.actual_start).getTime();
     elapsedMin = Math.max(0, Math.round(elapsedMs / 60000));
     progressPct = estMins > 0 ? Math.min(100, Math.round(elapsedMin / estMins * 100)) : 0;
     overrun = elapsedMin > estMins;
@@ -164,7 +176,7 @@ function renderOpRow(op, nowISO){
 
   let actualHtml = '';
   if(isNow && op.actual_start){
-    const elapsedMs  = Date.now() - new Date(op.actual_start).getTime();
+    const elapsedMs  = Date.now() - parseISTDate(op.actual_start).getTime();
     const elapsedMin = Math.max(0, Math.round(elapsedMs / 60000));
     const pct        = estMins > 0 ? Math.min(100, Math.round(elapsedMin / estMins * 100)) : 0;
     const overrun    = elapsedMin > estMins;
@@ -172,7 +184,7 @@ function renderOpRow(op, nowISO){
       ${elapsedMin}min / ${estMins}min${overrun?' ⚠':''}
     </span>`;
   } else if((isNow || isPaused) && op.actual_start && op.actual_end){
-    const actualMin = Math.round((new Date(op.actual_end)-new Date(op.actual_start))/60000);
+    const actualMin = Math.round((parseISTDate(op.actual_end)-parseISTDate(op.actual_start))/60000);
     const diff = actualMin - estMins;
     actualHtml = `<span style="font-size:11px;color:${diff>5?'var(--red)':diff<-5?'var(--green)':'var(--muted)'};font-weight:600;white-space:nowrap">
       ${actualMin}min / ${estMins}min est
