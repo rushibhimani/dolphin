@@ -909,3 +909,321 @@ input.valid,select.valid{border-color:var(--green)}
   /* Hide IST clock text in topbar on small screens */
   .logo-tz { display: none; }
 }
+
+/* ============================================================
+   MOBILE-FIRST RESPONSIVE UPGRADE
+   iPhone 12 mini (375px) — Zero horizontal scrolling
+   All rules here LAYER ON TOP of existing styles above.
+   Desktop (≥641px) is completely unchanged.
+   ============================================================ */
+
+/* ── Prevent iOS auto-zoom on input focus ─────────────────── */
+@media (max-width: 640px) {
+  input[type="text"],
+  input[type="email"],
+  input[type="number"],
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"],
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* ── Today page: show/hide mobile vs desktop views ─────────── */
+.today-mobile-view  { display: block; }
+.today-desktop-view { display: none;  }
+
+@media (min-width: 641px) {
+  .today-mobile-view  { display: none;  }
+  .today-desktop-view { display: grid;  }
+}
+
+/* ── Capacity page: show/hide mobile vs desktop views ───────── */
+.capacity-mobile  { display: block; }
+.capacity-desktop { display: none;  }
+
+@media (min-width: 641px) {
+  .capacity-mobile  { display: none;  }
+  .capacity-desktop { display: block; }
+}
+
+/* ── Core mobile layout fixes ───────────────────────────────── */
+@media (max-width: 640px) {
+
+  /* Topbar: tighter padding, smaller title */
+  .topbar {
+    padding: 0 10px;
+    gap: 4px;
+    min-height: 52px;
+  }
+  .topbar-title {
+    font-size: 15px;
+    max-width: calc(100vw - 160px);
+  }
+  .topbar-actions {
+    gap: 4px;
+    flex-shrink: 0;
+    max-width: none;
+  }
+  .topbar-actions .btn {
+    padding: 6px 8px;
+    font-size: 12px;
+    white-space: nowrap;
+    min-height: 36px;
+  }
+  /* Hide long button labels, keep short ones */
+  .btn-label-long  { display: none !important; }
+  .btn-label-short { display: inline !important; }
+
+  /* Content area */
+  .content {
+    padding: 14px 12px 80px;
+  }
+
+  /* Stats grid: 2 columns */
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .stat-card {
+    padding: 12px 14px;
+  }
+  .stat-value {
+    font-size: 22px !important;
+  }
+  .stat-label {
+    font-size: 11px;
+  }
+
+  /* Card header: wrap on mobile */
+  .card-hdr {
+    padding: 12px 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .card-body {
+    padding: 12px 14px;
+  }
+
+  /* Form rows: all single column */
+  .form-row.cols-2,
+  .form-row.cols-3 {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Modal: bottom sheet style */
+  .modal-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .modal {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 16px 16px 0 0;
+    max-height: 90vh;
+  }
+  .modal-hdr,
+  .modal-body,
+  .modal-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .modal-footer {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .modal-footer button {
+    flex: 1;
+    min-width: 100px;
+    min-height: 44px;
+  }
+
+  /* Editor pages */
+  .editor-header { padding: 14px 14px 12px; }
+  .editor-body   { padding: 14px 14px; }
+  .editor-footer { padding: 10px 14px; flex-wrap: wrap; }
+  .editor-title  { font-size: 17px; }
+
+  /* Settings prefs: stack */
+  .pref-row {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  /* Detail grid: single column */
+  .detail-grid {
+    grid-template-columns: 1fr !important;
+    gap: 10px;
+  }
+
+  /* Op-line in job detail: stack */
+  .op-line {
+    grid-template-columns: 30px 1fr !important;
+    gap: 4px;
+  }
+  .op-line > *:nth-child(n+3) {
+    grid-column: 2;
+  }
+
+  /* Workers grid: full width */
+  #workersGrid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Jobs row: allow wrapping text instead of truncation */
+  .job-main-row {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+  .jcol {
+    white-space: normal;
+    word-break: break-word;
+  }
+  /* On mobile, stack less important columns */
+  .jcol-cust,
+  .jcol-cr,
+  .jcol-due {
+    flex: 1 1 auto;
+    min-width: 80px;
+  }
+  .jcol-actions {
+    flex: 0 0 100%;
+    text-align: left;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .jcol-actions .btn {
+    min-height: 36px;
+    font-size: 12px;
+  }
+
+  /* Customers table: hide less critical columns */
+  #customersTable th:nth-child(3),
+  #customersTable td:nth-child(3),
+  #customersTable th:nth-child(4),
+  #customersTable td:nth-child(4) {
+    display: none;
+  }
+  #customersTable th,
+  #customersTable td {
+    padding: 9px 10px;
+    font-size: 13px;
+  }
+
+  /* Confirm box: full width on mobile */
+  .confirm-box {
+    width: calc(100vw - 32px);
+    max-width: none;
+    padding: 20px;
+    margin: 0 16px;
+  }
+
+  /* Toast: bottom center on mobile */
+  #toast {
+    bottom: 72px;
+    right: 12px;
+    left: 12px;
+    max-width: none;
+    font-size: 13px;
+  }
+
+  /* Hide IST clock */
+  .logo-tz,
+  #istClock {
+    display: none;
+  }
+
+  /* Button touch targets: minimum 44px */
+  .btn {
+    min-height: 36px;
+  }
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .btn-success {
+    min-height: 40px;
+  }
+
+  /* Bottom nav add extra bottom padding */
+  .content {
+    padding-bottom: 80px;
+  }
+
+  /* Prevent outer page scroll on modals */
+  body.modal-open {
+    overflow: hidden;
+  }
+
+  /* Worker availability table in modal: scrollable on mobile */
+  .modal-body > div[style*="overflow-x:auto"] {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Quote/Report wide tables: allow horizontal scroll in a constrained box */
+  .allow-scroll-mobile {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+    border-radius: var(--r-md);
+  }
+  .allow-scroll-mobile::-webkit-scrollbar {
+    height: 4px;
+  }
+  .allow-scroll-mobile::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 2px;
+  }
+
+  /* Make filter controls in card headers wrap */
+  .card-hdr > div:last-child {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .card-hdr select,
+  .card-hdr input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* Routings page, op editor rows */
+  .op-ed-row {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .op-ed-row > * {
+    min-width: 0;
+    flex-shrink: 1;
+  }
+
+}
+
+/* ── Small phones & tablets: sidebar hidden, wider padding ──── */
+@media (max-width: 980px) {
+  .menu-btn { display: inline-flex !important; }
+  .sidebar  { transform: translateX(-100%); box-shadow: var(--shadow-lg); }
+  .sidebar.open { transform: translateX(0); }
+  .main     { margin-left: 0 !important; }
+  .logo-tz  { display: none; }
+}
+
+/* ── Desktop: restore sidebar + full padding ────────────────── */
+@media (min-width: 981px) {
+  .menu-btn { display: none !important; }
+  .sidebar  { transform: translateX(0) !important; box-shadow: none; }
+  .main     { margin-left: 232px; }
+  .topbar   { padding: 0 24px; }
+  .content  { padding: 24px 28px 40px; }
+  .stats-grid { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .detail-grid { grid-template-columns: repeat(4, 1fr); }
+  .form-row.cols-2 { grid-template-columns: 1fr 1fr; }
+  .form-row.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .modal-overlay { align-items: center; justify-content: center; padding: 24px; }
+  .modal { width: auto; max-width: 700px; border-radius: var(--r-xl); }
+  #workersGrid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+}
