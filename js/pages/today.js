@@ -90,7 +90,9 @@ function renderTimelineCard(op, nowISO){
   // Progress calc for in-progress
   let progressPct = 0, elapsedMin = 0, overrun = false;
   if(isNow && op.actual_start){
-    const elapsedMs = Date.now() - new Date(op.actual_start).getTime() - (5.5*3600000);
+    // actual_start is an IST string; new Date() parses it as local time on device (also IST),
+    // so getTime() already gives correct UTC ms — no offset adjustment needed.
+    const elapsedMs = Date.now() - new Date(op.actual_start).getTime();
     elapsedMin = Math.max(0, Math.round(elapsedMs / 60000));
     progressPct = estMins > 0 ? Math.min(100, Math.round(elapsedMin / estMins * 100)) : 0;
     overrun = elapsedMin > estMins;
@@ -162,7 +164,7 @@ function renderOpRow(op, nowISO){
 
   let actualHtml = '';
   if(isNow && op.actual_start){
-    const elapsedMs  = Date.now() - new Date(op.actual_start).getTime() - (5.5*3600000);
+    const elapsedMs  = Date.now() - new Date(op.actual_start).getTime();
     const elapsedMin = Math.max(0, Math.round(elapsedMs / 60000));
     const pct        = estMins > 0 ? Math.min(100, Math.round(elapsedMin / estMins * 100)) : 0;
     const overrun    = elapsedMin > estMins;

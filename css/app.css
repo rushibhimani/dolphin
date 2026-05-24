@@ -1227,3 +1227,16 @@ input.valid,select.valid{border-color:var(--green)}
   .modal { width: auto; max-width: 700px; border-radius: var(--r-xl); }
   #workersGrid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
 }
+
+/* ── SIDEBAR z-index fix on mobile ──────────────────────────────────────────
+   When sidebar is open it must sit above the topbar so the logo isn't clipped
+   by the hamburger button. On desktop z-index doesn't matter (sidebar beside topbar). */
+@media (max-width: 980px) {
+  .sidebar {
+    z-index: 600;
+  }
+  /* Backdrop must be between sidebar and page content, below sidebar */
+  .sidebar-backdrop {
+    z-index: 590;
+  }
+}

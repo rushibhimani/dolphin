@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -9,6 +9,8 @@
   try {
     var p = JSON.parse(localStorage.getItem("dolphin-prefs") || "null");
     if (!p) { var t = localStorage.getItem("dolphin-theme"); if (t) p = {theme:t}; }
+    // Default to light theme for new users (no saved preference)
+    if (!p || !p.theme) { p = p || {}; p.theme = 'light'; }
     if (p) {
       if (p.theme)     document.documentElement.setAttribute("data-theme", p.theme);
       if (p.fontScale) document.documentElement.setAttribute("data-font-scale", p.fontScale);
