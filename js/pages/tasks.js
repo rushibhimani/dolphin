@@ -167,6 +167,8 @@ function taskCard(t){
 
   const actionBtns = isDone ? `
     <button class="btn btn-ghost" style="flex:1;font-size:12px" onclick="reopenTask(${t.id})">↩ Reopen</button>
+    <button class="btn btn-ghost" style="font-size:12px" onclick="viewTaskActivity(${t.id},'${escAttr(t.title)}')">💬</button>
+    <button class="btn btn-ghost" style="font-size:12px" onclick="manageTaskFiles(${t.id},'${escAttr(t.title)}')">📎</button>
     <button class="btn btn-ghost" style="font-size:12px;color:var(--red)" onclick="deleteTask(${t.id})">🗑</button>
   ` : t.status === 'cancelled' ? `
     <button class="btn btn-ghost" style="flex:1;font-size:12px" onclick="reopenTask(${t.id})">↩ Reopen</button>
@@ -176,6 +178,8 @@ function taskCard(t){
       ? `<button class="btn btn-secondary" style="flex:1;font-size:12px;min-height:40px" onclick="startTask(${t.id})">▶ Start</button>`
       : `<button class="btn btn-secondary" style="flex:1;font-size:12px;min-height:40px" onclick="startTask(${t.id})">⏸ Pause</button>`}
     <button class="btn btn-primary" style="flex:1;font-size:12px;min-height:40px" onclick="promptDoneTask(${t.id})">✓ Done</button>
+    <button class="btn btn-ghost"   style="font-size:12px;min-height:40px" onclick="viewTaskActivity(${t.id},'${escAttr(t.title)}')">💬</button>
+    <button class="btn btn-ghost"   style="font-size:12px;min-height:40px" onclick="manageTaskFiles(${t.id},'${escAttr(t.title)}')">📎</button>
     <button class="btn btn-ghost"   style="font-size:12px;min-height:40px" onclick="openTaskModal(${t.id})">✎</button>
   `;
 
@@ -197,6 +201,12 @@ function taskCard(t){
     </div>
     <!-- Description -->
     ${t.description ? `<div style="font-size:13px;color:var(--text-soft);margin-bottom:6px;line-height:1.4">${t.description}</div>` : ''}
+    <!-- All assignees -->
+    ${t.all_assignees && t.all_assignees.length > 1 ? `
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+        <span style="font-size:11px;color:var(--muted)">👥 Assigned to:</span>
+        ${t.all_assignees.map(a=>`<span style="font-size:11px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 7px">${escHtml(a.worker_name)}</span>`).join('')}
+      </div>` : ''}
     <!-- Meta row -->
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
       <span style="font-size:11px;background:var(--surface);border:1px solid var(--border);
@@ -211,6 +221,39 @@ function taskCard(t){
     <!-- Completion notes -->
     ${isDone && t.notes ? `<div style="font-size:12px;color:var(--green);background:var(--green-soft);
         border-radius:6px;padding:8px 10px;margin-bottom:10px">✓ ${t.notes}</div>` : ''}
+    <!-- Recent activity preview (last 2 entries) -->
+    ${t.activities && t.activities.length ? (()=>{
+      const recent = t.activities.slice(-2);
+      return `<div style="margin-bottom:8px">
+        ${recent.map(a=>`<div style="font-size:11px;color:var(--muted);padding:3px 0;
+            display:flex;gap:6px;align-items:baseline">
+          <span style="color:var(--accent);flex-shrink:0">${activityIcon(a.action)}</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <b>${escHtml(a.actor_name)}</b> ${activityLabel(a.action)}${a.note?' — '+escHtml(a.note.slice(0,60)):''}
+          </span>
+          <span style="flex-shrink:0;font-size:10px">${fmtTimeAgo(a.created_at)}</span>
+        </div>`).join('')}
+        ${t.activities.length > 2 ? `<button onclick="viewTaskActivity(${t.id},'${escAttr(t.title)}')"
+          style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:11px;padding:2px 0">
+          View all ${t.activities.length} activities →</button>` : ''}
+      </div>`;
+    })() : ''}
+    <!-- Files -->
+    ${t.files && t.files.length ? `
+      <div style="margin-bottom:10px">
+        <div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:6px">📎 ${t.files.length} Attachment${t.files.length>1?'s':''}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${t.files.map(f=>`
+            <button onclick="downloadTaskFile(${f.id},'${escAttr(f.filename)}')"
+               style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;
+                      background:var(--surface);border:1px solid var(--border);border-radius:6px;
+                      font-size:12px;color:var(--accent);cursor:pointer;max-width:200px">
+              <span>${fileIcon(f.mime_type)}</span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(f.filename)}</span>
+              <span style="color:var(--muted);font-size:10px;flex-shrink:0">${fmtFileSize(f.file_size)}</span>
+            </button>`).join('')}
+        </div>
+      </div>` : ''}
     <!-- Actions -->
     <div style="display:flex;gap:8px;padding-top:10px;border-top:1px solid var(--border)">
       ${actionBtns}
@@ -308,7 +351,7 @@ async function openTaskModal(editId){
     </div>
     <div class="form-row cols-2">
       <div class="form-group">
-        <div class="fld-label">Assign To</div>
+        <div class="fld-label">Primary Assignee</div>
         <select id="tk_assignee">
           <option value="">— Unassigned —</option>
           ${activeWorkers.map(w =>
@@ -319,6 +362,22 @@ async function openTaskModal(editId){
       <div class="form-group">
         <div class="fld-label">Due Date</div>
         <input type="date" id="tk_due_date" value="${task?.due_date||today}">
+      </div>
+    </div>
+    <div class="form-group">
+      <div class="fld-label">Additional Assignees <span style="font-size:11px;color:var(--muted);font-weight:400">— for multi-person tasks</span></div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;min-height:44px;align-items:center" id="tk_extra_assignees">
+        ${(task?.all_assignees||[]).filter(a=>a.worker_id!==task?.assigned_to_id).map(a=>`
+          <span class="extra-assignee-tag" data-id="${a.worker_id}" data-name="${a.worker_name}"
+            style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;
+                   background:var(--accent-soft);border:1px solid var(--accent);border-radius:20px;font-size:12px">
+            ${a.worker_name}
+            <button onclick="removeExtraAssignee(this)" style="background:none;border:none;cursor:pointer;color:var(--accent);font-size:14px;padding:0;line-height:1">×</button>
+          </span>`).join('')}
+        <select id="tk_add_extra" onchange="addExtraAssignee()" style="border:none;background:transparent;color:var(--accent);font-size:12px;cursor:pointer;min-width:120px">
+          <option value="">+ Add person…</option>
+          ${activeWorkers.map(w=>`<option value="${w.id}" data-name="${w.name}">${w.name}</option>`).join('')}
+        </select>
       </div>
     </div>
     <div class="form-group">
@@ -339,6 +398,13 @@ async function saveTask(editId){
   const assigneeId = assigneeEl?.value ? parseInt(assigneeEl.value) : null;
   const assigneeName = assigneeId ? assigneeEl.options[assigneeEl.selectedIndex].getAttribute('data-name') : '';
 
+  // Collect extra assignees from tags
+  const extraTags = document.querySelectorAll('#tk_extra_assignees .extra-assignee-tag');
+  const extraAssignees = [...extraTags].map(tag => ({
+    worker_id:   parseInt(tag.dataset.id),
+    worker_name: tag.dataset.name,
+  }));
+
   const data = {
     title:            document.getElementById('tk_title').value.trim(),
     description:      document.getElementById('tk_desc').value.trim(),
@@ -346,6 +412,7 @@ async function saveTask(editId){
     priority:         document.getElementById('tk_priority').value,
     assigned_to_id:   assigneeId,
     assigned_to_name: assigneeName,
+    extra_assignees:  extraAssignees,
     due_date:         document.getElementById('tk_due_date').value || null,
     due_time:         document.getElementById('tk_due_time').value || '',
   };
@@ -364,7 +431,297 @@ async function saveTask(editId){
   finally{ setLoading('saveTaskBtn', false); }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// ── Multi-assignee helpers ────────────────────────────────────────────────
+
+function addExtraAssignee(){
+  const sel = document.getElementById('tk_add_extra');
+  const wid = sel?.value;
+  if(!wid){ return; }
+  const name = sel.options[sel.selectedIndex].getAttribute('data-name');
+  // Don't duplicate
+  if(document.querySelector(`#tk_extra_assignees .extra-assignee-tag[data-id="${wid}"]`)) {
+    sel.value = ''; return;
+  }
+  // Don't add primary assignee again
+  const primary = document.getElementById('tk_assignee')?.value;
+  if(wid === primary){ sel.value=''; toast('Already the primary assignee','error'); return; }
+
+  const tag = document.createElement('span');
+  tag.className = 'extra-assignee-tag';
+  tag.dataset.id   = wid;
+  tag.dataset.name = name;
+  tag.style.cssText = 'display:inline-flex;align-items:center;gap:5px;padding:3px 10px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:20px;font-size:12px';
+  tag.innerHTML = `${name} <button onclick="removeExtraAssignee(this)" style="background:none;border:none;cursor:pointer;color:var(--accent);font-size:14px;padding:0;line-height:1">×</button>`;
+  const container = document.getElementById('tk_extra_assignees');
+  container.insertBefore(tag, document.getElementById('tk_add_extra'));
+  sel.value = '';
+}
+
+function removeExtraAssignee(btn){
+  btn.closest('.extra-assignee-tag').remove();
+}
+
+// ── Activity log ──────────────────────────────────────────────────────────
+
+function activityIcon(action){
+  return { started:'▶', paused:'⏸', done:'✓', reopened:'↩', comment:'💬',
+           file_added:'📎', assigned:'👥', created:'✨' }[action] || '•';
+}
+
+function activityLabel(action){
+  return { started:'started working', paused:'paused', done:'marked done',
+           reopened:'reopened', comment:'commented', file_added:'uploaded a file',
+           assigned:'updated assignees', created:'created this task' }[action] || action;
+}
+
+function fmtTimeAgo(iso){
+  if(!iso) return '';
+  const ms = Date.now() - new Date(iso).getTime();
+  const m  = Math.floor(ms / 60000);
+  if(m < 1)  return 'just now';
+  if(m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if(h < 24) return `${h}h ago`;
+  return `${Math.floor(h/24)}d ago`;
+}
+
+async function viewTaskActivity(taskId, taskTitle){
+  let task = null;
+  try{ task = await api('GET', `/api/tasks/${taskId}`); } catch(e){ toast(e.message,'error'); return; }
+
+  function renderActivity(activities){
+    if(!activities.length) return `<div style="font-size:13px;color:var(--muted);padding:16px 0;text-align:center">No activity yet.</div>`;
+    return `<div style="display:flex;flex-direction:column;gap:2px">` +
+      [...activities].reverse().map(a => `
+        <div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+          <div style="font-size:20px;flex-shrink:0;width:28px;text-align:center">${activityIcon(a.action)}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px">
+              <b>${escHtml(a.actor_name||'System')}</b>
+              <span style="color:var(--muted)"> ${activityLabel(a.action)}</span>
+            </div>
+            ${a.note ? `<div style="font-size:12px;color:var(--text-soft);margin-top:3px;word-break:break-word">${escHtml(a.note)}</div>` : ''}
+            <div style="font-size:11px;color:var(--muted);margin-top:3px">
+              ${a.created_at ? new Date(a.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : ''}
+            </div>
+          </div>
+        </div>`).join('') + `</div>`;
+  }
+
+  showModal(`💬 Activity — ${taskTitle}`, `
+    <div id="activityLog" style="max-height:350px;overflow-y:auto">${renderActivity(task.activities||[])}</div>
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+      <div class="fld-label" style="margin-bottom:6px">Add Comment</div>
+      <textarea id="newComment" placeholder="Progress update, note, or question…"
+        style="width:100%;min-height:72px;resize:vertical;margin-bottom:8px"></textarea>
+      <button class="btn btn-primary" style="width:100%" id="postCommentBtn"
+        onclick="postComment(${taskId},'${escAttr(taskTitle)}')">Post Comment</button>
+    </div>`,
+    `<button class="btn btn-primary" onclick="closeModal()">Close</button>`,
+    false
+  );
+}
+
+async function postComment(taskId, taskTitle){
+  const note = document.getElementById('newComment')?.value.trim();
+  if(!note){ toast('Enter a comment first','error'); return; }
+  setLoading('postCommentBtn', true);
+  try{
+    await api('POST', `/api/tasks/${taskId}/comment`, { note });
+    // Refresh activity log in modal
+    const task = await api('GET', `/api/tasks/${taskId}`);
+    const logEl = document.getElementById('activityLog');
+    if(logEl){
+      function renderActivity(activities){
+        if(!activities.length) return `<div style="font-size:13px;color:var(--muted);padding:16px 0;text-align:center">No activity yet.</div>`;
+        return `<div style="display:flex;flex-direction:column;gap:2px">` +
+          [...activities].reverse().map(a => `
+            <div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+              <div style="font-size:20px;flex-shrink:0;width:28px;text-align:center">${activityIcon(a.action)}</div>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px">
+                  <b>${escHtml(a.actor_name||'System')}</b>
+                  <span style="color:var(--muted)"> ${activityLabel(a.action)}</span>
+                </div>
+                ${a.note ? `<div style="font-size:12px;color:var(--text-soft);margin-top:3px;word-break:break-word">${escHtml(a.note)}</div>` : ''}
+                <div style="font-size:11px;color:var(--muted);margin-top:3px">
+                  ${a.created_at ? new Date(a.created_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : ''}
+                </div>
+              </div>
+            </div>`).join('') + `</div>`;
+      }
+      logEl.innerHTML = renderActivity(task.activities||[]);
+      logEl.scrollTop = 0;
+    }
+    document.getElementById('newComment').value = '';
+    loadTaskData(); // refresh cards in background
+  } catch(e){ toast(e.message,'error'); }
+  finally{ setLoading('postCommentBtn', false); }
+}
+
+// ── File Management ───────────────────────────────────────────────────────
+
+function escAttr(s){ return (s||'').replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+
+function fileIcon(mime){
+  if(!mime) return '📄';
+  if(mime.startsWith('image/'))       return '🖼';
+  if(mime === 'application/pdf')      return '📕';
+  if(mime.includes('word'))           return '📝';
+  if(mime.includes('excel') || mime.includes('spreadsheet')) return '📊';
+  if(mime.includes('zip') || mime.includes('rar'))           return '🗜';
+  if(mime.startsWith('video/'))       return '🎬';
+  return '📄';
+}
+
+function fmtFileSize(bytes){
+  if(!bytes) return '';
+  if(bytes < 1024)       return bytes + 'B';
+  if(bytes < 1048576)    return (bytes/1024).toFixed(0) + 'KB';
+  return (bytes/1048576).toFixed(1) + 'MB';
+}
+
+async function manageTaskFiles(taskId, taskTitle){
+  let task = null;
+  try{ task = await api('GET', `/api/tasks/${taskId}`); } catch(e){ toast(e.message,'error'); return; }
+
+  function renderFileList(files){
+    if(!files.length) return `<div style="font-size:13px;color:var(--muted);padding:12px 0">No attachments yet.</div>`;
+    return files.map(f => `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:20px">${fileIcon(f.mime_type)}</span>
+        <div style="flex:1;min-width:0">
+          <button onclick="downloadTaskFile(${f.id},'${escAttr(f.filename)}')"
+             style="background:none;border:none;cursor:pointer;font-size:13px;font-weight:600;
+                    color:var(--accent);padding:0;text-align:left;
+                    display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">
+            ${escHtml(f.filename)}
+          </button>
+          <div style="font-size:11px;color:var(--muted)">
+            ${fmtFileSize(f.file_size)} · ${f.uploaded_by||''}
+            ${f.note ? ` · ${escHtml(f.note)}` : ''}
+          </div>
+        </div>
+        <button onclick="deleteTaskFile(${f.id},${taskId},'${escAttr(taskTitle)}')"
+          style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;padding:4px;flex-shrink:0"
+          title="Delete file">🗑</button>
+      </div>`).join('');
+  }
+
+  showModal(`📎 Files — ${taskTitle}`, `
+    <div id="taskFileList">${renderFileList(task.files||[])}</div>
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+      <div style="font-size:13px;font-weight:600;margin-bottom:10px">Upload New File</div>
+      <div class="form-group">
+        <div class="fld-label">Choose File <span style="font-size:11px;color:var(--muted)">(max 20 MB)</span></div>
+        <input type="file" id="taskFileInput" style="width:100%"
+          accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.zip,.rar,.txt,.dxf,.dwg,.step,.stp,.igs">
+      </div>
+      <div class="form-group">
+        <div class="fld-label">Note (optional)</div>
+        <input id="taskFileNote" placeholder="e.g. Final approved drawing" style="width:100%">
+      </div>
+      <button class="btn btn-primary" id="uploadFileBtn" onclick="uploadTaskFile(${taskId},'${escAttr(taskTitle)}')" style="width:100%">
+        ⬆ Upload File
+      </button>
+    </div>`,
+    `<button class="btn btn-primary" onclick="closeModal()">Done</button>`,
+    false
+  );
+}
+
+async function uploadTaskFile(taskId, taskTitle){
+  const fileInput = document.getElementById('taskFileInput');
+  const note      = document.getElementById('taskFileNote')?.value.trim() || '';
+  if(!fileInput?.files?.length){ toast('Choose a file first','error'); return; }
+
+  const file = fileInput.files[0];
+  if(file.size > 20 * 1024 * 1024){ toast('File too large (max 20 MB)','error'); return; }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('note', note);
+
+  setLoading('uploadFileBtn', true);
+  try{
+    const token = authGetToken();
+    const res = await fetch(`/api/tasks/${taskId}/files`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData,
+    });
+    if(!res.ok){
+      const j = await res.json().catch(()=>({}));
+      throw new Error(j.detail || 'Upload failed');
+    }
+    toast('File uploaded!', 'success');
+    // Refresh the file list in the modal
+    const task = await api('GET', `/api/tasks/${taskId}`);
+    const listEl = document.getElementById('taskFileList');
+    if(listEl){
+      listEl.innerHTML = (function renderFileListInner(files){
+        if(!files.length) return `<div style="font-size:13px;color:var(--muted);padding:12px 0">No attachments yet.</div>`;
+        return files.map(f => `
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <span style="font-size:20px">${fileIcon(f.mime_type)}</span>
+            <div style="flex:1;min-width:0">
+              <button onclick="downloadTaskFile(${f.id},'${escAttr(f.filename)}')"
+                 style="background:none;border:none;cursor:pointer;font-size:13px;font-weight:600;
+                        color:var(--accent);padding:0;text-align:left;
+                        display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">
+                ${escHtml(f.filename)}
+              </button>
+              <div style="font-size:11px;color:var(--muted)">
+                ${fmtFileSize(f.file_size)} · ${f.uploaded_by||''}
+                ${f.note ? ` · ${escHtml(f.note)}` : ''}
+              </div>
+            </div>
+            <button onclick="deleteTaskFile(${f.id},${taskId},'${escAttr(taskTitle)}')"
+              style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;padding:4px;flex-shrink:0">🗑</button>
+          </div>`).join('');
+      })(task.files||[]);
+    }
+    // Clear inputs
+    fileInput.value = '';
+    document.getElementById('taskFileNote').value = '';
+    loadTaskData(); // refresh cards in background
+  } catch(e){ toast(e.message,'error'); }
+  finally{ setLoading('uploadFileBtn', false); }
+}
+
+async function downloadTaskFile(fileId, filename){
+  try{
+    const token = authGetToken();
+    const res = await fetch(`/api/task-files/${fileId}/download`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if(!res.ok){
+      const j = await res.json().catch(()=>({}));
+      throw new Error(j.detail || 'Download failed');
+    }
+    // Create a temporary blob URL and click it — triggers browser Save dialog
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 1000);
+  } catch(e){ toast(e.message, 'error'); }
+}
+
+async function deleteTaskFile(fileId, taskId, taskTitle){
+  const ok = await confirm2('Delete this file permanently?', 'Delete File');
+  if(!ok) return;
+  try{
+    await api('DELETE', `/api/task-files/${fileId}`);
+    toast('File deleted');
+    manageTaskFiles(taskId, taskTitle); // reopen modal
+  } catch(e){ toast(e.message,'error'); }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
 
 function fmtDate(iso){
   if(!iso) return '';

@@ -69,10 +69,10 @@ class StaffTask(Base):
     id                = Column(Integer, primary_key=True)
     title             = Column(String,  nullable=False)
     description       = Column(Text,    nullable=True)
-    category          = Column(String,  nullable=True)   # Design, Admin, Quality, Procurement, Other
-    priority          = Column(String,  default="normal") # low, normal, high, urgent
-    status            = Column(String,  default="pending")# pending, in_progress, done, cancelled
-    assigned_to_id    = Column(Integer, ForeignKey("workers.id"), nullable=True)
+    category          = Column(String,  nullable=True)
+    priority          = Column(String,  default="normal")
+    status            = Column(String,  default="pending")
+    assigned_to_id    = Column(Integer, ForeignKey("workers.id"), nullable=True)   # primary assignee (kept for compat)
     assigned_to_name  = Column(String,  nullable=True)
     created_by_id     = Column(Integer, nullable=True)
     created_by_name   = Column(String,  nullable=True)
@@ -82,6 +82,48 @@ class StaffTask(Base):
     completed_at      = Column(DateTime,nullable=True)
     created_at        = Column(DateTime,default=now_ist)
     assigned_to       = relationship("Worker", back_populates="assigned_tasks", foreign_keys=[assigned_to_id])
+    files             = relationship("TaskFile",     back_populates="task", cascade="all, delete-orphan")
+    assignees         = relationship("TaskAssignee", back_populates="task", cascade="all, delete-orphan")
+    activities        = relationship("TaskActivity", back_populates="task", cascade="all, delete-orphan",
+                                     order_by="TaskActivity.created_at")
+
+
+class TaskAssignee(Base):
+    """Additional assignees beyond the primary assigned_to — supports multi-user tasks."""
+    __tablename__ = "task_assignees"
+    task_id      = Column(Integer, ForeignKey("staff_tasks.id"), primary_key=True)
+    worker_id    = Column(Integer, ForeignKey("workers.id"),     primary_key=True)
+    worker_name  = Column(String,  nullable=True)
+    assigned_at  = Column(DateTime, nullable=True)
+    task         = relationship("StaffTask", back_populates="assignees")
+    worker       = relationship("Worker")
+
+
+class TaskActivity(Base):
+    """Immutable audit log — every action on a task by any user."""
+    __tablename__ = "task_activities"
+    id          = Column(Integer,  primary_key=True)
+    task_id     = Column(Integer,  ForeignKey("staff_tasks.id"), nullable=False)
+    actor_id    = Column(Integer,  nullable=True)
+    actor_name  = Column(String,   nullable=True)
+    action      = Column(String,   nullable=False)  # started|paused|done|reopened|comment|file_added|assigned
+    note        = Column(Text,     nullable=True)
+    created_at  = Column(DateTime, nullable=True)
+    task        = relationship("StaffTask", back_populates="activities")
+
+
+class TaskFile(Base):
+    __tablename__ = "task_files"
+    id           = Column(Integer, primary_key=True)
+    task_id      = Column(Integer, ForeignKey("staff_tasks.id"), nullable=False)
+    filename     = Column(String,  nullable=False)   # original filename shown to user
+    stored_name  = Column(String,  nullable=False)   # UUID filename on disk
+    file_size    = Column(Integer, nullable=True)     # bytes
+    mime_type    = Column(String,  nullable=True)
+    uploaded_by  = Column(String,  nullable=True)
+    note         = Column(String,  nullable=True)
+    created_at   = Column(DateTime, nullable=True)
+    task         = relationship("StaffTask", back_populates="files")
 
 
 class Customer(Base):

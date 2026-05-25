@@ -18,8 +18,13 @@ function parseISTDate(s){
 
 async function renderToday(){
   if(todayRefreshTimer) clearInterval(todayRefreshTimer);
+  if(window._elapsedTimer) clearInterval(window._elapsedTimer);
+
+  const canControl = authGetUser()?.permissions?.can_control_ops !== false;
+
   document.getElementById('topbarActions').innerHTML=`
     <span id="todayTs" style="font-size:12px;color:var(--muted)"></span>
+    ${canControl ? `<button class="btn btn-secondary" style="font-size:12px" onclick="pullForwardOps()" title="Pull future ops forward after early completion">⏩ Pull Forward</button>` : ''}
     <button class="btn btn-secondary" onclick="renderToday()">↻</button>`;
   document.getElementById('content').innerHTML=`<div style="color:var(--muted)">Loading…</div>`;
   const nowISO = istNow().toISOString().slice(0,19);
@@ -93,10 +98,39 @@ async function renderToday(){
     html += `</div>`;
 
     document.getElementById('content').innerHTML = html;
+
+    // ── Live elapsed timer — updates every 30s without re-fetching ────────
+    window._elapsedTimer = setInterval(()=>{
+      const nowMs = Date.now();
+      // Update mobile cards
+      document.querySelectorAll('[data-elapsed-start]').forEach(el => {
+        const start = parseInt(el.dataset.elapsedStart);
+        const est   = parseInt(el.dataset.elapsedEst);
+        const elapsed = Math.max(0, Math.round((nowMs - start) / 60000));
+        const overrun = elapsed > est;
+        el.textContent = `${elapsed}min elapsed`;
+        el.style.color = overrun ? 'var(--red)' : 'var(--muted)';
+        const bar = el.closest('[data-prog-bar]')?.querySelector('.prog-fill');
+        if(bar){
+          bar.style.width = Math.min(100, Math.round(elapsed/est*100)) + '%';
+          bar.style.background = overrun ? 'var(--red)' : 'var(--green)';
+        }
+      });
+      // Update desktop elapsed spans
+      document.querySelectorAll('[data-elapsed-span]').forEach(el => {
+        const start = parseInt(el.dataset.elapsedStart);
+        const est   = parseInt(el.dataset.elapsedEst);
+        const elapsed = Math.max(0, Math.round((nowMs - start) / 60000));
+        const overrun = elapsed > est;
+        el.textContent = `${elapsed}min / ${est}min${overrun?' ⚠':''}`;
+        el.style.color = overrun ? 'var(--red)' : 'var(--accent)';
+      });
+    }, 30000);
+
   } catch(e){ document.getElementById('content').innerHTML=`<div class="empty">${e.message}</div>`; }
 
   const ts = document.getElementById('todayTs');
-  if(ts) ts.textContent = `${istNow().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:false})}`;
+  if(ts) ts.textContent = istNow().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:false});
   todayRefreshTimer = setInterval(()=>{if(window.location.pathname.includes('today'))renderToday();}, 60000);
 }
 
@@ -135,10 +169,11 @@ function renderTimelineCard(op, nowISO, canControlOps=true, ownOpsOnly=false, my
     : isOverdue ? `<span class="badge" style="background:var(--red-soft);color:var(--red)">⚠ LATE</span>`
     : `<span class="badge" style="background:var(--surface);color:var(--muted)">Scheduled</span>`;
 
-  const progressHtml = (isNow && estMins > 0) ? `
-    <div style="margin-top:6px">
+  const startMs = op.actual_start ? parseISTDate(op.actual_start).getTime() : 0;
+  const progressHtml = (isNow && estMins > 0 && startMs) ? `
+    <div style="margin-top:6px" data-prog-bar="1">
       <div style="display:flex;justify-content:space-between;font-size:11px;color:${overrun?'var(--red)':'var(--muted)'};margin-bottom:4px">
-        <span>${elapsedMin}min elapsed</span>
+        <span data-elapsed-start="${startMs}" data-elapsed-est="${estMins}">${elapsedMin}min elapsed</span>
         <span>${estMins}min est${overrun?' ⚠':''}</span>
       </div>
       <div class="prog-bar"><div class="prog-fill" style="width:${progressPct}%;background:${overrun?'var(--red)':'var(--green)'}"></div></div>
@@ -194,11 +229,13 @@ function renderOpRow(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerI
 
   let actualHtml = '';
   if(isNow && op.actual_start){
-    const elapsedMs  = Date.now() - parseISTDate(op.actual_start).getTime();
+    const startMs    = parseISTDate(op.actual_start).getTime();
+    const elapsedMs  = Date.now() - startMs;
     const elapsedMin = Math.max(0, Math.round(elapsedMs / 60000));
     const pct        = estMins > 0 ? Math.min(100, Math.round(elapsedMin / estMins * 100)) : 0;
     const overrun    = elapsedMin > estMins;
-    actualHtml = `<span style="font-size:11px;color:${overrun?'var(--red)':'var(--accent)'};font-weight:600;white-space:nowrap">
+    actualHtml = `<span data-elapsed-span="1" data-elapsed-start="${startMs}" data-elapsed-est="${estMins}"
+      style="font-size:11px;color:${overrun?'var(--red)':'var(--accent)'};font-weight:600;white-space:nowrap">
       ${elapsedMin}min / ${estMins}min${overrun?' ⚠':''}
     </span>`;
   } else if((isNow || isPaused) && op.actual_start && op.actual_end){
@@ -244,6 +281,19 @@ function renderOpRow(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerI
       ` : ''}
     </div>
   </div>`;
+}
+
+async function pullForwardOps(){
+  const ok = await confirm2(
+    'Pull all future scheduled operations forward to start as soon as each machine is free?\n\nThis is useful when today\'s work finishes early — future jobs move up automatically.',
+    'Pull Forward'
+  );
+  if(!ok) return;
+  try{
+    const r = await api('POST', '/api/pull-forward');
+    toast(`✓ ${r.pulled} operation${r.pulled!==1?'s':''} pulled forward`, 'success');
+    renderToday();
+  } catch(e){ toast(e.message, 'error'); }
 }
 
 function pauseReasonLabel(r){

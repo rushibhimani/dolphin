@@ -8,7 +8,8 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta, date
 from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
                     Customer, Routing, Operation, SubOperation, Job, ScheduledOp,
-                    JobCounter, CustomerOrder, OrderCounter, User, StaffTask, now_ist)
+                    JobCounter, CustomerOrder, OrderCounter, User, StaffTask, TaskFile,
+                    TaskAssignee, TaskActivity, now_ist)
 import json, os, subprocess, sys
 from auth import (
     create_token, verify_token, hash_password, verify_password,
@@ -900,8 +901,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             is_op_action = (
                 path.startswith("/api/scheduled-ops/") or
                 path.startswith("/api/ops/") or
-                path.startswith("/api/tasks/")
-            )
+                path.startswith("/api/tasks/") or
+                path.startswith("/api/task-files/")
+            )            
             if path not in allowed_for_operator and not is_op_action:
                 return JSONResponse({"detail": "Access denied for operator role"}, status_code=403)
 
@@ -911,6 +913,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                  "/api/tasks", "/api/tasks/summary/counts", "/api/workers"}
             is_staff_allowed = (
                 path.startswith("/api/tasks/") or
+                path.startswith("/api/task-files/") or
                 path.startswith("/api/workers")
             )
             if path not in allowed_for_staff and not is_staff_allowed:
@@ -940,7 +943,6 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
 app.add_middleware(NoCacheStaticMiddleware)
 app.mount("/css", StaticFiles(directory="css"), name="css")
 app.mount("/js",  StaticFiles(directory="js"),  name="js")
-
 @app.get("/")
 def root(): return FileResponse("index.html")
 
@@ -1548,6 +1550,15 @@ def reschedule_after_leave(worker_id: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def task_dict(t):
+    # All assignees = primary + extra (deduplicated by worker_id)
+    extra_ids = {a.worker_id for a in (t.assignees or [])}
+    all_assignees = []
+    if t.assigned_to_id:
+        all_assignees.append({"worker_id": t.assigned_to_id, "worker_name": t.assigned_to_name or ""})
+    for a in (t.assignees or []):
+        if a.worker_id != t.assigned_to_id:
+            all_assignees.append({"worker_id": a.worker_id, "worker_name": a.worker_name or ""})
+
     return {
         "id":               t.id,
         "title":            t.title,
@@ -1557,6 +1568,7 @@ def task_dict(t):
         "status":           t.status or "pending",
         "assigned_to_id":   t.assigned_to_id,
         "assigned_to_name": t.assigned_to_name or "",
+        "all_assignees":    all_assignees,
         "created_by_id":    t.created_by_id,
         "created_by_name":  t.created_by_name or "",
         "due_date":         t.due_date.isoformat() if t.due_date else None,
@@ -1564,7 +1576,29 @@ def task_dict(t):
         "notes":            t.notes or "",
         "completed_at":     t.completed_at.isoformat() if t.completed_at else None,
         "created_at":       t.created_at.isoformat() if t.created_at else None,
+        "files": [{"id": f.id, "filename": f.filename, "file_size": f.file_size,
+                   "mime_type": f.mime_type, "uploaded_by": f.uploaded_by,
+                   "note": f.note, "created_at": f.created_at.isoformat() if f.created_at else None}
+                  for f in (t.files or [])],
+        "activities": [{"id": a.id, "actor_name": a.actor_name or "", "action": a.action,
+                        "note": a.note or "", "created_at": a.created_at.isoformat() if a.created_at else None}
+                       for a in (t.activities or [])],
     }
+
+def _log_activity(db, task_id, actor_id, actor_name, action, note=""):
+    """Add an entry to the task activity log."""
+    db.add(TaskActivity(
+        task_id    = task_id,
+        actor_id   = actor_id,
+        actor_name = actor_name,
+        action     = action,
+        note       = note or "",
+        created_at = now_ist(),
+    ))
+
+# ── Task file storage directory ───────────────────────────────────────────────
+TASK_FILES_DIR = os.path.join(os.path.dirname(__file__), "task_uploads")
+os.makedirs(TASK_FILES_DIR, exist_ok=True)
 
 @app.get("/api/tasks")
 def get_tasks(status: str = None, assigned_to: int = None, priority: str = None):
@@ -1578,7 +1612,7 @@ def get_tasks(status: str = None, assigned_to: int = None, priority: str = None)
     db.close(); return result
 
 @app.post("/api/tasks")
-def create_task(data: dict):
+def create_task(data: dict, user: dict = Depends(require_any)):
     db = SessionLocal()
     t = StaffTask(
         title            = data["title"],
@@ -1588,13 +1622,24 @@ def create_task(data: dict):
         status           = "pending",
         assigned_to_id   = data.get("assigned_to_id"),
         assigned_to_name = data.get("assigned_to_name", ""),
-        created_by_id    = data.get("created_by_id"),
-        created_by_name  = data.get("created_by_name", ""),
+        created_by_id    = user.get("worker_id"),
+        created_by_name  = user.get("username", ""),
         due_date         = parse_date(data["due_date"]) if data.get("due_date") else None,
         due_time         = data.get("due_time", ""),
         created_at       = now_ist(),
     )
-    db.add(t); db.commit(); db.refresh(t)
+    db.add(t); db.flush()
+
+    # Extra assignees (multi-user)
+    for a in data.get("extra_assignees", []):
+        db.add(TaskAssignee(task_id=t.id, worker_id=a["worker_id"],
+                            worker_name=a.get("worker_name",""), assigned_at=now_ist()))
+
+    # Log creation
+    _log_activity(db, t.id, user.get("worker_id"), user.get("username",""),
+                  "created", f"Task created by {user.get('username','')}")
+
+    db.commit(); db.refresh(t)
     result = task_dict(t); db.close(); return result
 
 @app.get("/api/tasks/{task_id}")
@@ -1605,21 +1650,86 @@ def get_task(task_id: int):
     result = task_dict(t); db.close(); return result
 
 @app.put("/api/tasks/{task_id}")
-def update_task(task_id: int, data: dict):
+def update_task(task_id: int, data: dict, user: dict = Depends(require_any)):
     db = SessionLocal()
     t = db.query(StaffTask).filter(StaffTask.id == task_id).first()
     if not t: raise HTTPException(404, "Task not found")
+
+    actor_id   = user.get("worker_id")
+    actor_name = user.get("username", "")
+
     for field in ("title", "description", "category", "priority",
                   "assigned_to_id", "assigned_to_name", "due_time", "notes"):
         if field in data: setattr(t, field, data[field])
     if "due_date" in data:
         t.due_date = parse_date(data["due_date"]) if data["due_date"] else None
+
+    # Update extra assignees if provided
+    if "extra_assignees" in data:
+        db.query(TaskAssignee).filter(TaskAssignee.task_id == task_id).delete()
+        for a in data["extra_assignees"]:
+            if a["worker_id"] != t.assigned_to_id:  # don't duplicate primary
+                db.add(TaskAssignee(task_id=t.id, worker_id=a["worker_id"],
+                                    worker_name=a.get("worker_name",""), assigned_at=now_ist()))
+        # Log reassignment
+        names = [a.get("worker_name","") for a in data["extra_assignees"]]
+        if names:
+            _log_activity(db, task_id, actor_id, actor_name, "assigned",
+                          f"Additional assignees: {', '.join(names)}")
+
+    # Status change — always logged
     if "status" in data:
+        old_status = t.status
         t.status = data["status"]
-        if data["status"] == "done" and not t.completed_at:
-            t.completed_at = now_ist()
-        elif data["status"] != "done":
+        if data["status"] == "done":
+            if not t.completed_at: t.completed_at = now_ist()
+            _log_activity(db, task_id, actor_id, actor_name, "done",
+                          data.get("notes") or "")
+        elif data["status"] == "in_progress" and old_status != "in_progress":
+            _log_activity(db, task_id, actor_id, actor_name, "started", "")
+        elif data["status"] == "paused":
+            _log_activity(db, task_id, actor_id, actor_name, "paused", "")
+        elif data["status"] == "pending" and old_status == "done":
             t.completed_at = None
+            _log_activity(db, task_id, actor_id, actor_name, "reopened", "")
+
+    db.commit(); result = task_dict(t); db.close(); return result
+
+
+@app.post("/api/tasks/{task_id}/comment")
+def add_task_comment(task_id: int, data: dict, user: dict = Depends(require_any)):
+    """Add a comment/progress note to a task without changing its status."""
+    db = SessionLocal()
+    t = db.query(StaffTask).filter(StaffTask.id == task_id).first()
+    if not t: raise HTTPException(404, "Task not found")
+    note = (data.get("note") or "").strip()
+    if not note: raise HTTPException(400, "Comment cannot be empty")
+    _log_activity(db, task_id, user.get("worker_id"), user.get("username",""), "comment", note)
+    db.commit(); db.close()
+    return {"ok": True}
+
+
+@app.put("/api/tasks/{task_id}/assignees")
+def update_task_assignees(task_id: int, data: dict, user: dict = Depends(require_any)):
+    """Replace the full assignee list for a task."""
+    db = SessionLocal()
+    t = db.query(StaffTask).filter(StaffTask.id == task_id).first()
+    if not t: raise HTTPException(404, "Task not found")
+    # Update primary assignee
+    if "assigned_to_id" in data:
+        t.assigned_to_id   = data["assigned_to_id"]
+        t.assigned_to_name = data.get("assigned_to_name", "")
+    # Replace extra assignees
+    db.query(TaskAssignee).filter(TaskAssignee.task_id == task_id).delete()
+    names = []
+    for a in data.get("assignees", []):
+        if a["worker_id"] != t.assigned_to_id:
+            db.add(TaskAssignee(task_id=t.id, worker_id=a["worker_id"],
+                                worker_name=a.get("worker_name",""), assigned_at=now_ist()))
+            names.append(a.get("worker_name",""))
+    _log_activity(db, task_id, user.get("worker_id"), user.get("username",""), "assigned",
+                  f"Assignees updated: {t.assigned_to_name or ''}" +
+                  (f", {', '.join(names)}" if names else ""))
     db.commit(); result = task_dict(t); db.close(); return result
 
 @app.delete("/api/tasks/{task_id}")
@@ -1643,8 +1753,125 @@ def task_summary():
     result["overdue"] = overdue
     db.close(); return result
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CUSTOMERS
+# ── Task File Upload / Download / Delete ──────────────────────────────────────
+import uuid, shutil
+from fastapi import UploadFile, File, Form
+from fastapi.responses import FileResponse as FastFileResponse
+
+@app.post("/api/tasks/{task_id}/files")
+async def upload_task_file(
+    task_id: int,
+    file: UploadFile = File(...),
+    note: str = Form(""),
+    user: dict = Depends(require_any)
+):
+    db = SessionLocal()
+    t = db.query(StaffTask).filter(StaffTask.id == task_id).first()
+    if not t: db.close(); raise HTTPException(404, "Task not found")
+
+    # Validate file size (max 20 MB)
+    MAX_SIZE = 20 * 1024 * 1024
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        db.close(); raise HTTPException(400, "File too large (max 20 MB)")
+
+    # Store with UUID name to avoid collisions
+    ext = os.path.splitext(file.filename or "file")[1].lower()
+    stored = f"{uuid.uuid4().hex}{ext}"
+    path = os.path.join(TASK_FILES_DIR, stored)
+    with open(path, "wb") as f_out:
+        f_out.write(content)
+
+    tf = TaskFile(
+        task_id     = task_id,
+        filename    = file.filename or "file",
+        stored_name = stored,
+        file_size   = len(content),
+        mime_type   = file.content_type or "application/octet-stream",
+        uploaded_by = user.get("username", ""),
+        note        = note.strip() or None,
+        created_at  = now_ist(),
+    )
+    db.add(tf); db.commit(); db.refresh(tf)
+    _log_activity(db, task_id, None, user.get("username",""), "file_added",
+                  f"Uploaded: {file.filename}")
+    db.commit()
+    result = {"id": tf.id, "filename": tf.filename, "file_size": tf.file_size,
+              "mime_type": tf.mime_type, "uploaded_by": tf.uploaded_by,
+              "note": tf.note, "created_at": tf.created_at.isoformat()}
+    db.close(); return result
+
+@app.get("/api/task-files/{file_id}/download")
+def download_task_file(file_id: int, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    tf = db.query(TaskFile).filter(TaskFile.id == file_id).first()
+    if not tf: db.close(); raise HTTPException(404, "File not found")
+    path = os.path.join(TASK_FILES_DIR, tf.stored_name)
+    filename = tf.filename
+    mime = tf.mime_type or "application/octet-stream"
+    db.close()
+    if not os.path.exists(path):
+        raise HTTPException(404, "File missing from server")
+    return FastFileResponse(path, media_type=mime,
+                            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+@app.delete("/api/task-files/{file_id}")
+def delete_task_file(file_id: int, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    tf = db.query(TaskFile).filter(TaskFile.id == file_id).first()
+    if not tf: db.close(); raise HTTPException(404, "Not found")
+    path = os.path.join(TASK_FILES_DIR, tf.stored_name)
+    db.delete(tf); db.commit(); db.close()
+    if os.path.exists(path):
+        os.remove(path)
+    return {"ok": True}
+
+@app.post("/api/pull-forward")
+def pull_forward(user: dict = Depends(require_manager)):
+    """Pull all future scheduled ops forward after today's ops completed early."""
+    db = SessionLocal()
+    now = now_ist()
+    # Find all scheduled ops that start in the future
+    future_ops = db.query(ScheduledOp).filter(
+        ScheduledOp.status == "scheduled",
+        ScheduledOp.scheduled_start > now,
+    ).order_by(ScheduledOp.scheduled_start).all()
+
+    pulled = 0
+    # Group by machine, pull each machine's queue forward
+    by_machine = {}
+    for op in future_ops:
+        by_machine.setdefault(op.work_center_id, []).append(op)
+
+    for wc_id, ops in by_machine.items():
+        # Find when this machine is free (last completed/in-progress op)
+        last_active = db.query(ScheduledOp).filter(
+            ScheduledOp.work_center_id == wc_id,
+            ScheduledOp.status.in_(["completed", "in_progress"]),
+        ).order_by(ScheduledOp.actual_end.desc().nullslast(),
+                   ScheduledOp.scheduled_end.desc()).first()
+
+        free_from = now
+        if last_active:
+            free_from = last_active.actual_end or last_active.scheduled_end or now
+        free_from = max(free_from, now)
+        free_from = snap_to_shift(free_from)
+
+        for op in sorted(ops, key=lambda x: x.scheduled_start):
+            duration_hrs = (op.scheduled_end - op.scheduled_start).total_seconds() / 3600
+            new_start = free_from
+            new_end   = add_working_hours(new_start, duration_hrs)
+            # Only pull forward (never push later)
+            if new_start < op.scheduled_start:
+                op.scheduled_start = new_start
+                op.scheduled_end   = new_end
+                pulled += 1
+            free_from = new_end
+
+    db.commit(); db.close()
+    return {"pulled": pulled, "message": f"Pulled {pulled} operations forward"}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 def customer_dict(c, db):
     job_count = db.query(Job).filter(Job.customer_id == c.id).count()
