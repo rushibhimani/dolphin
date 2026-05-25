@@ -21,7 +21,7 @@
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/app.css?v=1779682143">
 </head>
 <body>
 
@@ -35,6 +35,7 @@
     <div class="nav-group">Main</div>
     <div class="nav-item" data-page="dashboard" onclick="navigate('/dashboard')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" stroke-width="2"/><rect x="14" y="3" width="7" height="7" rx="1" stroke-width="2"/><rect x="3" y="14" width="7" height="7" rx="1" stroke-width="2"/><rect x="14" y="14" width="7" height="7" rx="1" stroke-width="2"/></svg>Dashboard</div>
     <div class="nav-item" data-page="today" onclick="navigate('/today')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>Today's Work</div>
+    <div class="nav-item" data-page="tasks" onclick="navigate('/tasks')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>Staff Tasks</div>
     <div class="nav-item" data-page="upcoming" onclick="navigate('/upcoming')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Upcoming</div>
     <div class="nav-item" data-page="jobs" onclick="navigate('/jobs')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>Jobs</div>
     <div class="nav-item" data-page="orders" onclick="navigate('/orders')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>Orders</div>
@@ -114,38 +115,39 @@
 <div id="toast"></div>
 
 <!-- Auth (must be first — api.js depends on authGetToken) -->
-<script src="js/auth.js"></script>
+<script src="js/auth.js?v=1779682143"></script>
 <!-- Foundation -->
-<script src="js/api.js"></script>
-<script src="js/utils.js"></script>
-<script src="js/router.js"></script>
+<script src="js/api.js?v=1779682143"></script>
+<script src="js/utils.js?v=1779682143"></script>
+<script src="js/router.js?v=1779682143"></script>
 
 <!-- Pages -->
-<script src="js/pages/dashboard.js"></script>
-<script src="js/pages/today.js"></script>
-<script src="js/pages/upcoming.js"></script>
-<script src="js/pages/jobs.js"></script>
-<script src="js/pages/orders.js"></script>
-<script src="js/pages/quote.js"></script>
-<script src="js/pages/schedule.js"></script>
-<script src="js/pages/capacity.js"></script>
-<script src="js/pages/floorplan.js"></script>
-<script src="js/pages/routings.js"></script>
-<script src="js/pages/machines.js"></script>
-<script src="js/pages/workers.js"></script>
-<script src="js/pages/customers.js"></script>
-<script src="js/pages/reports.js"></script>
-<script src="js/pages/settings.js"></script>
-<script src="js/pages/routing_stats.js"></script>
-<script src="js/pages/users.js"></script>
+<script src="js/pages/dashboard.js?v=1779682143"></script>
+<script src="js/pages/today.js?v=1779682143"></script>
+<script src="js/pages/upcoming.js?v=1779682143"></script>
+<script src="js/pages/jobs.js?v=1779682143"></script>
+<script src="js/pages/orders.js?v=1779682143"></script>
+<script src="js/pages/quote.js?v=1779682143"></script>
+<script src="js/pages/schedule.js?v=1779682143"></script>
+<script src="js/pages/capacity.js?v=1779682143"></script>
+<script src="js/pages/floorplan.js?v=1779682143"></script>
+<script src="js/pages/routings.js?v=1779682143"></script>
+<script src="js/pages/machines.js?v=1779682143"></script>
+<script src="js/pages/workers.js?v=1779682143"></script>
+<script src="js/pages/tasks.js?v=1779682143"></script>
+<script src="js/pages/customers.js?v=1779682143"></script>
+<script src="js/pages/reports.js?v=1779682143"></script>
+<script src="js/pages/settings.js?v=1779682143"></script>
+<script src="js/pages/routing_stats.js?v=1779682143"></script>
+<script src="js/pages/users.js?v=1779682143"></script>
 
 <!-- Full-page editors -->
-<script src="js/editors/routing_editor.js"></script>
-<script src="js/editors/order_editor.js"></script>
-<script src="js/editors/job_editor.js"></script>
+<script src="js/editors/routing_editor.js?v=1779682143"></script>
+<script src="js/editors/order_editor.js?v=1779682143"></script>
+<script src="js/editors/job_editor.js?v=1779682143"></script>
 
 <!-- App bootstrap (last) -->
-<script src="js/app.js"></script>
+<script src="js/app.js?v=1779682143"></script>
 
 </body>
 </html>

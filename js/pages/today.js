@@ -23,6 +23,13 @@ async function renderToday(){
     <button class="btn btn-secondary" onclick="renderToday()">↻</button>`;
   document.getElementById('content').innerHTML=`<div style="color:var(--muted)">Loading…</div>`;
   const nowISO = istNow().toISOString().slice(0,19);
+
+  // Staff (office) can see all ops but cannot start/pause/complete them
+  const perms = authGetUser()?.permissions || {};
+  const canControlOps     = perms.can_control_ops     !== false;
+  const ownOpsOnly        = !!perms.can_control_own_ops_only;
+  const myWorkerId        = authGetUser()?.worker_id || null;
+
   try{
     const ops = await api('GET','/api/today');
     const active = ops.filter(o=>o.status==='in_progress');
@@ -34,8 +41,16 @@ async function renderToday(){
       return;
     }
 
+    // Read-only banner for staff
+    const readOnlyBanner = !canControlOps ? `
+      <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);
+           border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#818cf8;
+           display:flex;align-items:center;gap:8px">
+        👁 <b>View-only</b> — You can see all floor operations but cannot start, pause, or complete them.
+      </div>` : '';
+
     // ── Summary chips ────────────────────────────────────────────────────────
-    let html = `<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+    let html = readOnlyBanner + `<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
       <div style="background:var(--accent-soft);border:1px solid var(--accent);border-radius:8px;padding:6px 12px;font-size:13px;display:flex;align-items:center;gap:6px">
         <b style="font-size:18px;color:var(--accent)">${active.length}</b> In Progress</div>
       <div style="background:var(--amber-soft,rgba(245,158,11,.08));border:1px solid var(--amber);border-radius:8px;padding:6px 12px;font-size:13px;display:flex;align-items:center;gap:6px">
@@ -58,7 +73,7 @@ async function renderToday(){
           <div style="font-size:13px;font-weight:700;color:var(--text)">${m}</div>
           <div style="font-size:11px;color:var(--muted)">${mops.length} op${mops.length>1?'s':''}</div>
         </div>
-        ${mops.map(op=>renderTimelineCard(op,nowISO)).join('')}
+        ${mops.map(op=>renderTimelineCard(op,nowISO,canControlOps,ownOpsOnly,myWorkerId)).join('')}
       </div>`;
     });
     html += `</div>`;
@@ -72,7 +87,7 @@ async function renderToday(){
           <span style="font-weight:700;font-size:14px">${m}</span>
           <span style="font-size:11px;color:var(--muted)">${mops.length} op${mops.length>1?'s':''} today</span>
         </div>
-        ${mops.map(op=>renderOpRow(op,nowISO)).join('')}
+        ${mops.map(op=>renderOpRow(op,nowISO,canControlOps,ownOpsOnly,myWorkerId)).join('')}
       </div>`;
     });
     html += `</div>`;
@@ -86,7 +101,9 @@ async function renderToday(){
 }
 
 /* ── MOBILE: timeline card ─────────────────────────────────────────────────── */
-function renderTimelineCard(op, nowISO){
+function renderTimelineCard(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerId=null){
+  // Determine if this user can act on THIS specific op
+  const canActOnThis = canControlOps && (!ownOpsOnly || op.worker_id == myWorkerId);
   const isNow    = op.status === 'in_progress';
   const isPaused = op.status === 'paused';
   const isOverdue= op.scheduled_end && op.scheduled_end.slice(0,19) < nowISO && op.status === 'scheduled';
@@ -130,8 +147,8 @@ function renderTimelineCard(op, nowISO){
   const pauseInfo = isPaused && op.pause_reason
     ? `<div style="font-size:11px;color:var(--amber);margin-top:4px">⏸ ${pauseReasonLabel(op.pause_reason)}</div>` : '';
 
-  /* Action buttons — large touch targets */
-  const actionHtml = `<div style="display:flex;gap:8px;padding-top:10px;border-top:1px solid var(--border)">
+  /* Action buttons — only shown when user can control ops */
+  const actionHtml = canActOnThis ? `<div style="display:flex;gap:8px;padding-top:10px;border-top:1px solid var(--border)">
     ${op.status==='scheduled'
       ? `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Start</button>`
       : ''}
@@ -142,7 +159,7 @@ function renderTimelineCard(op, nowISO){
     ${op.status==='paused'
       ? `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Resume</button>`
       : ''}
-  </div>`;
+  </div>` : '';
 
   return `<div style="background:${cardBg};border:1px solid var(--border);border-left:4px solid ${borderColor};
                       border-radius:10px;padding:12px;margin-bottom:10px">
@@ -168,7 +185,8 @@ function renderTimelineCard(op, nowISO){
 }
 
 /* ── DESKTOP: compact single-line row (unchanged from original) ─────────────── */
-function renderOpRow(op, nowISO){
+function renderOpRow(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerId=null){
+  const canActOnThis = canControlOps && (!ownOpsOnly || op.worker_id == myWorkerId);
   const isNow    = op.status === 'in_progress';
   const isPaused = op.status === 'paused';
   const isOverdue= op.scheduled_end && op.scheduled_end.slice(0,19) < nowISO && op.status === 'scheduled';
@@ -217,11 +235,13 @@ function renderOpRow(op, nowISO){
       ${actualHtml}
     </div>
     <div style="display:flex;gap:4px;flex-shrink:0">
-      ${op.status==='scheduled'?`<button class="btn btn-success" style="padding:5px 10px;font-size:12px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶</button>`:''}
-      ${op.status==='in_progress'?`
-        <button class="btn btn-secondary" style="padding:5px 10px;font-size:12px" onclick="promptPause(${op.op_id})">⏸</button>
-        <button class="btn btn-primary"   style="padding:5px 10px;font-size:12px" onclick="promptComplete(${op.op_id},'${op.actual_start||''}')">✓</button>`:''}
-      ${op.status==='paused'?`<button class="btn btn-success" style="padding:5px 10px;font-size:12px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶</button>`:''}
+      ${canActOnThis ? `
+        ${op.status==='scheduled'?`<button class="btn btn-success" style="padding:5px 10px;font-size:12px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶</button>`:''}
+        ${op.status==='in_progress'?`
+          <button class="btn btn-secondary" style="padding:5px 10px;font-size:12px" onclick="promptPause(${op.op_id})">⏸</button>
+          <button class="btn btn-primary"   style="padding:5px 10px;font-size:12px" onclick="promptComplete(${op.op_id},'${op.actual_start||''}')">✓</button>`:''}
+        ${op.status==='paused'?`<button class="btn btn-success" style="padding:5px 10px;font-size:12px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶</button>`:''}
+      ` : ''}
     </div>
   </div>`;
 }

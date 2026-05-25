@@ -117,15 +117,13 @@ function applyRoleUI(user) {
   document.querySelectorAll('.nav-item[data-page]').forEach(el => {
     const page = el.dataset.page;
     const show = allowedPages.has(page) ||
-                 // sub-routes: job-new/job-edit fall under 'jobs', order under 'orders'
-                 (page === 'jobs' && allowedPages.has('jobs')) ||
+                 (page === 'jobs'   && allowedPages.has('jobs')) ||
                  (page === 'orders' && allowedPages.has('orders'));
     el.style.display = show ? '' : 'none';
   });
 
   // ── Section labels: hide "Setup" group label if nothing under it is visible ──
   document.querySelectorAll('.nav-group').forEach(label => {
-    // Find all nav-items until the next nav-group
     let sibling = label.nextElementSibling;
     let anyVisible = false;
     while (sibling && !sibling.classList.contains('nav-group')) {
@@ -137,12 +135,13 @@ function applyRoleUI(user) {
     label.style.display = anyVisible ? '' : 'none';
   });
 
-  // ── Bottom nav: only show items this role can access ──
+  // ── Bottom nav ──
   const BOT_NAV_ITEMS = [
-    { page: 'dashboard', icon: '⊞', label: 'Home' },
-    { page: 'today',     icon: '⏱', label: 'Today' },
-    { page: 'jobs',      icon: '📋', label: 'Jobs' },
-    { page: 'orders',    icon: '📦', label: 'Orders' },
+    { page: 'dashboard', icon: '⊞', label: 'Home'  },
+    { page: 'today',     icon: '⏱', label: 'Floor' },
+    { page: 'tasks',     icon: '✓',  label: 'Tasks' },
+    { page: 'jobs',      icon: '📋', label: 'Jobs'  },
+    { page: 'orders',    icon: '📦', label: 'Orders'},
     { page: 'schedule',  icon: '📅', label: 'Gantt' },
   ];
   const nav = document.getElementById('bottomNav');
@@ -156,11 +155,14 @@ function applyRoleUI(user) {
     ).join('');
   }
 
-  // ── Operator: hide entire sidebar shell, show only Today ──
+  // ── Operator (shop floor): hide sidebar, go straight to Today ──
   if (role === 'operator') {
     const sidebar = document.getElementById('sidebar');
     if (sidebar) sidebar.style.display = 'none';
   }
+
+  // ── Staff (office): show sidebar, default page is Tasks ──
+  // Sidebar is already visible by default — nothing to hide
 }
 
 // ── APP INIT ──────────────────────────────────────────────────────────────────
@@ -172,7 +174,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
 
-  const user = authGetUser();
+  let user = authGetUser();
+
+  // ── Always refresh permissions from server ──
+  // The token in localStorage may have old permissions (e.g. before 'tasks' was added).
+  // /api/auth/me re-reads PERMISSIONS from auth.py using the current token's role,
+  // so we always get the latest page list without requiring a re-login.
+  try {
+    const me = await fetch('/api/auth/me', {
+      headers: { 'Authorization': 'Bearer ' + authGetToken() }
+    });
+    if(me.ok){
+      const meData = await me.json();
+      user = { ...user, permissions: meData.permissions };
+      authSaveSession(authGetToken(), user);
+    }
+  } catch(e) { /* offline — use cached permissions */ }
 
   // Show user avatar button with initial
   const userBtn  = document.getElementById('userMenuBtn');
@@ -189,10 +206,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Apply role-based nav (sidebar + bottom nav)
   applyRoleUI(user);
 
-  // Operator: go straight to Today's Work
+  // Operator (shop floor): sidebar hidden, go straight to Today's Work
   if(user?.role === 'operator'){
     await loadAll();
     navigate('/today', true);
+    setInterval(checkServer, 30000);
+    return;
+  }
+
+  // Staff (office): sidebar visible, land on Tasks page
+  if(user?.role === 'staff'){
+    await loadAll();
+    navigate('/tasks', true);
     setInterval(checkServer, 30000);
     return;
   }

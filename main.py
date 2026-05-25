@@ -8,12 +8,12 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta, date
 from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
                     Customer, Routing, Operation, SubOperation, Job, ScheduledOp,
-                    JobCounter, CustomerOrder, OrderCounter, User, now_ist)
+                    JobCounter, CustomerOrder, OrderCounter, User, StaffTask, now_ist)
 import json, os, subprocess, sys
 from auth import (
     create_token, verify_token, hash_password, verify_password,
     hash_pin, verify_pin, get_current_user, require_roles,
-    require_admin, require_manager, require_any, ensure_admin_user, PERMISSIONS
+    require_admin, require_manager, require_any, ensure_admin_user, PERMISSIONS, resolve_permissions
 )
 
 DATABASE_URL = "sqlite:///./dolphin.db"
@@ -893,16 +893,28 @@ class AuthMiddleware(BaseHTTPMiddleware):
         except Exception:
             return JSONResponse({"detail": "Invalid or expired token"}, status_code=401)
 
-        # Operators: only allowed to access today, their own ops, and auth/me
+        # Operators: only allowed to access today (own ops), tasks, and auth endpoints
         if claims.get("role") == "operator":
-            allowed_for_operator = {"/api/today", "/api/auth/me", "/api/auth/change-password"}
-            # Allow /api/ops/:id/status and /api/scheduled-ops/:id/status for marking their own ops
+            allowed_for_operator = {"/api/today", "/api/auth/me", "/api/auth/change-password",
+                                    "/api/tasks", "/api/tasks/summary/counts"}
             is_op_action = (
                 path.startswith("/api/scheduled-ops/") or
-                path.startswith("/api/ops/")
+                path.startswith("/api/ops/") or
+                path.startswith("/api/tasks/")
             )
             if path not in allowed_for_operator and not is_op_action:
                 return JSONResponse({"detail": "Access denied for operator role"}, status_code=403)
+
+        # Staff (office): can see all today ops (read-only), tasks, workers list
+        if claims.get("role") == "staff":
+            allowed_for_staff = {"/api/today", "/api/auth/me", "/api/auth/change-password",
+                                 "/api/tasks", "/api/tasks/summary/counts", "/api/workers"}
+            is_staff_allowed = (
+                path.startswith("/api/tasks/") or
+                path.startswith("/api/workers")
+            )
+            if path not in allowed_for_staff and not is_staff_allowed:
+                return JSONResponse({"detail": "Access denied for staff role"}, status_code=403)
 
         # Attach user claims to request state for use in route handlers
         request.state.user = claims
@@ -911,6 +923,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
 app.add_middleware(AuthMiddleware)
 
 # Serve css/ and js/ as static directories
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
+
+class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    """Force no-cache on all /js and /css responses so deploys take effect immediately."""
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/js/") or path.startswith("/css/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"]        = "no-cache"
+            response.headers["Expires"]       = "0"
+        return response
+
+app.add_middleware(NoCacheStaticMiddleware)
 app.mount("/css", StaticFiles(directory="css"), name="css")
 app.mount("/js",  StaticFiles(directory="js"),  name="js")
 
@@ -937,6 +964,7 @@ def _user_dict(u):
         "created_at": u.created_at.isoformat() if u.created_at else None,
         "has_pin": bool(u.pin_hash),
         "has_password": bool(u.password_hash),
+        "custom_permissions": u.custom_permissions,   # raw JSON string or None
     }
 
 @app.post("/api/auth/login")
@@ -973,7 +1001,7 @@ def login(data: dict, request: Request):
     u.last_login = now_ist()
     db.commit()
     token = create_token(u.id, u.username, u.role, u.worker_id)
-    perms = PERMISSIONS.get(u.role, PERMISSIONS["operator"])
+    perms = resolve_permissions(u.role, getattr(u, 'custom_permissions', None))
     result = {"token": token, "role": u.role, "username": u.username,
               "display_name": u.display_name or u.username,
               "worker_id": u.worker_id, "permissions": perms}
@@ -1013,7 +1041,7 @@ def pin_login(data: dict, request: Request):
     matched.last_login = now_ist()
     db.commit()
     token = create_token(matched.id, matched.username, matched.role, matched.worker_id)
-    perms = PERMISSIONS.get(matched.role, PERMISSIONS["operator"])
+    perms = resolve_permissions(matched.role, getattr(matched, 'custom_permissions', None))
     result = {"token": token, "role": matched.role, "username": matched.username,
               "display_name": matched.display_name or matched.username,
               "worker_id": matched.worker_id, "permissions": perms}
@@ -1039,8 +1067,12 @@ def pin_users():
 
 @app.get("/api/auth/me")
 def get_me(user: dict = Depends(get_current_user)):
-    """Return current user info from token."""
-    perms = PERMISSIONS.get(user.get("role","operator"), PERMISSIONS["operator"])
+    """Return current user info with fresh permissions (including any custom overrides)."""
+    db = SessionLocal()
+    u = db.query(User).filter(User.id == int(user.get("sub", 0))).first()
+    custom = getattr(u, 'custom_permissions', None) if u else None
+    db.close()
+    perms = resolve_permissions(user.get("role", "operator"), custom)
     return {"user": user, "permissions": perms}
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1060,7 +1092,7 @@ def create_user(data: dict, user: dict = Depends(require_admin)):
     if not username:
         raise HTTPException(400, "Username required")
     role = data.get("role", "operator")
-    if role not in ("admin", "manager", "operator"):
+    if role not in ("admin", "manager", "staff", "operator"):
         raise HTTPException(400, "Invalid role")
     db = SessionLocal()
     existing = db.query(User).filter(User.username == username).first()
@@ -1068,12 +1100,13 @@ def create_user(data: dict, user: dict = Depends(require_admin)):
         db.close(); raise HTTPException(400, "Username already taken")
 
     u = User(
-        username     = username,
-        display_name = data.get("display_name", "").strip() or username.title(),
-        role         = role,
-        worker_id    = int(data["worker_id"]) if data.get("worker_id") else None,
-        is_active    = True,
-        created_at   = now_ist(),
+        username           = username,
+        display_name       = data.get("display_name", "").strip() or username.title(),
+        role               = role,
+        worker_id          = int(data["worker_id"]) if data.get("worker_id") else None,
+        is_active          = True,
+        created_at         = now_ist(),
+        custom_permissions = data.get("custom_permissions") or None,
     )
     if data.get("password"):
         u.password_hash = hash_password(data["password"])
@@ -1092,19 +1125,22 @@ def update_user(user_id: int, data: dict, user: dict = Depends(require_admin)):
     if not u: db.close(); raise HTTPException(404, "User not found")
 
     # Prevent removing admin role from last admin
-    if u.role == "admin" and data.get("role") != "admin":
+    if u.role == "admin" and data.get("role") not in ("admin", None):
         admin_count = db.query(User).filter(User.role == "admin", User.is_active == True).count()
         if admin_count <= 1:
             db.close(); raise HTTPException(400, "Cannot remove the last admin")
 
     if "display_name" in data: u.display_name = data["display_name"].strip()
-    if "role"         in data:
-        if data["role"] not in ("admin","manager","operator"):
+    if "role" in data:
+        if data["role"] not in ("admin", "manager", "staff", "operator"):
             db.close(); raise HTTPException(400, "Invalid role")
         u.role = data["role"]
     if "worker_id" in data:
         u.worker_id = int(data["worker_id"]) if data.get("worker_id") else None
     if "is_active" in data: u.is_active = bool(data["is_active"])
+    # custom_permissions: None = clear (revert to role defaults), string = set override
+    if "custom_permissions" in data:
+        u.custom_permissions = data["custom_permissions"] or None
 
     if data.get("password"):
         u.password_hash = hash_password(data["password"])
@@ -1272,6 +1308,7 @@ def worker_dict(w, db):
     return {"id": w.id, "name": w.name, "role": w.role, "phone": w.phone,
             "code": w.code or "", "skill_level": w.skill_level or 1,
             "is_active": w.is_active,
+            "worker_type": getattr(w, "worker_type", "shop_floor") or "shop_floor",
             "skill_ids":   [s.id   for s in w.skills],
             "skill_names": [s.name for s in w.skills]}
 
@@ -1348,7 +1385,8 @@ def create_worker(data: dict):
         while db.query(Worker).filter(Worker.code == wcode).first():
             n += 1; wcode = f"W{n:02d}"
     w = Worker(name=data["name"], role=data.get("role",""), phone=data.get("phone",""),
-               is_active=True, code=wcode, skill_level=int(data.get("skill_level",1)))
+               is_active=True, code=wcode, skill_level=int(data.get("skill_level",1)),
+               worker_type=data.get("worker_type","shop_floor"))
     db.add(w); db.flush()
     for wc_id in data.get("skill_ids", []):
         wc = db.query(WorkCenter).filter(WorkCenter.id == wc_id).first()
@@ -1366,6 +1404,7 @@ def update_worker(worker_id: int, data: dict):
     w.phone = data.get("phone", w.phone)
     w.is_active = data.get("is_active", w.is_active)
     if "skill_level" in data: w.skill_level = int(data["skill_level"])
+    if "worker_type" in data: w.worker_type = data["worker_type"]
     if "skill_ids" in data:
         w.skills = []; db.flush()
         for wc_id in data["skill_ids"]:
@@ -1397,14 +1436,33 @@ def add_leave(worker_id: int, data: dict):
     db = SessionLocal()
     w = db.query(Worker).filter(Worker.id == worker_id).first()
     if not w: raise HTTPException(404, "Worker not found")
-    lv = WorkerLeave(worker_id=worker_id, leave_date=parse_date(data["date"]),
-                     leave_type=data.get("type","full"),
-                     start_time=data.get("start_time"), end_time=data.get("end_time"),
-                     reason=data.get("reason",""))
-    db.add(lv); db.commit(); db.refresh(lv)
-    result = {"id": lv.id, "date": lv.leave_date.isoformat(),
-              "type": lv.leave_type, "reason": lv.reason}
-    db.close(); return result
+
+    start_date = parse_date(data["date"])
+    end_date   = parse_date(data.get("date_end") or data["date"])  # range or single
+    leave_type = data.get("type", "full")
+
+    # Generate one row per day in the range
+    created = []
+    current = start_date
+    while current <= end_date:
+        lv = WorkerLeave(
+            worker_id      = worker_id,
+            leave_date     = current,
+            leave_date_end = end_date if end_date != start_date else None,
+            leave_type     = leave_type,
+            start_time     = data.get("start_time") if leave_type == "hours" else None,
+            end_time       = data.get("end_time")   if leave_type == "hours" else None,
+            reason         = data.get("reason", "")
+        )
+        db.add(lv)
+        created.append(lv)
+        current = current + timedelta(days=1)
+
+    db.commit()
+    result = [{"id": lv.id, "date": lv.leave_date.isoformat(),
+               "type": lv.leave_type, "reason": lv.reason} for lv in created]
+    db.close()
+    return {"created": len(result), "leaves": result}
 
 @app.delete("/api/leaves/{leave_id}")
 def delete_leave(leave_id: int):
@@ -1484,6 +1542,106 @@ def reschedule_after_leave(worker_id: int):
             op.worker_id = None; op.worker_name = None; rescheduled += 1
     db.commit(); db.close()
     return {"rescheduled": rescheduled}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAFF TASKS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def task_dict(t):
+    return {
+        "id":               t.id,
+        "title":            t.title,
+        "description":      t.description or "",
+        "category":         t.category or "Other",
+        "priority":         t.priority or "normal",
+        "status":           t.status or "pending",
+        "assigned_to_id":   t.assigned_to_id,
+        "assigned_to_name": t.assigned_to_name or "",
+        "created_by_id":    t.created_by_id,
+        "created_by_name":  t.created_by_name or "",
+        "due_date":         t.due_date.isoformat() if t.due_date else None,
+        "due_time":         t.due_time or "",
+        "notes":            t.notes or "",
+        "completed_at":     t.completed_at.isoformat() if t.completed_at else None,
+        "created_at":       t.created_at.isoformat() if t.created_at else None,
+    }
+
+@app.get("/api/tasks")
+def get_tasks(status: str = None, assigned_to: int = None, priority: str = None):
+    db = SessionLocal()
+    q = db.query(StaffTask)
+    if status:      q = q.filter(StaffTask.status == status)
+    if assigned_to: q = q.filter(StaffTask.assigned_to_id == assigned_to)
+    if priority:    q = q.filter(StaffTask.priority == priority)
+    tasks = q.order_by(StaffTask.due_date.asc().nullslast(), StaffTask.created_at.desc()).all()
+    result = [task_dict(t) for t in tasks]
+    db.close(); return result
+
+@app.post("/api/tasks")
+def create_task(data: dict):
+    db = SessionLocal()
+    t = StaffTask(
+        title            = data["title"],
+        description      = data.get("description", ""),
+        category         = data.get("category", "Other"),
+        priority         = data.get("priority", "normal"),
+        status           = "pending",
+        assigned_to_id   = data.get("assigned_to_id"),
+        assigned_to_name = data.get("assigned_to_name", ""),
+        created_by_id    = data.get("created_by_id"),
+        created_by_name  = data.get("created_by_name", ""),
+        due_date         = parse_date(data["due_date"]) if data.get("due_date") else None,
+        due_time         = data.get("due_time", ""),
+        created_at       = now_ist(),
+    )
+    db.add(t); db.commit(); db.refresh(t)
+    result = task_dict(t); db.close(); return result
+
+@app.get("/api/tasks/{task_id}")
+def get_task(task_id: int):
+    db = SessionLocal()
+    t = db.query(StaffTask).filter(StaffTask.id == task_id).first()
+    if not t: raise HTTPException(404, "Task not found")
+    result = task_dict(t); db.close(); return result
+
+@app.put("/api/tasks/{task_id}")
+def update_task(task_id: int, data: dict):
+    db = SessionLocal()
+    t = db.query(StaffTask).filter(StaffTask.id == task_id).first()
+    if not t: raise HTTPException(404, "Task not found")
+    for field in ("title", "description", "category", "priority",
+                  "assigned_to_id", "assigned_to_name", "due_time", "notes"):
+        if field in data: setattr(t, field, data[field])
+    if "due_date" in data:
+        t.due_date = parse_date(data["due_date"]) if data["due_date"] else None
+    if "status" in data:
+        t.status = data["status"]
+        if data["status"] == "done" and not t.completed_at:
+            t.completed_at = now_ist()
+        elif data["status"] != "done":
+            t.completed_at = None
+    db.commit(); result = task_dict(t); db.close(); return result
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: int):
+    db = SessionLocal()
+    t = db.query(StaffTask).filter(StaffTask.id == task_id).first()
+    if not t: raise HTTPException(404, "Task not found")
+    db.delete(t); db.commit(); db.close(); return {"ok": True}
+
+@app.get("/api/tasks/summary/counts")
+def task_summary():
+    db = SessionLocal()
+    from sqlalchemy import func
+    counts = db.query(StaffTask.status, func.count(StaffTask.id)).group_by(StaffTask.status).all()
+    today  = now_ist().date()
+    overdue = db.query(StaffTask).filter(
+        StaffTask.due_date < today,
+        StaffTask.status.notin_(["done", "cancelled"])
+    ).count()
+    result = {r[0]: r[1] for r in counts}
+    result["overdue"] = overdue
+    db.close(); return result
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CUSTOMERS

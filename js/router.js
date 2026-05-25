@@ -35,6 +35,7 @@ const ROUTES = [
   { pattern: /^\/machines$/,                  page: 'machines',     title: 'Machines' },
   { pattern: /^\/workers$/,                   page: 'workers',      title: 'Workers' },
   { pattern: /^\/customers$/,                 page: 'customers',    title: 'Customers' },
+  { pattern: /^\/tasks$/,                     page: 'tasks',        title: 'Staff Tasks' },
 ];
 
 function resolveRoute(path) {
@@ -111,6 +112,7 @@ async function handleRoute() {
       case 'machines':      await renderMachines(); break;
       case 'workers':       await renderWorkers(); break;
       case 'customers':     await renderCustomers(); break;
+      case 'tasks':         await renderTasks(); break;
       case 'reports':       await renderReports(); break;
       case 'settings':      await renderSettings(); break;
       case 'users':
@@ -170,7 +172,7 @@ function showPage(p) {
     'capacity':'/capacity','floorplan':'/floorplan','routings':'/routings',
     'machines':'/machines','workers':'/workers','customers':'/customers',
     'reports':'/reports','settings':'/settings','routing-stats':'/routing-stats',
-    'quote':'/quote','users':'/users',
+    'quote':'/quote','users':'/users','tasks':'/tasks',
   };
   navigate(map[p] || '/' + p);
 }

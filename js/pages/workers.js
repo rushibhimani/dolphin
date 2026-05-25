@@ -39,6 +39,7 @@ function workerCard(w){
         <div style="font-weight:600;margin-bottom:2px">${w.name}</div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           ${w.code?`<span style="font-family:var(--mono);font-size:11px;background:rgba(245,158,11,.12);color:var(--accent);padding:1px 6px;border-radius:4px">${w.code}</span>`:''}
+          ${w.worker_type==='office'?`<span style="font-size:11px;background:rgba(99,102,241,.12);color:#818cf8;padding:1px 6px;border-radius:4px">💼 Office</span>`:''}
           <span style="font-size:11px;color:var(--muted)">${w.role||'Operator'}${w.phone?' · '+w.phone:''}</span>
         </div>
       </div>
@@ -153,10 +154,13 @@ function openWorkerModal(editId){
           <option value="3" ${(w?.skill_level||1)===3?'selected':''}>3 — Specialist (VMC, precision grinder)</option>
         </select>
       </div>
-      ${w?`<div class="form-group">
-        <div class="fld-label">Status</div>
-        <select id="w_active"><option value="true" ${w.is_active?'selected':''}>Active</option><option value="false" ${!w.is_active?'selected':''}>Inactive</option></select>
-      </div>`:'<div></div>'}
+      <div class="form-group">
+        <div class="fld-label">Worker Type</div>
+        <select id="w_worker_type">
+          <option value="shop_floor" ${(w?.worker_type||'shop_floor')==='shop_floor'?'selected':''}>🏭 Shop Floor (Machine Operator)</option>
+          <option value="office"     ${(w?.worker_type||'shop_floor')==='office'    ?'selected':''}>💼 Office Staff (Designer, Admin, etc.)</option>
+        </select>
+      </div>
     </div>
     <div class="form-section" style="margin-top:14px">Machine Skills <small style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">(select all machines this worker can operate)</small></div>
     ${skillsHtml}`,
@@ -174,6 +178,7 @@ async function saveWorker(editId){
     role: document.getElementById('w_role').value.trim(),
     phone: document.getElementById('w_phone').value.trim(),
     skill_level: parseInt(document.getElementById('w_skill_level')?.value||'1'),
+    worker_type: document.getElementById('w_worker_type')?.value || 'shop_floor',
     skill_ids: skillIds,
   };
   const activeEl = document.getElementById('w_active');
@@ -190,12 +195,26 @@ async function saveWorker(editId){
 function openLeaveModal(workerId, workerName){
   const today = new Date().toISOString().slice(0,10);
   showModal(`Add Leave — ${workerName}`,`
+    <div style="background:var(--accent-soft);border:1px solid var(--accent);border-radius:8px;
+         padding:10px 14px;margin-bottom:14px;font-size:12px;color:var(--text-soft)">
+      💡 For a multi-day leave period, set a <b>From</b> and <b>To</b> date.
+      Leave will be added for every day in the range (skipping Sundays automatically).
+    </div>
     <div class="form-row cols-2">
       <div class="form-group">
-        <div class="fld-label">Leave Date <span style="color:var(--red)">*</span></div>
-        <input id="lv_date" type="date" value="${today}">
+        <div class="fld-label">From Date <span style="color:var(--red)">*</span></div>
+        <input id="lv_date" type="date" value="${today}" onchange="lv_validateRange()">
         <div class="field-err" id="lv_date_err"></div>
       </div>
+      <div class="form-group">
+        <div class="fld-label">To Date <span style="color:var(--muted);font-weight:400">(leave blank for single day)</span></div>
+        <input id="lv_date_end" type="date" value="" onchange="lv_validateRange()">
+        <div class="field-err" id="lv_date_end_err"></div>
+      </div>
+    </div>
+    <div id="lv_range_preview" style="display:none;margin-bottom:12px;font-size:12px;
+         color:var(--accent);background:var(--accent-soft);border-radius:6px;padding:8px 12px"></div>
+    <div class="form-row cols-2">
       <div class="form-group">
         <div class="fld-label">Leave Type</div>
         <select id="lv_type" onchange="toggleLeaveTimeFields()">
@@ -205,31 +224,48 @@ function openLeaveModal(workerId, workerName){
           <option value="hours">Specific Hours</option>
         </select>
       </div>
-    </div>
-    <div id="lv_hours_wrap" style="display:none">
-      <div class="form-row cols-2">
-        <div class="form-group">
-          <div class="fld-label">From Time</div>
-          <input id="lv_start" type="time" value="08:00">
-        </div>
-        <div class="form-group">
-          <div class="fld-label">To Time</div>
-          <input id="lv_end" type="time" value="12:00">
+      <div class="form-group" id="lv_hours_wrap" style="display:none">
+        <div class="fld-label">From → To Time</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="lv_start" type="time" value="08:00" style="flex:1">
+          <span style="color:var(--muted)">→</span>
+          <input id="lv_end"   type="time" value="12:00" style="flex:1">
         </div>
       </div>
     </div>
-    <div class="form-row cols-1">
-      <div class="form-group">
-        <div class="fld-label">Reason (optional)</div>
-        <input id="lv_reason" placeholder="Sick leave, personal, etc.">
-      </div>
+    <div class="form-group">
+      <div class="fld-label">Reason (optional)</div>
+      <input id="lv_reason" placeholder="Sick leave, personal, annual leave, etc.">
     </div>
-    <div class="info-hint" style="margin-top:8px">After saving, click "Reschedule Ops" to reassign this worker's conflicting operations to other available workers.</div>`,
-    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-     <button class="btn btn-primary" id="saveLeaveBtn" onclick="saveLeave(${workerId})">Save Leave</button>
-     <button class="btn btn-secondary" id="saveRescheduleBtn" onclick="saveLeaveAndReschedule(${workerId})">Save & Reschedule Ops</button>`
+    <div class="info-hint" style="margin-top:8px">After saving, click "Save & Reschedule" to auto-reassign conflicting operations.</div>`,
+    `<button class="btn btn-ghost"      onclick="closeModal()">Cancel</button>
+     <button class="btn btn-secondary"  id="saveLeaveBtn"        onclick="saveLeave(${workerId})">Save Leave</button>
+     <button class="btn btn-primary"    id="saveRescheduleBtn"   onclick="saveLeaveAndReschedule(${workerId})">Save & Reschedule</button>`
   );
-  setTimeout(()=>attachValidation('lv_date',[{test:v=>v.length>0,msg:'Date is required'}],'lv_date_err'),50);
+  setTimeout(()=>attachValidation('lv_date',[{test:v=>v.length>0,msg:'Start date is required'}],'lv_date_err'),50);
+}
+
+function lv_validateRange(){
+  const from = document.getElementById('lv_date')?.value;
+  const to   = document.getElementById('lv_date_end')?.value;
+  const errEl= document.getElementById('lv_date_end_err');
+  const prev = document.getElementById('lv_range_preview');
+  if(!from) return;
+  if(to && to < from){
+    if(errEl) errEl.textContent = 'End date must be on or after start date';
+    if(prev) prev.style.display = 'none';
+    return;
+  }
+  if(errEl) errEl.textContent = '';
+  if(to && to !== from && prev){
+    // Count days
+    const d1 = new Date(from), d2 = new Date(to);
+    const days = Math.round((d2-d1)/86400000) + 1;
+    prev.style.display = 'block';
+    prev.textContent = `📅 ${days} calendar day${days>1?'s':''} of leave (${from} → ${to})`;
+  } else if(prev){
+    prev.style.display = 'none';
+  }
 }
 
 function toggleLeaveTimeFields(){
@@ -239,24 +275,29 @@ function toggleLeaveTimeFields(){
 }
 
 async function saveLeave(workerId, andReschedule=false){
-  if(!validateAll(['lv_date'])){toast('Date is required','error');return;}
+  if(!validateAll(['lv_date'])){toast('Start date is required','error');return;}
+  const fromDate = document.getElementById('lv_date').value;
+  const toDate   = document.getElementById('lv_date_end')?.value || fromDate;
+  if(toDate < fromDate){ toast('End date must be on or after start date','error'); return; }
   const ltype = document.getElementById('lv_type').value;
   const data = {
-    date: document.getElementById('lv_date').value,
-    type: ltype,
+    date:       fromDate,
+    date_end:   toDate !== fromDate ? toDate : null,
+    type:       ltype,
     start_time: ltype==='hours' ? document.getElementById('lv_start').value : null,
-    end_time:   ltype==='hours' ? document.getElementById('lv_end').value : null,
-    reason: document.getElementById('lv_reason').value,
+    end_time:   ltype==='hours' ? document.getElementById('lv_end').value   : null,
+    reason:     document.getElementById('lv_reason').value,
   };
   const btnId = andReschedule ? 'saveRescheduleBtn' : 'saveLeaveBtn';
   setLoading(btnId, true);
   try{
-    await api('POST',`/api/workers/${workerId}/leaves`, data);
+    const result = await api('POST',`/api/workers/${workerId}/leaves`, data);
+    const count  = result.created || 1;
     if(andReschedule){
       const r = await api('POST',`/api/workers/${workerId}/reschedule-after-leave`);
-      toast(`Leave saved. ${r.rescheduled} conflicting ops reassigned.`);
+      toast(`${count} leave day${count>1?'s':''} saved. ${r.rescheduled} conflicting ops reassigned.`);
     }else{
-      toast('Leave saved!');
+      toast(`${count} leave day${count>1?'s':''} saved!`);
     }
     closeModal(); navigate('/workers');
   }catch(e){ toast(e.message,'error'); }

@@ -43,22 +43,45 @@ class Worker(Base):
     phone         = Column(String, nullable=True)
     is_active     = Column(Boolean, default=True)
     skill_level   = Column(Integer, default=1)
+    worker_type   = Column(String, default="shop_floor")  # shop_floor | office
     skills        = relationship("WorkCenter", secondary=worker_skills, back_populates="skilled_workers")
     leaves        = relationship("WorkerLeave", back_populates="worker", cascade="all, delete-orphan")
     scheduled_ops = relationship("ScheduledOp", back_populates="worker")
+    assigned_tasks= relationship("StaffTask", back_populates="assigned_to", foreign_keys="StaffTask.assigned_to_id")
 
 
 class WorkerLeave(Base):
     __tablename__ = "worker_leaves"
-    id          = Column(Integer, primary_key=True)
-    worker_id   = Column(Integer, ForeignKey("workers.id"), nullable=False)
-    leave_date  = Column(Date, nullable=False)
-    leave_type  = Column(String, default="full")   # full, morning, afternoon, hours
-    start_time  = Column(String, nullable=True)
-    end_time    = Column(String, nullable=True)
-    reason      = Column(String, nullable=True)
-    created_at  = Column(DateTime, default=now_ist)
-    worker      = relationship("Worker", back_populates="leaves")
+    id             = Column(Integer, primary_key=True)
+    worker_id      = Column(Integer, ForeignKey("workers.id"), nullable=False)
+    leave_date     = Column(Date, nullable=False)
+    leave_date_end = Column(Date, nullable=True)   # if set, leave spans date → leave_date_end
+    leave_type     = Column(String, default="full") # full, morning, afternoon, hours
+    start_time     = Column(String, nullable=True)
+    end_time       = Column(String, nullable=True)
+    reason         = Column(String, nullable=True)
+    created_at     = Column(DateTime, default=now_ist)
+    worker         = relationship("Worker", back_populates="leaves")
+
+
+class StaffTask(Base):
+    __tablename__ = "staff_tasks"
+    id                = Column(Integer, primary_key=True)
+    title             = Column(String,  nullable=False)
+    description       = Column(Text,    nullable=True)
+    category          = Column(String,  nullable=True)   # Design, Admin, Quality, Procurement, Other
+    priority          = Column(String,  default="normal") # low, normal, high, urgent
+    status            = Column(String,  default="pending")# pending, in_progress, done, cancelled
+    assigned_to_id    = Column(Integer, ForeignKey("workers.id"), nullable=True)
+    assigned_to_name  = Column(String,  nullable=True)
+    created_by_id     = Column(Integer, nullable=True)
+    created_by_name   = Column(String,  nullable=True)
+    due_date          = Column(Date,    nullable=True)
+    due_time          = Column(String,  nullable=True)
+    notes             = Column(Text,    nullable=True)
+    completed_at      = Column(DateTime,nullable=True)
+    created_at        = Column(DateTime,default=now_ist)
+    assigned_to       = relationship("Worker", back_populates="assigned_tasks", foreign_keys=[assigned_to_id])
 
 
 class Customer(Base):
@@ -253,14 +276,15 @@ class OrderCounter(Base):
 
 class User(Base):
     __tablename__ = "users"
-    id            = Column(Integer, primary_key=True)
-    username      = Column(String, unique=True, nullable=False)
-    display_name  = Column(String, nullable=True)
-    password_hash = Column(String, nullable=True)   # pbkdf2 hash:salt
-    pin_hash      = Column(String, nullable=True)   # pbkdf2 hash:salt for PIN
-    role          = Column(String, default="operator")   # admin | manager | operator
-    worker_id     = Column(Integer, ForeignKey("workers.id"), nullable=True)
-    is_active     = Column(Boolean, default=True)
-    last_login    = Column(DateTime, nullable=True)
-    created_at    = Column(DateTime, default=now_ist)
-    worker        = relationship("Worker", foreign_keys=[worker_id])
+    id                 = Column(Integer, primary_key=True)
+    username           = Column(String, unique=True, nullable=False)
+    display_name       = Column(String, nullable=True)
+    password_hash      = Column(String, nullable=True)
+    pin_hash           = Column(String, nullable=True)
+    role               = Column(String, default="operator")
+    worker_id          = Column(Integer, ForeignKey("workers.id"), nullable=True)
+    is_active          = Column(Boolean, default=True)
+    last_login         = Column(DateTime, nullable=True)
+    created_at         = Column(DateTime, default=now_ist)
+    custom_permissions = Column(Text, nullable=True)   # JSON override; None = use role defaults
+    worker             = relationship("Worker", foreign_keys=[worker_id])

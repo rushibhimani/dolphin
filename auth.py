@@ -25,7 +25,7 @@ PBKDF2_ITERS = 300_000
 ACCESS_TOKEN_EXPIRE_SECS = 12 * 3600
 
 # Roles — ordered from highest to lowest privilege
-ROLES = ["admin", "manager", "operator"]
+ROLES = ["admin", "manager", "staff", "operator"]
 ROLE_WEIGHTS = {r: i for i, r in enumerate(ROLES)}  # admin=0 (highest)
 
 # Permissions per role
@@ -33,37 +33,71 @@ PERMISSIONS = {
     "admin": {
         "pages": ["dashboard","today","upcoming","jobs","orders","quote","schedule",
                   "capacity","floorplan","routings","machines","workers","customers",
-                  "reports","settings","routing-stats","users"],
+                  "reports","settings","routing-stats","users","tasks"],
         "can_see_all_workers": True,
         "can_delete": True,
         "can_manage_users": True,
         "can_see_financials": True,
         "can_schedule": True,
         "can_edit_routings": True,
+        "can_control_ops": True,   # start/pause/done on shop ops
     },
     "manager": {
         "pages": ["dashboard","today","upcoming","jobs","orders","quote","schedule",
                   "capacity","floorplan","routings","machines","workers","customers",
-                  "reports","routing-stats","settings"],
+                  "reports","routing-stats","settings","tasks"],
         "can_see_all_workers": True,
         "can_delete": True,
         "can_manage_users": False,
         "can_see_financials": True,
         "can_schedule": True,
         "can_edit_routings": True,
+        "can_control_ops": True,
     },
-    "operator": {
-        "pages": ["today"],
-        "can_see_all_workers": False,  # only sees own ops
+    "staff": {
+        # Office staff: designers, admin, quality, etc.
+        # Can see everything on the floor (read-only) + manage their own tasks
+        "pages": ["today","tasks"],
+        "can_see_all_workers": True,   # sees all workers' ops on Today's Work
         "can_delete": False,
         "can_manage_users": False,
         "can_see_financials": False,
         "can_schedule": False,
         "can_edit_routings": False,
+        "can_control_ops": False,      # cannot start/pause/done shop ops
+    },
+    "operator": {
+        # Shop floor machine operator: only sees their own ops + tasks
+        "pages": ["today","tasks"],
+        "can_see_all_workers": False,
+        "can_delete": False,
+        "can_manage_users": False,
+        "can_see_financials": False,
+        "can_schedule": False,
+        "can_edit_routings": False,
+        "can_control_ops": True,       # can start/pause/done their own ops
     },
 }
 
-# ── JWT Helpers ───────────────────────────────────────────────────────────────
+# ── Permission resolver ───────────────────────────────────────────────────────
+
+def resolve_permissions(role: str, custom_permissions_json: str = None) -> dict:
+    """
+    Return the effective permissions for a user.
+    If custom_permissions_json is set, it completely overrides the role defaults.
+    custom_permissions_json is a JSON string with the same structure as PERMISSIONS values.
+    """
+    base = PERMISSIONS.get(role, PERMISSIONS["operator"])
+    if not custom_permissions_json:
+        return base
+    try:
+        custom = json.loads(custom_permissions_json)
+        # Merge: custom overrides base for any key present
+        merged = dict(base)
+        merged.update(custom)
+        return merged
+    except Exception:
+        return base
 
 def _get_secret() -> str:
     """Get JWT secret from env or auto-generate and persist to secret.key file."""
@@ -200,7 +234,7 @@ def require_roles(*roles):
 # Convenience role dependencies
 require_admin   = require_roles("admin")
 require_manager = require_roles("admin", "manager")
-require_any     = require_roles("admin", "manager", "operator")
+require_any     = require_roles("admin", "manager", "staff", "operator")
 
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
