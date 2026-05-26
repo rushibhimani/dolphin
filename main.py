@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, date
 from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
                     Customer, Routing, Operation, SubOperation, Job, ScheduledOp,
                     JobCounter, CustomerOrder, OrderCounter, User, StaffTask, TaskFile,
-                    TaskAssignee, TaskActivity, now_ist)
+                    TaskAssignee, TaskActivity, Quotation, QuoteCounter, CompanySetting, now_ist)
 import json, os, subprocess, sys
 from auth import (
     create_token, verify_token, hash_password, verify_password,
@@ -902,8 +902,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 path.startswith("/api/scheduled-ops/") or
                 path.startswith("/api/ops/") or
                 path.startswith("/api/tasks/") or
-                path.startswith("/api/task-files/")
-            )            
+                path.startswith("/api/task-files/") or
+                path.startswith("/api/quotations") or
+                path.startswith("/api/company-settings")
+            )
             if path not in allowed_for_operator and not is_op_action:
                 return JSONResponse({"detail": "Access denied for operator role"}, status_code=403)
 
@@ -914,7 +916,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             is_staff_allowed = (
                 path.startswith("/api/tasks/") or
                 path.startswith("/api/task-files/") or
-                path.startswith("/api/workers")
+                path.startswith("/api/workers") or
+                path.startswith("/api/quotations") or
+                path.startswith("/api/company-settings")
             )
             if path not in allowed_for_staff and not is_staff_allowed:
                 return JSONResponse({"detail": "Access denied for staff role"}, status_code=403)
@@ -1870,6 +1874,352 @@ def pull_forward(user: dict = Depends(require_manager)):
 
     db.commit(); db.close()
     return {"pulled": pulled, "message": f"Pulled {pulled} operations forward"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QUOTATIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
+import io, json as _json
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.lib import colors
+from reportlab.pdfgen import canvas as rl_canvas
+
+def _next_quote_number(db):
+    yr = now_ist().year
+    qc = db.query(QuoteCounter).filter(QuoteCounter.year == yr).first()
+    if not qc:
+        qc = QuoteCounter(year=yr, seq=0)
+        db.add(qc)
+    qc.seq += 1
+    return f"QUO-{yr}-{str(qc.seq).zfill(3)}"
+
+def _get_setting(db, key, default=""):
+    s = db.query(CompanySetting).filter(CompanySetting.key == key).first()
+    return s.value if s else default
+
+def _set_setting(db, key, value):
+    s = db.query(CompanySetting).filter(CompanySetting.key == key).first()
+    if s: s.value = value
+    else: db.add(CompanySetting(key=key, value=value))
+
+def _quote_dict(q):
+    try:    items = _json.loads(q.line_items) if q.line_items else []
+    except: items = []
+    return {
+        "id": q.id, "quote_number": q.quote_number, "status": q.status,
+        "customer_id": q.customer_id, "customer_name": q.customer_name,
+        "customer_address": q.customer_address or "",
+        "customer_gstin": q.customer_gstin or "",
+        "customer_email": q.customer_email or "",
+        "customer_phone": q.customer_phone or "",
+        "line_items": items,
+        "subtotal": q.subtotal or 0, "discount_pct": q.discount_pct or 0,
+        "discount_amt": q.discount_amt or 0, "tax_pct": q.tax_pct or 18,
+        "tax_amt": q.tax_amt or 0, "total": q.total or 0,
+        "currency": q.currency or "INR", "validity_days": q.validity_days or 30,
+        "valid_until": q.valid_until.isoformat() if q.valid_until else None,
+        "notes": q.notes or "", "terms": q.terms or "",
+        "order_id": q.order_id,
+        "created_at": q.created_at.isoformat() if q.created_at else None,
+        "sent_at": q.sent_at.isoformat() if q.sent_at else None,
+        "accepted_at": q.accepted_at.isoformat() if q.accepted_at else None,
+    }
+
+@app.get("/api/quotations")
+def list_quotations(status: str = None, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    q = db.query(Quotation).order_by(Quotation.created_at.desc())
+    if status: q = q.filter(Quotation.status == status)
+    result = [_quote_dict(x) for x in q.all()]
+    db.close(); return result
+
+@app.post("/api/quotations")
+def create_quotation(data: dict, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    qn = _next_quote_number(db)
+    items = data.get("line_items", [])
+    subtotal  = sum(float(i.get("amount", 0)) for i in items)
+    disc_pct  = float(data.get("discount_pct", 0))
+    disc_amt  = round(subtotal * disc_pct / 100, 2)
+    tax_pct   = float(data.get("tax_pct", 18))
+    tax_base  = subtotal - disc_amt
+    tax_amt   = round(tax_base * tax_pct / 100, 2)
+    total     = round(tax_base + tax_amt, 2)
+    validity  = int(data.get("validity_days", 30))
+    valid_until = (now_ist().date() + timedelta(days=validity))
+    q = Quotation(
+        quote_number=qn, status="draft",
+        customer_id=data.get("customer_id"), customer_name=data.get("customer_name",""),
+        customer_address=data.get("customer_address",""),
+        customer_gstin=data.get("customer_gstin",""),
+        customer_email=data.get("customer_email",""),
+        customer_phone=data.get("customer_phone",""),
+        line_items=_json.dumps(items), subtotal=subtotal,
+        discount_pct=disc_pct, discount_amt=disc_amt,
+        tax_pct=tax_pct, tax_amt=tax_amt, total=total,
+        currency=data.get("currency","INR"),
+        validity_days=validity, valid_until=valid_until,
+        notes=data.get("notes",""), terms=data.get("terms",""),
+        created_at=now_ist(),
+    )
+    db.add(q); db.commit(); db.refresh(q)
+    result = _quote_dict(q); db.close(); return result
+
+@app.get("/api/quotations/{qid}")
+def get_quotation(qid: int, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    q = db.query(Quotation).filter(Quotation.id == qid).first()
+    if not q: db.close(); raise HTTPException(404, "Not found")
+    result = _quote_dict(q); db.close(); return result
+
+@app.put("/api/quotations/{qid}")
+def update_quotation(qid: int, data: dict, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    q = db.query(Quotation).filter(Quotation.id == qid).first()
+    if not q: db.close(); raise HTTPException(404, "Not found")
+    for f in ("customer_id","customer_name","customer_address","customer_gstin",
+              "customer_email","customer_phone","notes","terms","currency","status"):
+        if f in data: setattr(q, f, data[f])
+    if "line_items" in data:
+        q.line_items = _json.dumps(data["line_items"])
+        q.subtotal   = sum(float(i.get("amount",0)) for i in data["line_items"])
+    if "discount_pct"  in data: q.discount_pct  = float(data["discount_pct"])
+    if "tax_pct"       in data: q.tax_pct        = float(data["tax_pct"])
+    if "validity_days" in data:
+        q.validity_days = int(data["validity_days"])
+        q.valid_until   = now_ist().date() + timedelta(days=q.validity_days)
+    disc_amt = round((q.subtotal or 0) * (q.discount_pct or 0) / 100, 2)
+    tax_base = (q.subtotal or 0) - disc_amt
+    q.discount_amt = disc_amt
+    q.tax_amt      = round(tax_base * (q.tax_pct or 18) / 100, 2)
+    q.total        = round(tax_base + q.tax_amt, 2)
+    if data.get("status") == "sent"     and not q.sent_at:     q.sent_at     = now_ist()
+    if data.get("status") == "accepted" and not q.accepted_at: q.accepted_at = now_ist()
+    db.commit(); result = _quote_dict(q); db.close(); return result
+
+@app.delete("/api/quotations/{qid}")
+def delete_quotation(qid: int, user: dict = Depends(require_manager)):
+    db = SessionLocal()
+    q = db.query(Quotation).filter(Quotation.id == qid).first()
+    if not q: db.close(); raise HTTPException(404, "Not found")
+    db.delete(q); db.commit(); db.close(); return {"ok": True}
+
+@app.get("/api/company-settings")
+def get_company_settings(user: dict = Depends(require_any)):
+    db = SessionLocal()
+    rows = db.query(CompanySetting).all()
+    result = {r.key: r.value for r in rows}
+    db.close(); return result
+
+@app.put("/api/company-settings")
+def update_company_settings(data: dict, user: dict = Depends(require_manager)):
+    db = SessionLocal()
+    for k, v in data.items():
+        _set_setting(db, k, str(v) if v is not None else "")
+    db.commit(); db.close(); return {"ok": True}
+
+# ── PDF Generation ────────────────────────────────────────────────────────────
+@app.get("/api/quotations/{qid}/pdf")
+def generate_quote_pdf(qid: int, user: dict = Depends(require_any)):
+    from fastapi.responses import StreamingResponse
+    db = SessionLocal()
+    q = db.query(Quotation).filter(Quotation.id == qid).first()
+    if not q: db.close(); raise HTTPException(404, "Not found")
+    co_name    = _get_setting(db, "company_name",    "Yukeng Mould & Die")
+    co_addr    = _get_setting(db, "company_address",  "")
+    co_gstin   = _get_setting(db, "company_gstin",    "")
+    co_email   = _get_setting(db, "company_email",    "")
+    co_phone   = _get_setting(db, "company_phone",    "")
+    co_website = _get_setting(db, "company_website",  "")
+    try:    items = _json.loads(q.line_items) if q.line_items else []
+    except: items = []
+    db.close()
+    buf = io.BytesIO()
+    _draw_quote_pdf(buf, q, items, co_name, co_addr, co_gstin, co_email, co_phone, co_website)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{q.quote_number}.pdf"'})
+
+
+def _draw_quote_pdf(buf, q, items, co_name, co_addr, co_gstin, co_email, co_phone, co_website):
+    """Apple-style clean quotation PDF using ReportLab."""
+    W, H = A4  # 595.28 × 841.89 pt
+    c = rl_canvas.Canvas(buf, pagesize=A4)
+
+    # Color palette
+    BLACK  = colors.HexColor("#1d1d1f")
+    GRAY1  = colors.HexColor("#6e6e73")
+    GRAY2  = colors.HexColor("#aeaeb2")
+    GRAY3  = colors.HexColor("#f5f5f7")
+    ACCENT = colors.HexColor("#0071e3")
+
+    ML = 52; MR = W - 52; MT = H - 48; MB = 48
+
+    def hline(y, x0=ML, x1=MR, w=0.5, col=GRAY2):
+        c.setStrokeColor(col); c.setLineWidth(w); c.line(x0, y, x1, y)
+
+    def txt(x, y, s, sz=9, fn="Helvetica", col=BLACK, align="left"):
+        c.setFont(fn, sz); c.setFillColor(col)
+        s = str(s)
+        if align == "right":   c.drawRightString(x, y, s)
+        elif align == "center":c.drawCentredString(x, y, s)
+        else:                  c.drawString(x, y, s)
+
+    def money(v):
+        try: return f"\u20b9{float(v):,.2f}"
+        except: return str(v)
+
+    # ── HEADER ──────────────────────────────────────────────────────────────
+    y = MT
+    txt(ML, y, co_name, sz=22, fn="Helvetica-Bold")
+    y -= 18
+    co_lines = [l for l in (co_addr or "").split("\n") if l.strip()]
+    if co_gstin:   co_lines.append(f"GSTIN: {co_gstin}")
+    if co_email:   co_lines.append(co_email)
+    if co_phone:   co_lines.append(co_phone)
+    if co_website: co_lines.append(co_website)
+    for d in co_lines:
+        txt(ML, y, d, sz=8.5, col=GRAY1); y -= 12
+
+    # QUOTATION title — top right
+    txt(MR, MT, "QUOTATION", sz=26, fn="Helvetica-Bold", align="right")
+
+    # Meta block — right
+    my = MT - 22
+    meta = [("Quote No.", q.quote_number),
+            ("Date", q.created_at.strftime("%d %b %Y") if q.created_at else ""),
+            ("Valid Until", q.valid_until.strftime("%d %b %Y") if q.valid_until else f"{q.validity_days} days"),
+            ("Status", (q.status or "draft").upper())]
+    for lbl, val in meta:
+        txt(MR - 140, my, lbl + ":", sz=8, col=GRAY1)
+        txt(MR, my, val, sz=8, fn="Helvetica-Bold", align="right")
+        my -= 14
+
+    y = min(y - 10, my - 10)
+    hline(y); y -= 20
+
+    # ── BILL TO ─────────────────────────────────────────────────────────────
+    txt(ML, y, "BILL TO", sz=7.5, fn="Helvetica-Bold", col=GRAY1); y -= 14
+    txt(ML, y, q.customer_name, sz=12, fn="Helvetica-Bold"); y -= 14
+    for line in (q.customer_address or "").split("\n"):
+        if line.strip(): txt(ML, y, line, sz=9, col=GRAY1); y -= 12
+    if q.customer_gstin: txt(ML, y, f"GSTIN: {q.customer_gstin}", sz=9, col=GRAY1); y -= 12
+    contact = "  ·  ".join(filter(None, [q.customer_email, q.customer_phone]))
+    if contact: txt(ML, y, contact, sz=9, col=GRAY1); y -= 12
+    y -= 14; hline(y); y -= 18
+
+    # ── LINE ITEMS TABLE ─────────────────────────────────────────────────────
+    usable = MR - ML
+    cw = [usable * p for p in [0.06, 0.46, 0.10, 0.09, 0.15, 0.14]]
+
+    # Header background
+    c.setFillColor(GRAY3); c.setStrokeColor(GRAY3)
+    c.rect(ML, y - 5, usable, 22, fill=1, stroke=0)
+
+    hdrs = ["#", "Description", "Qty", "Unit", "Unit Price", "Amount"]
+    xp = ML
+    for i, (h, w) in enumerate(zip(hdrs, cw)):
+        align = "right" if i >= 4 else ("center" if i == 0 else "left")
+        x2 = xp + w - 6 if align == "right" else (xp + w/2 if align == "center" else xp + 5)
+        txt(x2, y + 5, h, sz=7.5, fn="Helvetica-Bold", col=GRAY1, align=align)
+        xp += w
+    y -= 20; hline(y, w=0.3); y -= 4
+
+    for idx, item in enumerate(items):
+        desc    = str(item.get("desc") or item.get("description") or "")
+        notes   = str(item.get("notes", ""))
+        qty     = item.get("qty", item.get("quantity", 1))
+        unit    = str(item.get("unit", "pcs"))
+        uprice  = float(item.get("unit_price", 0))
+        amount  = float(item.get("amount", 0))
+        rh = 30 if notes else 22
+
+        if idx % 2 == 1:
+            c.setFillColor(GRAY3); c.setStrokeColor(GRAY3)
+            c.rect(ML, y - rh + 18, usable, rh, fill=1, stroke=0)
+
+        xp = ML
+        row_vals = [str(idx+1), None, f"{qty} {unit}", "", money(uprice), money(amount)]
+        for i, (v, w) in enumerate(zip(row_vals, cw)):
+            if v is None:
+                txt(xp + 5, y + 4, desc[:65], sz=9, fn="Helvetica-Bold")
+                if notes: txt(xp + 5, y - 7, notes[:85], sz=7.5, col=GRAY1)
+            else:
+                align = "right" if i >= 4 else ("center" if i == 0 else "left")
+                x2 = xp + w - 6 if align == "right" else (xp + w/2 if align == "center" else xp + 5)
+                txt(x2, y + 4, v, sz=9, col=BLACK, align=align)
+            xp += w
+        y -= rh; hline(y, w=0.25, col=GRAY2); y -= 2
+
+        if y < MB + 160:
+            c.showPage(); y = MT - 30
+
+    hline(y + 14, w=1, col=GRAY1); y -= 20
+
+    # ── TOTALS ───────────────────────────────────────────────────────────────
+    tx  = MR - 210; tx2 = MR
+
+    def trow(lbl, val, bold=False, large=False, col=BLACK):
+        sz = 11 if large else 9
+        fn = "Helvetica-Bold" if bold else "Helvetica"
+        txt(tx,  y, lbl, sz=sz, fn=fn, col=GRAY1 if not bold else BLACK)
+        txt(tx2, y, val, sz=sz, fn=fn, col=col, align="right")
+
+    trow("Subtotal", money(q.subtotal)); y -= 15
+    if (q.discount_pct or 0) > 0:
+        trow(f"Discount ({int(q.discount_pct)}%)", f"- {money(q.discount_amt)}"); y -= 15
+    trow(f"GST ({int(q.tax_pct)}%)", money(q.tax_amt)); y -= 8
+    hline(y, x0=tx); y -= 16
+    trow("Total", money(q.total), bold=True, large=True, col=ACCENT); y -= 28
+
+    # Amount in words
+    def _words(n):
+        ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
+                "Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen",
+                "Seventeen","Eighteen","Nineteen"]
+        tens = ["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"]
+        def b1000(n):
+            if n < 20: return ones[n]
+            if n < 100: return tens[n//10]+(" "+ones[n%10] if n%10 else "")
+            return ones[n//100]+" Hundred"+(" and "+b1000(n%100) if n%100 else "")
+        n = int(n); parts = []
+        if n>=10000000: parts.append(b1000(n//10000000)+" Crore"); n%=10000000
+        if n>=100000:   parts.append(b1000(n//100000)+" Lakh");   n%=100000
+        if n>=1000:     parts.append(b1000(n//1000)+" Thousand"); n%=1000
+        if n>0:         parts.append(b1000(n))
+        return " ".join(parts) if parts else "Zero"
+
+    words = _words(q.total or 0) + " Rupees Only"
+    txt(ML, y, "Amount in words:", sz=8, col=GRAY1)
+    txt(ML, y-13, words, sz=9, fn="Helvetica-Bold"); y -= 32
+
+    # ── NOTES & TERMS ────────────────────────────────────────────────────────
+    if q.notes:
+        hline(y); y -= 16
+        txt(ML, y, "NOTES", sz=7.5, fn="Helvetica-Bold", col=GRAY1); y -= 13
+        for line in q.notes.split("\n"):
+            txt(ML, y, line, sz=9); y -= 12
+
+    if q.terms:
+        y -= 4; hline(y); y -= 16
+        txt(ML, y, "TERMS & CONDITIONS", sz=7.5, fn="Helvetica-Bold", col=GRAY1); y -= 13
+        for line in q.terms.split("\n"):
+            txt(ML, y, line, sz=8.5, col=GRAY1); y -= 11
+
+    # ── FOOTER ───────────────────────────────────────────────────────────────
+    hline(MB + 22)
+    txt(ML, MB+8, f"Generated by Dolphin ERP  ·  {co_name}", sz=7.5, col=GRAY2)
+    txt(MR, MB+8, q.quote_number, sz=7.5, col=GRAY2, align="right")
+
+    # Signature block
+    sy = MB + 70
+    hline(sy+38, x0=MR-200, x1=MR, w=0.4)
+    txt(MR-100, sy+28, "Authorised Signatory", sz=8, col=GRAY1, align="center")
+    txt(MR-100, sy+16, co_name, sz=8, fn="Helvetica-Bold", align="center")
+
+    c.save()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

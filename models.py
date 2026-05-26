@@ -330,3 +330,45 @@ class User(Base):
     created_at         = Column(DateTime, default=now_ist)
     custom_permissions = Column(Text, nullable=True)   # JSON override; None = use role defaults
     worker             = relationship("Worker", foreign_keys=[worker_id])
+
+class QuoteCounter(Base):
+    __tablename__ = "quote_counter"
+    id   = Column(Integer, primary_key=True)
+    year = Column(Integer, nullable=False)
+    seq  = Column(Integer, default=0)
+
+
+class CompanySetting(Base):
+    __tablename__ = "company_settings"
+    key   = Column(String, primary_key=True)
+    value = Column(Text, nullable=True)
+
+
+class Quotation(Base):
+    __tablename__ = "quotations"
+    id               = Column(Integer, primary_key=True)
+    quote_number     = Column(String, unique=True, nullable=False)
+    customer_id      = Column(Integer, ForeignKey("customers.id"), nullable=True)
+    customer_name    = Column(String, nullable=False)
+    customer_address = Column(Text, nullable=True)
+    customer_gstin   = Column(String, nullable=True)
+    customer_email   = Column(String, nullable=True)
+    customer_phone   = Column(String, nullable=True)
+    line_items       = Column(Text, nullable=True)   # JSON: [{desc, qty, unit, unit_price, amount}]
+    subtotal         = Column(Float, nullable=True)
+    discount_pct     = Column(Float, default=0)
+    discount_amt     = Column(Float, default=0)
+    tax_pct          = Column(Float, default=18)
+    tax_amt          = Column(Float, nullable=True)
+    total            = Column(Float, nullable=True)
+    currency         = Column(String, default='INR')
+    validity_days    = Column(Integer, default=30)
+    valid_until      = Column(Date, nullable=True)
+    notes            = Column(Text, nullable=True)
+    terms            = Column(Text, nullable=True)
+    status           = Column(String, default='draft')
+    order_id         = Column(Integer, ForeignKey("customer_orders.id"), nullable=True)
+    created_at       = Column(DateTime, nullable=True)
+    sent_at          = Column(DateTime, nullable=True)
+    accepted_at      = Column(DateTime, nullable=True)
+    customer         = relationship("Customer")

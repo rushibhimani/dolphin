@@ -31,9 +31,9 @@ ROLE_WEIGHTS = {r: i for i, r in enumerate(ROLES)}  # admin=0 (highest)
 # Permissions per role
 PERMISSIONS = {
     "admin": {
-        "pages": ["dashboard","today","upcoming","jobs","orders","quote","schedule",
+        "pages": ["dashboard","today","tasks","upcoming","jobs","orders","quote","quotations","schedule",
                   "capacity","floorplan","routings","machines","workers","customers",
-                  "reports","settings","routing-stats","users","tasks"],
+                  "reports","settings","routing-stats","users"],
         "can_see_all_workers": True,
         "can_delete": True,
         "can_manage_users": True,
@@ -43,9 +43,9 @@ PERMISSIONS = {
         "can_control_ops": True,   # start/pause/done on shop ops
     },
     "manager": {
-        "pages": ["dashboard","today","upcoming","jobs","orders","quote","schedule",
+        "pages": ["dashboard","today","tasks","upcoming","jobs","orders","quote","quotations","schedule",
                   "capacity","floorplan","routings","machines","workers","customers",
-                  "reports","routing-stats","settings","tasks"],
+                  "reports","routing-stats","settings"],
         "can_see_all_workers": True,
         "can_delete": True,
         "can_manage_users": False,

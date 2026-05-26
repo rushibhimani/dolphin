@@ -12,7 +12,10 @@ const ROUTES = [
   { pattern: /^\/floorplan$/,                 page: 'floorplan',    title: 'Floor Plan' },
   { pattern: /^\/reports$/,                   page: 'reports',      title: 'Reports' },
   { pattern: /^\/settings$/,                  page: 'settings',     title: 'Settings' },
-  { pattern: /^\/quote$/,                     page: 'quote',        title: 'Quote' },
+  { pattern: /^\/quote$/,                     page: 'quote',        title: 'Estimator' },
+  { pattern: /^\/quotations$/,                 page: 'quotations',      title: 'Quotations' },
+  { pattern: /^\/quotations\/new$/,            page: 'quotation-new',   title: 'New Quotation' },
+  { pattern: /^\/quotations\/(\d+)$/,          page: 'quotation-edit',  title: 'Edit Quotation', param: 'quotationId' },
   { pattern: /^\/users$/,                     page: 'users',        title: 'Users' },
 
   // Jobs
@@ -102,6 +105,9 @@ async function handleRoute() {
       case 'order-new':     await renderOrderEditor(null); break;
       case 'order-edit':    await renderOrderEditor(params.orderId); break;
       case 'quote':         await renderQuote(); break;
+      case 'quotations':      await renderQuotations(); break;
+      case 'quotation-new':   await renderQuotationEdit(null); break;
+      case 'quotation-edit':  await renderQuotationEdit(params?.quotationId); break;
       case 'schedule':      await renderSchedule(); break;
       case 'capacity':      await renderCapacity(); break;
       case 'floorplan':     await renderFloorPlan(); break;
@@ -141,6 +147,8 @@ function renderTopbarActions(page, params = {}) {
     'jobs':         `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Schedule All</span></button><button class="btn btn-primary" onclick="navigate('/jobs/new')">+ <span class="btn-label-long">New Job</span><span class="btn-label-short" style="display:none">Job</span></button>`,
     'job-new':      `<button class="btn btn-ghost" onclick="goBack('/jobs')">← <span class="btn-label-long">Back</span></button>`,
     'orders':       `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Schedule All</span></button><button class="btn btn-primary" onclick="navigate('/orders/new')">+ <span class="btn-label-long">New Order</span><span class="btn-label-short" style="display:none">Order</span></button>`,
+    'quotations':    `<button class="btn btn-primary" onclick="navigate('/quotations/new')">+ New Quote</button>`,
+    'quotation-new': `<button class="btn btn-ghost" onclick="navigate('/quotations')">← Back</button>`,
     'quote':        `<button class="btn btn-secondary" onclick="navigate('/orders/new')">+ <span class="btn-label-long">New Order</span><span class="btn-label-short" style="display:none">Order</span></button>`,
     'routings':     `<button class="btn btn-primary" onclick="navigate('/routings/new')">+ <span class="btn-label-long">New Routing</span><span class="btn-label-short" style="display:none">Routing</span></button>`,
     'machines':     `<button class="btn btn-primary" onclick="openMachineModal(null)">+ <span class="btn-label-long">Add Machine</span><span class="btn-label-short" style="display:none">Machine</span></button>`,
@@ -172,7 +180,7 @@ function showPage(p) {
     'capacity':'/capacity','floorplan':'/floorplan','routings':'/routings',
     'machines':'/machines','workers':'/workers','customers':'/customers',
     'reports':'/reports','settings':'/settings','routing-stats':'/routing-stats',
-    'quote':'/quote','users':'/users','tasks':'/tasks',
+    'quote':'/quote','quotations':'/quotations','users':'/users','tasks':'/tasks',
   };
   navigate(map[p] || '/' + p);
 }

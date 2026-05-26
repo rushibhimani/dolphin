@@ -4,3 +4,4 @@ sqlalchemy==2.0.36
 pydantic==2.10.3
 alembic==1.14.0
 python-multipart==0.0.20
+reportlab==4.2.5
