@@ -1885,6 +1885,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas as rl_canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 def _next_quote_number(db):
     yr = now_ist().year
@@ -1921,6 +1923,12 @@ def _quote_dict(q):
         "currency": q.currency or "INR", "validity_days": q.validity_days or 30,
         "valid_until": q.valid_until.isoformat() if q.valid_until else None,
         "notes": q.notes or "", "terms": q.terms or "",
+        "message":       q.message       or "",
+        "delivery_time": q.delivery_time or "",
+        "payment_terms": q.payment_terms or "",
+        "pan_no":        q.pan_no        or "",
+        "packing_cost":  q.packing_cost  or "",
+        "bank_details":  q.bank_details  or "",
         "order_id": q.order_id,
         "created_at": q.created_at.isoformat() if q.created_at else None,
         "sent_at": q.sent_at.isoformat() if q.sent_at else None,
@@ -1962,6 +1970,12 @@ def create_quotation(data: dict, user: dict = Depends(require_any)):
         currency=data.get("currency","INR"),
         validity_days=validity, valid_until=valid_until,
         notes=data.get("notes",""), terms=data.get("terms",""),
+        message=data.get("message",""),
+        delivery_time=data.get("delivery_time",""),
+        payment_terms=data.get("payment_terms",""),
+        pan_no=data.get("pan_no",""),
+        packing_cost=data.get("packing_cost",""),
+        bank_details=data.get("bank_details",""),
         created_at=now_ist(),
     )
     db.add(q); db.commit(); db.refresh(q)
@@ -1980,7 +1994,8 @@ def update_quotation(qid: int, data: dict, user: dict = Depends(require_any)):
     q = db.query(Quotation).filter(Quotation.id == qid).first()
     if not q: db.close(); raise HTTPException(404, "Not found")
     for f in ("customer_id","customer_name","customer_address","customer_gstin",
-              "customer_email","customer_phone","notes","terms","currency","status"):
+              "customer_email","customer_phone","notes","terms","currency","status",
+              "message","delivery_time","payment_terms","pan_no","packing_cost","bank_details"):
         if f in data: setattr(q, f, data[f])
     if "line_items" in data:
         q.line_items = _json.dumps(data["line_items"])
@@ -2044,181 +2059,306 @@ def generate_quote_pdf(qid: int, user: dict = Depends(require_any)):
 
 
 def _draw_quote_pdf(buf, q, items, co_name, co_addr, co_gstin, co_email, co_phone, co_website):
-    """Apple-style clean quotation PDF using ReportLab."""
-    W, H = A4  # 595.28 × 841.89 pt
+    """Premium A4 quotation PDF — correct row geometry, signature, T&C page breaks."""
+    import os as _os
+    W, H = A4
     c = rl_canvas.Canvas(buf, pagesize=A4)
 
-    # Color palette
-    BLACK  = colors.HexColor("#1d1d1f")
-    GRAY1  = colors.HexColor("#6e6e73")
-    GRAY2  = colors.HexColor("#aeaeb2")
-    GRAY3  = colors.HexColor("#f5f5f7")
-    ACCENT = colors.HexColor("#0071e3")
+    BLACK = colors.HexColor("#1d1d1f")
+    GRAY1 = colors.HexColor("#6e6e73")
+    GRAY2 = colors.HexColor("#aeaeb2")
+    GRAY3 = colors.HexColor("#f5f5f7")
 
     ML = 52; MR = W - 52; MT = H - 48; MB = 48
+    VALUE_X = ML + 100
+
+    # Register Vera font — bundled with ReportLab, works cross-platform
+    import reportlab as _rl_pkg
+    _rl_fonts_dir = os.path.join(os.path.dirname(_rl_pkg.__file__), 'fonts')
+    _vera_reg  = os.path.join(_rl_fonts_dir, 'Vera.ttf')
+    _vera_bold = os.path.join(_rl_fonts_dir, 'VeraBd.ttf')
+    try:
+        pdfmetrics.registerFont(TTFont('Vera',   _vera_reg))
+        pdfmetrics.registerFont(TTFont('VeraBd', _vera_bold))
+    except Exception:
+        pass
+    _MF  = 'Vera'
+    _MFB = 'VeraBd'
+    _R   = 'Rs. '
 
     def hline(y, x0=ML, x1=MR, w=0.5, col=GRAY2):
         c.setStrokeColor(col); c.setLineWidth(w); c.line(x0, y, x1, y)
 
     def txt(x, y, s, sz=9, fn="Helvetica", col=BLACK, align="left"):
+        c.setFont(fn, sz); c.setFillColor(col); s = str(s)
+        if   align == "right":  c.drawRightString(x, y, s)
+        elif align == "center": c.drawCentredString(x, y, s)
+        else:                   c.drawString(x, y, s)
+
+    def mtxt(x, y, v, sz=9, bold=False, col=BLACK, align="right"):
+        fn = _MFB if bold else _MF
+        s  = f"{_R}{float(v):,.2f}"
         c.setFont(fn, sz); c.setFillColor(col)
-        s = str(s)
-        if align == "right":   c.drawRightString(x, y, s)
-        elif align == "center":c.drawCentredString(x, y, s)
-        else:                  c.drawString(x, y, s)
+        if   align == "right":  c.drawRightString(x, y, s)
+        elif align == "center": c.drawCentredString(x, y, s)
+        else:                   c.drawString(x, y, s)
 
-    def money(v):
-        try: return f"\u20b9{float(v):,.2f}"
-        except: return str(v)
+    def draw_footer(last_page=False):
+        """Draw footer. Signature block only on the last page."""
+        # Bottom rule
+        hline(MB + 22)
+        txt(ML, MB + 8, q.quote_number, sz=7.5, col=GRAY2)
+        txt(MR, MB + 8, co_name,        sz=7.5, col=GRAY2, align="right")
+        if not last_page:
+            return
+        # Signature — last page only
+        sig_x  = MR - 200; sig_right = MR; sig_cx = (sig_x + sig_right) / 2
+        SIG_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "signature.png")
+        if _os.path.exists(SIG_PATH):
+            try:
+                from reportlab.lib.utils import ImageReader as _IR
+                _ir = _IR(SIG_PATH)
+                _iw, _ih = _ir.getSize()
+                sig_h = 38
+                sig_w = sig_h * (_iw / _ih)
+                c.drawImage(SIG_PATH,
+                            sig_cx - sig_w / 2, MB + 62,
+                            width=sig_w, height=sig_h,
+                            preserveAspectRatio=True, mask='auto')
+            except Exception:
+                pass
+        hline(MB + 60, x0=sig_x, x1=sig_right, w=0.4)
+        txt(sig_cx, MB + 48, "Authorised Signatory", sz=8, col=GRAY1, align="center")
+        txt(sig_cx, MB + 36, co_name,               sz=8, fn="Helvetica-Bold",
+            col=BLACK, align="center")
 
-    # ── HEADER ──────────────────────────────────────────────────────────────
+    # ── HEADER ───────────────────────────────────────────────────────────────
     y = MT
-    txt(ML, y, co_name, sz=22, fn="Helvetica-Bold")
-    y -= 18
-    co_lines = [l for l in (co_addr or "").split("\n") if l.strip()]
+    LOGO_H = round(46 * 1.05)
+    LOGO_W = LOGO_H * (945 / 1188)
+    LOGO_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "logo.png")
+    if _os.path.exists(LOGO_PATH):
+        try:
+            c.drawImage(LOGO_PATH, ML, y - LOGO_H + 12, width=LOGO_W, height=LOGO_H,
+                        preserveAspectRatio=True, mask='auto')
+        except Exception:
+            txt(ML, y, co_name, sz=20, fn="Helvetica-Bold")
+    else:
+        txt(ML, y, co_name, sz=20, fn="Helvetica-Bold")
+
+    txt(MR, MT - 2, "QUOTATION", sz=20, fn="Helvetica-Bold", align="right")
+    my = MT - 24
+    for lbl, val in [
+        ("Quote No.",   q.quote_number),
+        ("Date",        q.created_at.strftime("%d %b %Y") if q.created_at else ""),
+        ("Valid Until", q.valid_until.strftime("%d %b %Y") if q.valid_until else f"{q.validity_days} days"),
+    ]:
+        txt(MR - 140, my, lbl + ":", sz=8, col=GRAY1)
+        txt(MR, my, val, sz=8, fn="Helvetica-Bold", align="right")
+        my -= 14
+
+    y = min(y - LOGO_H - 8, my - 8)
+    hline(y); y -= 22
+
+    # ── BILL TO (left) + FROM (right) ────────────────────────────────────────
+    COL_MID = ML + (MR - ML) * 0.52
+    bill_y = y; from_y = y
+
+    txt(ML, bill_y, "To", sz=7, fn="Helvetica-Bold", col=GRAY2);              bill_y -= 13
+    txt(ML, bill_y, q.customer_name, sz=10, fn="Helvetica-Bold");             bill_y -= 13
+    for line in (q.customer_address or "").split("\n"):
+        if line.strip(): txt(ML, bill_y, line.strip(), sz=8.5, col=GRAY1);    bill_y -= 11
+    if q.customer_gstin:
+        txt(ML, bill_y, f"GSTIN: {q.customer_gstin}", sz=8.5, col=GRAY1);    bill_y -= 11
+    contact = "  ·  ".join(filter(None, [q.customer_email, q.customer_phone]))
+    if contact: txt(ML, bill_y, contact, sz=8.5, col=GRAY1);                  bill_y -= 11
+
+    txt(COL_MID, from_y, "FROM", sz=7, fn="Helvetica-Bold", col=GRAY2);      from_y -= 13
+    txt(COL_MID, from_y, co_name, sz=10, fn="Helvetica-Bold");                from_y -= 13
+    co_lines = [l.strip() for l in (co_addr or "").split("\n") if l.strip()]
     if co_gstin:   co_lines.append(f"GSTIN: {co_gstin}")
     if co_email:   co_lines.append(co_email)
     if co_phone:   co_lines.append(co_phone)
     if co_website: co_lines.append(co_website)
     for d in co_lines:
-        txt(ML, y, d, sz=8.5, col=GRAY1); y -= 12
+        txt(COL_MID, from_y, d, sz=8.5, col=GRAY1); from_y -= 11
 
-    # QUOTATION title — top right
-    txt(MR, MT, "QUOTATION", sz=26, fn="Helvetica-Bold", align="right")
+    y = min(bill_y, from_y) - 18
+    hline(y); y -= 16
 
-    # Meta block — right
-    my = MT - 22
-    meta = [("Quote No.", q.quote_number),
-            ("Date", q.created_at.strftime("%d %b %Y") if q.created_at else ""),
-            ("Valid Until", q.valid_until.strftime("%d %b %Y") if q.valid_until else f"{q.validity_days} days"),
-            ("Status", (q.status or "draft").upper())]
-    for lbl, val in meta:
-        txt(MR - 140, my, lbl + ":", sz=8, col=GRAY1)
-        txt(MR, my, val, sz=8, fn="Helvetica-Bold", align="right")
-        my -= 14
+    # ── MESSAGE (below customer details, above table) ─────────────────────────
+    msg = getattr(q, 'message', '') or ''
+    if msg.strip():
+        msg_lines = [l for l in msg.strip().split("\n") if l.strip()]
+        txt(ML, y, "Message", sz=8, fn="Helvetica-Bold", col=GRAY1)
+        for line in msg_lines:
+            txt(ML + 70, y, line.strip(), sz=9, col=BLACK)
+            y -= 13
+        y -= 8
+        hline(y); y -= 16
 
-    y = min(y - 10, my - 10)
-    hline(y); y -= 20
+    # ── TABLE ────────────────────────────────────────────────────────────────
+    # Row geometry (ReportLab Y goes UP from bottom of page):
+    #   y        = top of current row
+    #   y - ROW_H = bottom of current row  (separator drawn here)
+    #   text baseline = vertically centred: y - (ROW_H/2) - 3
+    ROW_H      = 28   # normal row height (pt)
+    ROW_H_NOTE = 42   # tall row height when a note sub-line is present
+    # Vertical centering: for a 9pt font, cap-height ~6pt → baseline = mid - 3
+    ROW_TEXT_OFFSET  = ROW_H // 2 - 3       # main text: 11pt from top → centred
+    NOTE_TEXT_OFFSET = ROW_H_NOTE // 2 - 8  # main text in tall row: upper half
+    NOTE_OFFSET      = ROW_H_NOTE // 2 + 4  # sub-note text: lower half
 
-    # ── BILL TO ─────────────────────────────────────────────────────────────
-    txt(ML, y, "BILL TO", sz=7.5, fn="Helvetica-Bold", col=GRAY1); y -= 14
-    txt(ML, y, q.customer_name, sz=12, fn="Helvetica-Bold"); y -= 14
-    for line in (q.customer_address or "").split("\n"):
-        if line.strip(): txt(ML, y, line, sz=9, col=GRAY1); y -= 12
-    if q.customer_gstin: txt(ML, y, f"GSTIN: {q.customer_gstin}", sz=9, col=GRAY1); y -= 12
-    contact = "  ·  ".join(filter(None, [q.customer_email, q.customer_phone]))
-    if contact: txt(ML, y, contact, sz=9, col=GRAY1); y -= 12
-    y -= 14; hline(y); y -= 18
-
-    # ── LINE ITEMS TABLE ─────────────────────────────────────────────────────
     usable = MR - ML
-    cw = [usable * p for p in [0.06, 0.46, 0.10, 0.09, 0.15, 0.14]]
+    col_pcts = [0.06, 0.46, 0.10, 0.09, 0.15, 0.14]
+    cw = [usable * p for p in col_pcts]
+    # Fixed column left-edges — computed once, used everywhere
+    col_x = []
+    _xp = ML
+    for _w in cw:
+        col_x.append(_xp)
+        _xp += _w
 
-    # Header background
-    c.setFillColor(GRAY3); c.setStrokeColor(GRAY3)
-    c.rect(ML, y - 5, usable, 22, fill=1, stroke=0)
+    hdrs       = ["#", "Description", "Qty", "Unit", "Unit Price", "Amount"]
+    hdr_aligns = ["center", "left",  "right","right","right",      "right"]
 
-    hdrs = ["#", "Description", "Qty", "Unit", "Unit Price", "Amount"]
-    xp = ML
-    for i, (h, w) in enumerate(zip(hdrs, cw)):
-        align = "right" if i >= 4 else ("center" if i == 0 else "left")
-        x2 = xp + w - 6 if align == "right" else (xp + w/2 if align == "center" else xp + 5)
-        txt(x2, y + 5, h, sz=7.5, fn="Helvetica-Bold", col=GRAY1, align=align)
-        xp += w
-    y -= 20; hline(y, w=0.3); y -= 4
+    HDR_H = 26  # header row height
+
+    def draw_table_header(top_y):
+        """Draw the grey header row; top_y is the top edge of the header."""
+        c.setFillColor(GRAY3); c.setStrokeColor(GRAY3)
+        c.rect(ML, top_y - HDR_H, usable, HDR_H, fill=1, stroke=0)
+        for i, (h, w, ha) in enumerate(zip(hdrs, cw, hdr_aligns)):
+            cx = col_x[i]
+            if   ha == "center": hx = cx + w / 2
+            elif ha == "left":   hx = cx + 5
+            else:                hx = cx + w - 6
+            # vertically centre header text too
+            txt(hx, top_y - HDR_H // 2 - 3, h, sz=7.5, fn="Helvetica-Bold", col=GRAY1, align=ha)
+        hline(top_y,           w=0.5, col=GRAY2)
+        hline(top_y - HDR_H,  w=0.5, col=GRAY2)
+        return top_y - HDR_H   # y now = top of first data row
+
+    y = draw_table_header(y)
 
     for idx, item in enumerate(items):
-        desc    = str(item.get("desc") or item.get("description") or "")
-        notes   = str(item.get("notes", ""))
-        qty     = item.get("qty", item.get("quantity", 1))
-        unit    = str(item.get("unit", "pcs"))
-        uprice  = float(item.get("unit_price", 0))
-        amount  = float(item.get("amount", 0))
-        rh = 30 if notes else 22
+        desc   = str(item.get("desc") or item.get("description") or "")
+        notes  = str(item.get("notes", ""))
+        qty    = item.get("qty", item.get("quantity", 1))
+        unit   = str(item.get("unit", "pcs"))
+        uprice = float(item.get("unit_price", 0))
+        amount = float(item.get("amount", 0))
+        rh     = ROW_H_NOTE if notes else ROW_H
 
+        # ── page break BEFORE drawing ─────────────────────────────────────
+        if y - rh < MB + 110:
+            draw_footer()
+            c.showPage()
+            y = MT - 20
+            y = draw_table_header(y)
+
+        # ── separator line FIRST (so background rect never covers it) ─────
+        hline(y - rh, x0=ML, x1=MR, w=0.3, col=GRAY2)
+
+        # ── alternating row background (no stroke so it never bleeds) ─────
         if idx % 2 == 1:
-            c.setFillColor(GRAY3); c.setStrokeColor(GRAY3)
-            c.rect(ML, y - rh + 18, usable, rh, fill=1, stroke=0)
+            c.setFillColor(GRAY3)
+            c.rect(ML, y - rh, usable, rh, fill=1, stroke=0)
 
-        xp = ML
-        row_vals = [str(idx+1), None, f"{qty} {unit}", "", money(uprice), money(amount)]
-        for i, (v, w) in enumerate(zip(row_vals, cw)):
-            if v is None:
-                txt(xp + 5, y + 4, desc[:65], sz=9, fn="Helvetica-Bold")
-                if notes: txt(xp + 5, y - 7, notes[:85], sz=7.5, col=GRAY1)
-            else:
-                align = "right" if i >= 4 else ("center" if i == 0 else "left")
-                x2 = xp + w - 6 if align == "right" else (xp + w/2 if align == "center" else xp + 5)
-                txt(x2, y + 4, v, sz=9, col=BLACK, align=align)
-            xp += w
-        y -= rh; hline(y, w=0.25, col=GRAY2); y -= 2
+        # ── cell content ──────────────────────────────────────────────────
+        text_y = y - (ROW_TEXT_OFFSET if not notes else NOTE_TEXT_OFFSET)
+        note_y = y - NOTE_OFFSET
 
-        if y < MB + 160:
-            c.showPage(); y = MT - 30
+        for i, w in enumerate(cw):
+            cx = col_x[i]
+            if i == 0:
+                txt(cx + w / 2, text_y, str(idx + 1), sz=9, align="center")
+            elif i == 1:
+                txt(cx + 5, text_y, desc[:65], sz=9, fn="Helvetica-Bold")
+                if notes:
+                    txt(cx + 5, note_y, notes[:85], sz=7.5, col=GRAY1)
+            elif i == 2:
+                txt(cx + w - 6, text_y, str(qty),  sz=9, align="right")
+            elif i == 3:
+                txt(cx + w - 6, text_y, unit,       sz=9, col=GRAY1, align="right")
+            elif i == 4:
+                mtxt(cx + w - 6, text_y, uprice,    sz=9)
+            elif i == 5:
+                mtxt(cx + w - 6, text_y, amount,    sz=9)
 
-    hline(y + 14, w=1, col=GRAY1); y -= 20
+        y -= rh
+
+    # thick closing rule
+    hline(y, x0=ML, x1=MR, w=0.8, col=GRAY2)
+    y -= 20
 
     # ── TOTALS ───────────────────────────────────────────────────────────────
-    tx  = MR - 210; tx2 = MR
+    tx = MR - 210
 
-    def trow(lbl, val, bold=False, large=False, col=BLACK):
+    def trow(lbl, val_num, bold=False, large=False):
         sz = 11 if large else 9
         fn = "Helvetica-Bold" if bold else "Helvetica"
-        txt(tx,  y, lbl, sz=sz, fn=fn, col=GRAY1 if not bold else BLACK)
-        txt(tx2, y, val, sz=sz, fn=fn, col=col, align="right")
+        txt(tx, y, lbl, sz=sz, fn=fn, col=BLACK if bold else GRAY1)
+        mtxt(MR, y, val_num, sz=sz, bold=bold, col=BLACK)
 
-    trow("Subtotal", money(q.subtotal)); y -= 15
+    trow("Subtotal", q.subtotal);                y -= 16
     if (q.discount_pct or 0) > 0:
-        trow(f"Discount ({int(q.discount_pct)}%)", f"- {money(q.discount_amt)}"); y -= 15
-    trow(f"GST ({int(q.tax_pct)}%)", money(q.tax_amt)); y -= 8
-    hline(y, x0=tx); y -= 16
-    trow("Total", money(q.total), bold=True, large=True, col=ACCENT); y -= 28
+        trow(f"Discount ({int(q.discount_pct)}%)", q.discount_amt); y -= 16
+    trow(f"GST ({int(q.tax_pct)}%)", q.tax_amt); y -= 10
+    hline(y, x0=tx, w=0.5, col=GRAY2);           y -= 16
+    trow("Total", q.total, bold=True, large=True); y -= 30
 
-    # Amount in words
-    def _words(n):
-        ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
-                "Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen",
-                "Seventeen","Eighteen","Nineteen"]
-        tens = ["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"]
-        def b1000(n):
-            if n < 20: return ones[n]
-            if n < 100: return tens[n//10]+(" "+ones[n%10] if n%10 else "")
-            return ones[n//100]+" Hundred"+(" and "+b1000(n%100) if n%100 else "")
-        n = int(n); parts = []
-        if n>=10000000: parts.append(b1000(n//10000000)+" Crore"); n%=10000000
-        if n>=100000:   parts.append(b1000(n//100000)+" Lakh");   n%=100000
-        if n>=1000:     parts.append(b1000(n//1000)+" Thousand"); n%=1000
-        if n>0:         parts.append(b1000(n))
-        return " ".join(parts) if parts else "Zero"
+    # ── TERMS & CONDITIONS ────────────────────────────────────────────────────
+    has_tc_extras = any(getattr(q, f, '') for f in
+        ['delivery_time', 'payment_terms', 'pan_no', 'packing_cost', 'bank_details', 'notes'])
 
-    words = _words(q.total or 0) + " Rupees Only"
-    txt(ML, y, "Amount in words:", sz=8, col=GRAY1)
-    txt(ML, y-13, words, sz=9, fn="Helvetica-Bold"); y -= 32
+    if q.terms or has_tc_extras:
+        # Estimate height needed for T&C block so we don't split it awkwardly
+        # Each field = ~16 pt; header = 38 pt overhead; footer needs 100 pt
+        tc_field_count = sum(1 for f in ['delivery_time','payment_terms','pan_no',
+                                          'packing_cost','bank_details','notes']
+                             if getattr(q, f, ''))
+        if q.terms:
+            tc_field_count += len([l for l in q.terms.split("\n") if l.strip()])
+        tc_height_needed = 38 + tc_field_count * 16 + 100  # 100 = footer clearance
 
-    # ── NOTES & TERMS ────────────────────────────────────────────────────────
-    if q.notes:
-        hline(y); y -= 16
-        txt(ML, y, "NOTES", sz=7.5, fn="Helvetica-Bold", col=GRAY1); y -= 13
-        for line in q.notes.split("\n"):
-            txt(ML, y, line, sz=9); y -= 12
+        # If the whole block won't fit, push to next page
+        if y - tc_height_needed < MB:
+            draw_footer()
+            c.showPage()
+            y = MT - 40
 
-    if q.terms:
-        y -= 4; hline(y); y -= 16
-        txt(ML, y, "TERMS & CONDITIONS", sz=7.5, fn="Helvetica-Bold", col=GRAY1); y -= 13
-        for line in q.terms.split("\n"):
-            txt(ML, y, line, sz=8.5, col=GRAY1); y -= 11
+        y -= 8
+        hline(y, w=0.8, col=colors.HexColor("#6e6e73")); y -= 20
+        txt(ML, y, "TERMS & CONDITIONS", sz=8, fn="Helvetica-Bold", col=BLACK)
+        y -= 18
 
-    # ── FOOTER ───────────────────────────────────────────────────────────────
-    hline(MB + 22)
-    txt(ML, MB+8, f"Generated by Dolphin ERP  ·  {co_name}", sz=7.5, col=GRAY2)
-    txt(MR, MB+8, q.quote_number, sz=7.5, col=GRAY2, align="right")
+        def tc_kv(key, val):
+            nonlocal y
+            if not val or not str(val).strip(): return
+            if y < MB + 100:
+                draw_footer(); c.showPage(); y = MT - 40
+            field_lines = [l for l in str(val).strip().split("\n") if l.strip()]
+            txt(ML, y, f"{key}:", sz=8.5, fn="Helvetica-Bold", col=GRAY1)
+            for i, line in enumerate(field_lines):
+                txt(VALUE_X, y, line.strip(), sz=8.5, col=GRAY1)
+                if i < len(field_lines) - 1: y -= 13
+            y -= 16
 
-    # Signature block
-    sy = MB + 70
-    hline(sy+38, x0=MR-200, x1=MR, w=0.4)
-    txt(MR-100, sy+28, "Authorised Signatory", sz=8, col=GRAY1, align="center")
-    txt(MR-100, sy+16, co_name, sz=8, fn="Helvetica-Bold", align="center")
+        if getattr(q, 'delivery_time', ''): tc_kv("Delivery Time",  q.delivery_time)
+        if getattr(q, 'payment_terms',  ''): tc_kv("Payment Terms",  q.payment_terms)
+        if getattr(q, 'pan_no',         ''): tc_kv("PAN No",         q.pan_no)
+        if getattr(q, 'packing_cost',   ''): tc_kv("Packing Cost",   q.packing_cost)
+        if getattr(q, 'bank_details',   ''): tc_kv("Bank Details",   q.bank_details)
+        if getattr(q, 'notes',          ''): tc_kv("Notes",           q.notes)
 
+        if q.terms:
+            for line in q.terms.split("\n"):
+                if line.strip():
+                    txt(ML, y, line.strip(), sz=8.5, col=GRAY1); y -= 13
+
+    # ── FOOTER + SIGNATURE on final page ─────────────────────────────────────
+    draw_footer(last_page=True)
     c.save()
 
 
@@ -2236,6 +2376,8 @@ def customer_dict(c, db):
     revenue = sum(j.total_price or 0 for j in db.query(Job).filter(Job.customer_id == c.id).all())
     return {"id": c.id, "name": c.name, "phone": c.phone,
             "contact_person": c.contact_person, "notes": c.notes,
+            "address": c.address or "", "gstin": c.gstin or "",
+            "email": c.email or "",
             "is_active": c.is_active, "job_count": job_count,
             "on_time_count": on_time, "late_count": late,
             "total_revenue": round(revenue, 2)}
@@ -2269,6 +2411,9 @@ def create_customer(data: dict):
         raise HTTPException(400, f"Customer '{name}' already exists")
     c = Customer(name=name, phone=data.get("phone","").strip(),
                  contact_person=data.get("contact_person","").strip(),
+                 address=data.get("address","").strip(),
+                 gstin=data.get("gstin","").strip(),
+                 email=data.get("email","").strip(),
                  notes=data.get("notes","").strip(), is_active=True)
     db.add(c); db.commit(); db.refresh(c)
     result = customer_dict(c, db); db.close(); return result
@@ -2286,6 +2431,9 @@ def update_customer(customer_id: int, data: dict):
         c.name = new_name
     c.phone = data.get("phone", c.phone)
     c.contact_person = data.get("contact_person", c.contact_person)
+    c.address = data.get("address", c.address)
+    c.gstin = data.get("gstin", c.gstin)
+    c.email = data.get("email", c.email)
     c.notes = data.get("notes", c.notes)
     if "is_active" in data: c.is_active = data["is_active"]
     db.commit(); result = customer_dict(c, db); db.close(); return result

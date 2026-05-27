@@ -74,10 +74,29 @@ function openCustomerModal(editId){
         <input id="c_phone" value="${c?.phone||''}" placeholder="+91 98765 43210">
       </div>
     </div>
-    <div class="form-row cols-1">
+    <div class="form-row cols-2">
       <div class="form-group">
         <div class="fld-label">Contact Person</div>
         <input id="c_contact" value="${c?.contact_person||''}" placeholder="Name of person to call">
+      </div>
+      <div class="form-group">
+        <div class="fld-label">Email</div>
+        <input id="c_email" value="${c?.email||''}" placeholder="billing@company.com">
+      </div>
+    </div>
+    <div class="form-row cols-2">
+      <div class="form-group">
+        <div class="fld-label">GSTIN</div>
+        <input id="c_gstin" value="${c?.gstin||''}" placeholder="22AAAAA0000A1Z5">
+      </div>
+      <div class="form-group" style="flex:2">
+        <!-- spacer -->
+      </div>
+    </div>
+    <div class="form-row cols-1">
+      <div class="form-group">
+        <div class="fld-label">Address</div>
+        <textarea id="c_address" rows="3" placeholder="Street, City, State, PIN">${c?.address||''}</textarea>
       </div>
     </div>
     <div class="form-row cols-1">
@@ -98,6 +117,9 @@ async function saveCustomer(editId){
     name: document.getElementById('c_name').value.trim(),
     phone: document.getElementById('c_phone').value.trim(),
     contact_person: document.getElementById('c_contact').value.trim(),
+    email: document.getElementById('c_email').value.trim(),
+    gstin: document.getElementById('c_gstin').value.trim(),
+    address: document.getElementById('c_address').value.trim(),
     notes: document.getElementById('c_notes').value.trim(),
   };
   setLoading('saveCustomerBtn',true);
@@ -136,6 +158,9 @@ async function viewCustomer(id){
     <div class="detail-grid" style="margin-bottom:16px">
       <div class="detail-item"><div class="dl">Phone</div><div class="dv">${c.phone||'—'}</div></div>
       <div class="detail-item"><div class="dl">Contact Person</div><div class="dv">${c.contact_person||'—'}</div></div>
+      ${c.email?`<div class="detail-item"><div class="dl">Email</div><div class="dv">${c.email}</div></div>`:''}
+      ${c.gstin?`<div class="detail-item"><div class="dl">GSTIN</div><div class="dv mono">${c.gstin}</div></div>`:''}
+      ${c.address?`<div class="detail-item" style="grid-column:1/-1"><div class="dl">Address</div><div class="dv" style="white-space:pre-line">${c.address}</div></div>`:''}
       <div class="detail-item"><div class="dl">Total Jobs</div><div class="dv mono">${c.job_count}</div></div>
       <div class="detail-item"><div class="dl">On-Time / Late</div><div class="dv mono"><span style="color:var(--green)">${c.on_time_count}</span> / <span style="color:var(--red)">${c.late_count}</span></div></div>
       <div class="detail-item" style="grid-column:1/-1"><div class="dl">Total Revenue</div><div class="dv mono" style="font-size:18px;font-weight:600;color:var(--green)">${fmtINR(c.total_revenue)}</div></div>

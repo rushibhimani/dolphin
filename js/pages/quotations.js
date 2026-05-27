@@ -6,6 +6,7 @@
 // ── List Page ─────────────────────────────────────────────────────────────────
 async function renderQuotations(){
   document.getElementById('topbarActions').innerHTML = `
+    <button class="btn btn-secondary" onclick="openCompanySettingsModal()">⚙ Settings</button>
     <button class="btn btn-primary" onclick="navigate('/quotations/new')">+ New Quote</button>`;
   document.getElementById('content').innerHTML = `
     <div style="max-width:1050px;margin:0 auto">
@@ -86,6 +87,9 @@ async function _loadQuoteList(){
               <button onclick="event.stopPropagation();navigate('/quotations/${q.id}')"
                 style="padding:5px 10px;font-size:12px;background:var(--accent);color:#000;border:none;
                        border-radius:6px;cursor:pointer;font-weight:600">Edit →</button>
+              <button onclick="event.stopPropagation();deleteQuotation(${q.id},'${q.quote_number}')"
+                style="padding:5px 10px;font-size:12px;background:var(--red-soft);color:var(--red);
+                       border:1px solid var(--red);border-radius:6px;cursor:pointer">🗑</button>
             </div>
           </div>
         </div>`;
@@ -124,6 +128,7 @@ async function renderQuotationEdit(qid){
   document.getElementById('topbarActions').innerHTML = `
     <button class="btn btn-ghost" onclick="navigate('/quotations')">← Back</button>
     ${!isNew ? `<button class="btn btn-secondary" onclick="downloadQuotePDF(${qid},'')">📥 PDF</button>` : ''}
+    ${!isNew ? `<button class="btn btn-danger" onclick="deleteQuotation(${qid},'${_qData?.quote_number||''}')">🗑 Delete</button>` : ''}
     <button class="btn btn-primary" id="qSaveBtn" onclick="saveQuotation()">
       ${isNew ? 'Create' : 'Save'}
     </button>`;
@@ -138,6 +143,15 @@ async function renderQuotationEdit(qid){
 
     if(!isNew){
       _qData = await api('GET', `/api/quotations/${qid}`);
+    } else {
+      // Pre-fill individual fields from company defaults
+      _qData.delivery_time  = settings.default_delivery_time  || '';
+      _qData.payment_terms  = settings.default_payment_terms  || '';
+      _qData.pan_no         = settings.default_pan_no         || '';
+      _qData.packing_cost   = settings.default_packing_cost   || '';
+      _qData.bank_details   = settings.default_bank_details   || '';
+      _qData.message        = settings.default_message        || '';
+      _qData.terms          = '';
     }
 
     const custOpts = customers.map(cu =>
@@ -149,8 +163,7 @@ async function renderQuotationEdit(qid){
         ${_qData.customer_id===cu.id?'selected':''}>${escHtml(cu.name)}</option>`
     ).join('');
 
-    const defaultTerms = settings.default_terms ||
-      "1. Prices are valid for the period stated above.\n2. 50% advance required before start of work.\n3. Balance due on delivery.\n4. Delivery subject to shop schedule.";
+    const defaultTerms = settings.default_terms || "";
 
     document.getElementById('content').innerHTML = `
       <div style="max-width:900px;margin:0 auto;display:grid;gap:16px">
@@ -255,7 +268,7 @@ async function renderQuotationEdit(qid){
 
         <!-- Validity & Notes -->
         <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px">
-          <div style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:14px">Details</div>
+          <div style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:14px">Details & Terms</div>
           <div class="form-row cols-2">
             <div class="form-group">
               <div class="fld-label">Validity (days)</div>
@@ -271,13 +284,18 @@ async function renderQuotationEdit(qid){
             </div>
           </div>
           <div class="form-group">
-            <div class="fld-label">Notes (shown on PDF)</div>
-            <textarea id="q_notes" style="min-height:70px;resize:vertical"
-              placeholder="Any special notes for the customer">${escHtml(_qData.notes||'')}</textarea>
+            <div class="fld-label">Message to Customer
+              <span style="font-size:11px;color:var(--muted);font-weight:400"> — appears above the table in the PDF</span>
+            </div>
+            <textarea id="q_message" style="min-height:70px;resize:vertical"
+              placeholder="e.g. As per your kind request, we are pleased to submit our best proposal...">${escHtml(_qData.message||'')}</textarea>
           </div>
           <div class="form-group">
-            <div class="fld-label">Terms & Conditions</div>
-            <textarea id="q_terms" style="min-height:90px;resize:vertical">${escHtml(_qData.terms||defaultTerms)}</textarea>
+            <div class="fld-label">Additional Notes
+              <span style="font-size:11px;color:var(--muted);font-weight:400"> — shown inside Terms &amp; Conditions block in PDF</span>
+            </div>
+            <textarea id="q_notes" style="min-height:70px;resize:vertical"
+              placeholder="Any per-quotation note, e.g. special discount, custom delivery...">${escHtml(_qData.notes||'')}</textarea>
           </div>
         </div>
 
@@ -424,8 +442,14 @@ async function saveQuotation(){
     tax_pct:          tax_pct,
     validity_days:    parseInt(document.getElementById('q_validity')?.value)||30,
     currency:         document.getElementById('q_currency')?.value||'INR',
+    message:          document.getElementById('q_message')?.value.trim()||'',
+    delivery_time:    _qData?.delivery_time  || '',
+    payment_terms:    _qData?.payment_terms  || '',
+    pan_no:           _qData?.pan_no         || '',
+    packing_cost:     _qData?.packing_cost   || '',
+    bank_details:     _qData?.bank_details   || '',
     notes:            document.getElementById('q_notes')?.value.trim()||'',
-    terms:            document.getElementById('q_terms')?.value.trim()||'',
+    terms:            _qData?.terms || '',
   };
 
   const statusEl = document.getElementById('q_status');
@@ -476,15 +500,18 @@ async function openCompanySettingsModal(){
   try{ s = await api('GET','/api/company-settings'); } catch{}
   showModal('Company Settings', `
     <div style="font-size:12px;color:var(--muted);margin-bottom:14px">
-      These details appear in the header of every PDF quotation.
+      Company details appear in every PDF. Quotation defaults pre-fill every new quote.
     </div>
+
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+         color:var(--muted);margin-bottom:10px">Company Information</div>
     <div class="form-group">
       <div class="fld-label">Company Name *</div>
       <input id="cs_name" value="${escHtml(s.company_name||'')}" placeholder="Yukeng Mould & Die">
     </div>
     <div class="form-group">
       <div class="fld-label">Address</div>
-      <textarea id="cs_addr" style="min-height:70px;resize:vertical"
+      <textarea id="cs_addr" style="min-height:60px;resize:vertical"
         placeholder="Street, City, State, PIN">${escHtml(s.company_address||'')}</textarea>
     </div>
     <div class="form-row cols-2">
@@ -507,10 +534,46 @@ async function openCompanySettingsModal(){
         <input id="cs_website" value="${escHtml(s.company_website||'')}" placeholder="www.yukeng.com">
       </div>
     </div>
+
+    <div style="height:1px;background:var(--border);margin:14px 0"></div>
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+         color:var(--muted);margin-bottom:10px">Quotation Defaults
+      <span style="font-size:10px;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">
+        — pre-filled on every new quotation
+      </span>
+    </div>
+    <div class="form-row cols-2">
+      <div class="form-group">
+        <div class="fld-label">Delivery Time</div>
+        <input id="cs_delivery_time" value="${escHtml(s.default_delivery_time||'')}"
+          placeholder="e.g. 30 days after receiving PO">
+      </div>
+      <div class="form-group">
+        <div class="fld-label">Payment Terms</div>
+        <input id="cs_payment_terms" value="${escHtml(s.default_payment_terms||'')}"
+          placeholder="e.g. 30% advance, balance before dispatch">
+      </div>
+    </div>
+    <div class="form-row cols-2">
+      <div class="form-group">
+        <div class="fld-label">PAN No</div>
+        <input id="cs_pan_no" value="${escHtml(s.default_pan_no||'')}" placeholder="e.g. AAACY4135H">
+      </div>
+      <div class="form-group">
+        <div class="fld-label">Packing Cost</div>
+        <input id="cs_packing_cost" value="${escHtml(s.default_packing_cost||'')}"
+          placeholder="e.g. Included">
+      </div>
+    </div>
     <div class="form-group">
-      <div class="fld-label">Default Terms (pre-filled on new quotes)</div>
-      <textarea id="cs_terms" style="min-height:90px;resize:vertical"
-        placeholder="1. Payment terms...">${escHtml(s.default_terms||'')}</textarea>
+      <div class="fld-label">Bank Details</div>
+      <textarea id="cs_bank_details" style="min-height:60px;resize:vertical"
+        placeholder="Bank Name, Branch, Account No, IFSC Code">${escHtml(s.default_bank_details||'')}</textarea>
+    </div>
+    <div class="form-group">
+      <div class="fld-label">Message to Customer</div>
+      <textarea id="cs_message" style="min-height:60px;resize:vertical"
+        placeholder="e.g. As per your kind request, we are pleased to submit our best proposal...">${escHtml(s.default_message||'')}</textarea>
     </div>`,
     `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
      <button class="btn btn-primary" id="csSaveBtn" onclick="saveCompanySettings()">Save Settings</button>`
@@ -519,13 +582,18 @@ async function openCompanySettingsModal(){
 
 async function saveCompanySettings(){
   const data = {
-    company_name:    document.getElementById('cs_name')?.value.trim()||'',
-    company_address: document.getElementById('cs_addr')?.value.trim()||'',
-    company_gstin:   document.getElementById('cs_gstin')?.value.trim()||'',
-    company_email:   document.getElementById('cs_email')?.value.trim()||'',
-    company_phone:   document.getElementById('cs_phone')?.value.trim()||'',
-    company_website: document.getElementById('cs_website')?.value.trim()||'',
-    default_terms:   document.getElementById('cs_terms')?.value.trim()||'',
+    company_name:           document.getElementById('cs_name')?.value.trim()||'',
+    company_address:        document.getElementById('cs_addr')?.value.trim()||'',
+    company_gstin:          document.getElementById('cs_gstin')?.value.trim()||'',
+    company_email:          document.getElementById('cs_email')?.value.trim()||'',
+    company_phone:          document.getElementById('cs_phone')?.value.trim()||'',
+    company_website:        document.getElementById('cs_website')?.value.trim()||'',
+    default_delivery_time:  document.getElementById('cs_delivery_time')?.value.trim()||'',
+    default_payment_terms:  document.getElementById('cs_payment_terms')?.value.trim()||'',
+    default_pan_no:         document.getElementById('cs_pan_no')?.value.trim()||'',
+    default_packing_cost:   document.getElementById('cs_packing_cost')?.value.trim()||'',
+    default_bank_details:   document.getElementById('cs_bank_details')?.value.trim()||'',
+    default_message:        document.getElementById('cs_message')?.value.trim()||'',
   };
   setLoading('csSaveBtn',true);
   try{
@@ -535,4 +603,15 @@ async function saveCompanySettings(){
     _loadQuoteList();
   } catch(e){ toast(e.message,'error'); }
   finally{ setLoading('csSaveBtn',false); }
+}
+
+async function deleteQuotation(qid, qnum){
+  const label = qnum || `#${qid}`;
+  const ok = await confirm2(`Delete quotation ${label}? This cannot be undone.`, 'Delete Quotation');
+  if(!ok) return;
+  try{
+    await api('DELETE', `/api/quotations/${qid}`);
+    toast(`Quotation ${label} deleted`);
+    navigate('/quotations');
+  } catch(e){ toast(e.message, 'error'); }
 }
