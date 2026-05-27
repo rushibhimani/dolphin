@@ -156,7 +156,14 @@ function renderOpRows(){
             style="accent-color:var(--accent);width:12px;height:12px"> ⚡
         </label>
         <input type="checkbox" id="oped_opt_${i}" ${op.is_optional?'checked':''} title="Optional step" style="width:13px;height:13px;accent-color:var(--amber);flex-shrink:0">
+        <label title="Outside operation (sent to vendor)" style="font-size:10px;color:var(--muted);white-space:nowrap;cursor:pointer;display:flex;align-items:center;gap:2px;flex-shrink:0">
+          <input type="checkbox" id="oped_outside_${i}" ${op.op_type==='outside'?'checked':''} onchange="toggleOpOutside(${i},this.checked)" style="accent-color:var(--red);width:12px;height:12px"> Out
+        </label>
         <button onclick="removeOp(${i})" title="Remove step" style="flex-shrink:0;background:none;border:none;color:var(--red);font-size:14px;cursor:pointer;padding:2px 4px;line-height:1">✕</button>
+      </div>
+      <div id="oped_outside_row_${i}" style="${op.op_type==='outside'?'':' display:none;'}background:var(--surface);border-top:1px solid var(--border);padding:6px 12px;display:${op.op_type==='outside'?'flex':'none'};align-items:center;gap:8px">
+        <span style="font-size:11px;color:var(--muted);flex-shrink:0">Vendor:</span>
+        <input id="oped_vendor_${i}" value="${op.outside_vendor||''}" placeholder="e.g. Rajesh Heat Treatment" style="flex:1;font-size:12px">
       </div>
 
       <!-- BOTTOM ROW: formula params — only shown when formula ON -->
@@ -392,6 +399,8 @@ function syncRoutingOps(){
       work_time_mins: wMins,
       work_time_hrs:  wMins/60,
       is_optional:    !!document.getElementById(`oped_opt_${i}`)?.checked,
+      op_type:        document.getElementById(`oped_outside_${i}`)?.checked ? 'outside' : 'inhouse',
+      outside_vendor: document.getElementById(`oped_vendor_${i}`)?.value?.trim()||null,
       formula_type:   useFormula?(ftype||null):null,
       mrr:            parseFloat(document.getElementById(`oped_mrr_${i}`)?.value)||null,
       depth_mm:       parseFloat(document.getElementById(`oped_depth_${i}`)?.value)||null,
@@ -410,7 +419,8 @@ function moveOp(i,dir){
   [routingOps[i],routingOps[j]]=[routingOps[j],routingOps[i]];
   renderOpRows();
 }
-function addOpRow(){syncRoutingOps();routingOps.push({name:'',work_center_id:allMachines[0]?.id,setup_time_mins:0,work_time_mins:0,work_time_hrs:0,is_optional:false,sub_operations:[]});renderOpRows();}
+function addOpRow(){syncRoutingOps();routingOps.push({name:'',work_center_id:allMachines[0]?.id,setup_time_mins:0,work_time_mins:0,work_time_hrs:0,is_optional:false,op_type:'inhouse',outside_vendor:null,sub_operations:[]});renderOpRows();}
+function toggleOpOutside(i,checked){const row=document.getElementById('oped_outside_row_'+i);if(row)row.style.display=checked?'flex':'none';}
 function removeOp(i){syncRoutingOps();routingOps.splice(i,1);renderOpRows();}
 
 async function saveRouting(editId){

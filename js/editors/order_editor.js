@@ -27,7 +27,8 @@ async function renderOrderEditor(editId){
   const selPo      = editOrder?.po_number || '';
   const selNotes   = editOrder?.notes || '';
   const selMatD    = editOrder?.material_ready_date ? editOrder.material_ready_date.slice(0,10) : '';
-  const selRouting = editOrder?.routing_id || '';
+  const selRouting  = editOrder?.routing_id || '';
+  const selOrderType = editOrder?.order_type || 'simple';
   const isCustomSize = selSize && !SIZES.includes(selSize);
 
   const custOpts = allCustomers.map(c=>`<option value="${c.id}" ${c.id==selCust?'selected':''}>${escHtml(c.name)}</option>`).join('');
@@ -48,6 +49,32 @@ async function renderOrderEditor(editId){
         <div style="display:grid;grid-template-columns:1fr 320px;gap:18px;align-items:start">
 
     <div><!-- LEFT COLUMN -->
+    <!-- ORDER TYPE TOGGLE -->
+    <div style="display:flex;gap:10px;margin-bottom:18px;padding:12px 14px;background:var(--surface);border-radius:8px;border:1px solid var(--border);align-items:center">
+      <span style="font-size:12px;font-weight:600;color:var(--muted);flex-shrink:0">Order Type:</span>
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;padding:6px 14px;border-radius:6px;border:2px solid ${selOrderType==='simple'?'var(--accent)':'var(--border)'};background:${selOrderType==='simple'?'var(--accent-soft)':'transparent'};font-size:13px;font-weight:600;transition:all .15s" id="ord_type_simple_lbl">
+        <input type="radio" name="ord_type" id="ord_type_simple" value="simple" ${selOrderType==='simple'?'checked':''} onchange="orderTypeChanged('simple')" style="accent-color:var(--accent)">
+        📦 Simple Order
+      </label>
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;padding:6px 14px;border-radius:6px;border:2px solid ${selOrderType==='assembly'?'var(--accent)':'var(--border)'};background:${selOrderType==='assembly'?'var(--accent-soft)':'transparent'};font-size:13px;font-weight:600;transition:all .15s" id="ord_type_asm_lbl">
+        <input type="radio" name="ord_type" id="ord_type_assembly" value="assembly" ${selOrderType==='assembly'?'checked':''} onchange="orderTypeChanged('assembly')" style="accent-color:var(--accent)">
+        🔧 Assembly Order
+      </label>
+      <span id="ord_type_hint" style="font-size:11px;color:var(--muted);margin-left:8px">${selOrderType==='assembly'?'Multiple parts, assembly steps, outside work':'Single product type, quantity of identical pieces'}</span>
+    </div>
+
+    <!-- ASSEMBLY NOTICE — shown only for assembly orders -->
+    <div id="ord_asm_notice" style="display:${selOrderType==='assembly'?'flex':'none'};background:var(--accent-soft);border:1px solid var(--accent);border-radius:8px;padding:10px 14px;margin-bottom:14px;gap:10px;align-items:flex-start">
+      <span style="font-size:18px;flex-shrink:0">🔧</span>
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--accent)">Assembly Order</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">
+          After creating this order you will be taken to the Assembly planner where you can add components (parts to make, send outside, or purchase) and define the assembly sequence.
+          The Routing field below is optional — use it only if the overall order has a single base routing.
+        </div>
+      </div>
+    </div>
+
     <div class="form-section">Customer</div>
     <div class="form-row cols-2">
       <div class="form-group">
@@ -111,8 +138,8 @@ async function renderOrderEditor(editId){
     <div class="form-section">Routing & Operations</div>
     <div class="form-row cols-1">
       <div class="form-group">
-        <div class="fld-label">Routing Template <span style="color:var(--red)">*</span></div>
-        <select id="ord_routing" onchange="loadOrderOps()">${routingOpts?`<option value="">— Select —</option>${routingOpts}`:'<option value="">No routings — create one first</option>'}</select>
+        <div class="fld-label">Routing Template <span id="ord_routing_req" style="color:var(--red)">${selOrderType==='simple'?'*':''}</span> <span id="ord_routing_opt" style="font-size:10px;color:var(--muted);font-weight:400">${selOrderType==='assembly'?'(optional for assembly orders)':''}</span></div>
+        <select id="ord_routing" onchange="loadOrderOps()"><option value="">— Select —</option>${routingOpts}</select>
       </div>
     </div>
 
@@ -165,7 +192,7 @@ async function renderOrderEditor(editId){
       </div>
       <div class="editor-footer">
         <button class="btn btn-ghost" onclick="navigate('/orders')">Cancel</button>
-        <button class="btn btn-primary" id="saveOrderBtn" onclick="saveOrder(${editId||'null'})">${isEdit?'Save Changes':'Create Order'}</button>
+        <button class="btn btn-primary" id="saveOrderBtn" onclick="saveOrder(${editId||'null'})">${isEdit?'Save Changes':(selOrderType==='assembly'?'Create & Set Up Assembly':'Create Order')}</button>
       </div>
     </div>`;
 
@@ -556,6 +583,29 @@ async function runEstimate(routingId, qty){
   }
 }
 
+function orderTypeChanged(type) {
+  const isAsm = type === 'assembly';
+  // Update label styles
+  const sl = document.getElementById('ord_type_simple_lbl');
+  const al = document.getElementById('ord_type_asm_lbl');
+  if (sl) { sl.style.borderColor = !isAsm ? 'var(--accent)' : 'var(--border)'; sl.style.background = !isAsm ? 'var(--accent-soft)' : 'transparent'; }
+  if (al) { al.style.borderColor =  isAsm ? 'var(--accent)' : 'var(--border)'; al.style.background =  isAsm ? 'var(--accent-soft)' : 'transparent'; }
+  // Show/hide notice
+  const notice = document.getElementById('ord_asm_notice');
+  if (notice) notice.style.display = isAsm ? 'flex' : 'none';
+  // Hint text
+  const hint = document.getElementById('ord_type_hint');
+  if (hint) hint.textContent = isAsm ? 'Multiple parts, assembly steps, outside work' : 'Single product type, quantity of identical pieces';
+  // Routing req/opt labels
+  const req = document.getElementById('ord_routing_req');
+  const opt = document.getElementById('ord_routing_opt');
+  if (req) req.textContent = isAsm ? '' : '*';
+  if (opt) opt.textContent = isAsm ? '(optional for assembly orders)' : '';
+  // Button label
+  const btn = document.getElementById('saveOrderBtn');
+  if (btn) btn.textContent = isAsm ? 'Create & Set Up Assembly' : 'Create Order';
+}
+
 async function saveOrder(editId){
   const custId   = document.getElementById('ord_cust').value;
   const ptype    = document.getElementById('ord_ptype').value;
@@ -568,10 +618,11 @@ async function saveOrder(editId){
   const routingId= document.getElementById('ord_routing').value;
   const isEdit   = editId && editId !== 'null';
 
+  const orderType = document.querySelector('input[name="ord_type"]:checked')?.value || 'simple';
   if(!custId)    { toast('Select a customer','error');   return; }
   if(!size)      { toast('Enter product size','error');   return; }
   if(!due)       { toast('Select a due date','error');    return; }
-  if(!routingId) { toast('Select a routing','error');     return; }
+  if(!routingId && orderType === 'simple') { toast('Select a routing','error'); return; }
   if(qty < 1)    { toast('Quantity must be at least 1','error'); return; }
 
   const ovs = orderFormOps.map((op,i)=>({
@@ -593,7 +644,8 @@ async function saveOrder(editId){
     quantity:       qty,
     due_date:       due + 'T08:00:00',
     material_ready_date: document.getElementById('ord_mat_d')?.value ? document.getElementById('ord_mat_d').value + 'T08:00:00' : null,
-    routing_id:     parseInt(routingId),
+    routing_id:     routingId ? parseInt(routingId) : null,
+    order_type:     orderType,
     op_overrides:   ovs.length ? ovs : undefined,
     total_price:    document.getElementById('ord_price').value || null,
     priority_flag:  document.getElementById('ord_urgent').checked,
@@ -607,7 +659,15 @@ async function saveOrder(editId){
       toast('Order updated!');
     } else {
       const r = await api('POST', '/api/orders', data);
-      toast(`Order ${r.order_number} created — ${qty} piece jobs generated`);
+      await loadAll();
+      if (orderType === 'assembly') {
+        toast(`Order ${r.order_number} created — set up assembly components now`);
+        navigate(`/orders/${r.id}/assembly`);
+      } else {
+        toast(`Order ${r.order_number} created — ${qty} piece jobs generated`);
+        navigate('/orders');
+      }
+      return;
     }
     await loadAll(); navigate('/orders');
   }catch(e){ toast(e.message, 'error'); }

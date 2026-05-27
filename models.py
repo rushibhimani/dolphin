@@ -168,6 +168,8 @@ class Operation(Base):
     work_time_hrs      = Column(Float, default=0)
     work_time_mins     = Column(Float, default=0)
     is_optional        = Column(Boolean, default=False)
+    op_type            = Column(String, default="inhouse")  # inhouse | outside
+    outside_vendor     = Column(String, nullable=True)       # vendor name if outside
     setup_time_mins    = Column(Float, default=0)
     # ── Formula-based time calculation ──────────────────────────────────────
     # formula_type: none | volume_milling | area | perimeter_side | perimeter_weld | fixed
@@ -207,6 +209,7 @@ class CustomerOrder(Base):
     due_date        = Column(DateTime, nullable=False)
     notes           = Column(Text, nullable=True)
     total_price     = Column(Float, nullable=True)  # total for all pieces
+    order_type      = Column(String, default="simple")   # simple | assembly
     status          = Column(String, default="pending")  # pending/in_progress/completed
     created_at      = Column(DateTime, default=now_ist)
     customer        = relationship("Customer", back_populates="orders")
@@ -214,6 +217,12 @@ class CustomerOrder(Base):
     jobs            = relationship("Job", back_populates="order",
                                    cascade="all, delete-orphan",
                                    order_by="Job.piece_number")
+    components      = relationship("OrderComponent", back_populates="order",
+                                   cascade="all, delete-orphan",
+                                   order_by="OrderComponent.assembly_step")
+    assembly_steps  = relationship("AssemblyStep", back_populates="order",
+                                   cascade="all, delete-orphan",
+                                   order_by="AssemblyStep.step_number")
 
 
 class Job(Base):
@@ -298,6 +307,10 @@ class ScheduledOp(Base):
     actual_start         = Column(DateTime, nullable=True)
     actual_end           = Column(DateTime, nullable=True)
     status               = Column(String, default="pending")
+    op_type              = Column(String, default="inhouse")  # inhouse | outside
+    outside_vendor       = Column(String, nullable=True)
+    sent_out_at          = Column(DateTime, nullable=True)
+    received_back_at     = Column(DateTime, nullable=True)
     pause_reason         = Column(String, nullable=True)   # waiting_material, machine_down, worker_absent, rework, other
     pause_notes          = Column(Text, nullable=True)
     job                  = relationship("Job", back_populates="scheduled_ops")
@@ -381,3 +394,65 @@ class Quotation(Base):
     sent_at          = Column(DateTime, nullable=True)
     accepted_at      = Column(DateTime, nullable=True)
     customer         = relationship("Customer")
+
+# ── Assembly Order Components ─────────────────────────────────────────────────
+
+class OrderComponent(Base):
+    """
+    One component within an assembly order.
+    type = "make"     → auto-creates a Job; job_id is set after creation
+    type = "outside"  → sent to external vendor; track sent/received dates
+    type = "purchase" → bought item; track ordered/received dates
+    assembly_step     → which assembly step this component unlocks (1,2,3...)
+                        Assembly step N can only start when all components
+                        with assembly_step <= N are done/received.
+    """
+    __tablename__ = "order_components"
+    id               = Column(Integer, primary_key=True)
+    order_id         = Column(Integer, ForeignKey("customer_orders.id"), nullable=False)
+    name             = Column(String, nullable=False)       # e.g. "Lower Die Frame"
+    component_type   = Column(String, default="make")      # make | outside | purchase
+    assembly_step    = Column(Integer, default=1)           # which assembly step needs this
+    quantity         = Column(Integer, default=1)
+    notes            = Column(Text, nullable=True)
+    # "make" fields
+    routing_id       = Column(Integer, ForeignKey("routings.id"), nullable=True)
+    job_id           = Column(Integer, ForeignKey("jobs.id"), nullable=True)  # created job
+    # "outside" fields
+    vendor_name      = Column(String, nullable=True)
+    sent_date        = Column(Date, nullable=True)
+    expected_back    = Column(Date, nullable=True)
+    received_date    = Column(Date, nullable=True)
+    # "purchase" fields — shared with outside (ordered_date / received_date)
+    ordered_date     = Column(Date, nullable=True)
+    # status — computed or manually set
+    status           = Column(String, default="pending")    # pending|in_progress|done|sent|received
+    created_at       = Column(DateTime, default=now_ist)
+    order            = relationship("CustomerOrder", back_populates="components")
+    routing          = relationship("Routing")
+    job              = relationship("Job", foreign_keys=[job_id])
+
+
+class AssemblyStep(Base):
+    """
+    Ordered steps in the assembly sequence for an order.
+    step_number = 1, 2, 3 ...
+    Requires all OrderComponents with assembly_step <= step_number to be done
+    before this step can begin.
+    """
+    __tablename__ = "assembly_steps"
+    id             = Column(Integer, primary_key=True)
+    order_id       = Column(Integer, ForeignKey("customer_orders.id"), nullable=False)
+    step_number    = Column(Integer, nullable=False)
+    name           = Column(String, nullable=False)   # e.g. "Fix base plate and columns"
+    description    = Column(Text, nullable=True)
+    est_hours      = Column(Float, nullable=True)
+    worker_id      = Column(Integer, ForeignKey("workers.id"), nullable=True)
+    worker_name    = Column(String, nullable=True)
+    status         = Column(String, default="waiting")  # waiting|ready|in_progress|done
+    started_at     = Column(DateTime, nullable=True)
+    completed_at   = Column(DateTime, nullable=True)
+    notes          = Column(Text, nullable=True)
+    order          = relationship("CustomerOrder", back_populates="assembly_steps")
+    worker         = relationship("Worker")
+

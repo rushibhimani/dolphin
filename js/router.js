@@ -25,6 +25,7 @@ const ROUTES = [
 
   // Orders
   { pattern: /^\/orders\/new$/,               page: 'order-new',    title: 'New Order' },
+  { pattern: /^\/orders\/(\d+)\/assembly$/, page: 'order-assembly', title: 'Assembly Order', param: 'orderId' },
   { pattern: /^\/orders\/(\d+)$/,            page: 'order-edit',   title: 'Edit Order',   param: 'orderId' },
   { pattern: /^\/orders$/,                    page: 'orders',       title: 'Orders' },
 
@@ -104,6 +105,7 @@ async function handleRoute() {
       case 'orders':        await renderOrders(); break;
       case 'order-new':     await renderOrderEditor(null); break;
       case 'order-edit':    await renderOrderEditor(params.orderId); break;
+      case 'order-assembly': await renderAssemblyOrder(params.orderId); break;
       case 'quote':         await renderQuote(); break;
       case 'quotations':      await renderQuotations(); break;
       case 'quotation-new':   await renderQuotationEdit(null); break;

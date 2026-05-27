@@ -96,6 +96,7 @@ function orderCardHTML(o){
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;align-items:center">
         <button class="btn btn-ghost" style="font-size:12px;padding:5px 10px" onclick="viewOrderPieces(${o.id})">View Pieces</button>
+        ${o.order_type==='assembly'?`<button class="btn btn-secondary" style="font-size:12px;padding:5px 10px" onclick="navigate('/orders/${o.id}/assembly')">🔧 Assembly</button>`:''}
         <button class="btn btn-ghost" style="font-size:12px;padding:5px 10px" onclick="navigate('/orders/${o.id}')">Edit</button>
         <button class="btn btn-secondary" style="font-size:12px;padding:5px 10px" onclick="scheduleOrder(${o.id})">⚡ Schedule</button>
         <button class="btn btn-danger" style="font-size:12px;padding:5px 10px" onclick="deleteOrder(${o.id})">Delete</button>

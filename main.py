@@ -9,7 +9,8 @@ from datetime import datetime, timedelta, date
 from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
                     Customer, Routing, Operation, SubOperation, Job, ScheduledOp,
                     JobCounter, CustomerOrder, OrderCounter, User, StaffTask, TaskFile,
-                    TaskAssignee, TaskActivity, Quotation, QuoteCounter, CompanySetting, now_ist)
+                    TaskAssignee, TaskActivity, Quotation, QuoteCounter, CompanySetting,
+                    OrderComponent, AssemblyStep, now_ist)
 import json, os, subprocess, sys
 from auth import (
     create_token, verify_token, hash_password, verify_password,
@@ -2791,6 +2792,7 @@ def order_dict(o, db):
         "product_type": o.product_type, "product_size": o.product_size,
         "product_variant": o.product_variant,
         "routing_id": o.routing_id,
+        "order_type": getattr(o, 'order_type', 'simple') or 'simple',
         "quantity": o.quantity, "due_date": fmt(o.due_date),
         "material_ready_date": fmt(pieces[0].material_ready_date) if pieces else None,
         "notes": o.notes, "total_price": o.total_price,
@@ -2868,6 +2870,7 @@ def create_order(data: dict):
         r = db.query(Routing).filter(Routing.id == routing_id).first()
         if not r:
             db.close(); raise HTTPException(400, "Routing not found")
+    # Assembly orders don't require a routing (components have their own routings)
 
     order_num = next_order_number(db)
     order = CustomerOrder(
@@ -2878,6 +2881,7 @@ def create_order(data: dict):
         product_size  = data.get("product_size", ""),
         product_variant = data.get("product_variant", ""),
         routing_id    = routing_id,
+        order_type    = data.get("order_type", "simple"),
         inline_ops    = json.dumps(data.get("inline_ops", [])) if data.get("inline_ops") else None,
         quantity      = quantity,
         due_date      = due_date,
@@ -2888,9 +2892,13 @@ def create_order(data: dict):
     db.add(order); db.flush()
 
     # Generate piece jobs — each is an independent schedulable unit
+    # Assembly orders with no routing skip job generation (components create their own jobs)
     piece_price      = (order.total_price / quantity) if order.total_price else None
     op_overrides     = json.dumps(data.get("op_overrides", [])) if data.get("op_overrides") else None
     material_ready   = parse_dt(data.get("material_ready_date"))
+    if not routing_id and order.order_type == "assembly":
+        db.commit(); db.refresh(order)
+        result = order_dict(order, db); db.close(); return result
     for i in range(1, quantity + 1):
         job_num = next_job_number(db)
         j = Job(
@@ -3383,6 +3391,350 @@ def bulk_schedule_orders(data: dict):
     db.commit(); db.close()
     return {"scheduled": scheduled, "failed": failed}
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASSEMBLY ORDER ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def component_dict(comp):
+    fmt = lambda d: d.isoformat() if d else None
+    return {
+        "id":             comp.id,
+        "order_id":       comp.order_id,
+        "name":           comp.name,
+        "component_type": comp.component_type,
+        "assembly_step":  comp.assembly_step,
+        "quantity":       comp.quantity,
+        "notes":          comp.notes or "",
+        "routing_id":     comp.routing_id,
+        "job_id":         comp.job_id,
+        "job_number":     comp.job.job_number if comp.job else None,
+        "job_status":     comp.job.status if comp.job else None,
+        "routing_name":   comp.routing.name if comp.routing else None,
+        "vendor_name":    comp.vendor_name or "",
+        "sent_date":      fmt(comp.sent_date),
+        "expected_back":  fmt(comp.expected_back),
+        "received_date":  fmt(comp.received_date),
+        "ordered_date":   fmt(comp.ordered_date),
+        "status":         comp.status,
+    }
+
+def assembly_step_dict(step):
+    fmt = lambda d: d.isoformat() if d else None
+    return {
+        "id":           step.id,
+        "order_id":     step.order_id,
+        "step_number":  step.step_number,
+        "name":         step.name,
+        "description":  step.description or "",
+        "est_hours":    step.est_hours,
+        "worker_id":    step.worker_id,
+        "worker_name":  step.worker_name or "",
+        "status":       step.status,
+        "started_at":   fmt(step.started_at),
+        "completed_at": fmt(step.completed_at),
+        "notes":        step.notes or "",
+    }
+
+def _check_assembly_step_ready(db, order_id, step_number):
+    """
+    An assembly step is ready when all components with assembly_step <= step_number
+    are in done/received status.
+    """
+    components = db.query(OrderComponent).filter(
+        OrderComponent.order_id == order_id,
+        OrderComponent.assembly_step <= step_number
+    ).all()
+    if not components:
+        return True
+    return all(c.status in ("done", "received") for c in components)
+
+def _sync_assembly_steps(db, order_id):
+    """
+    After any component status changes, re-evaluate which assembly steps
+    are now unlocked (waiting → ready).
+    """
+    steps = db.query(AssemblyStep).filter(
+        AssemblyStep.order_id == order_id,
+        AssemblyStep.status == "waiting"
+    ).order_by(AssemblyStep.step_number).all()
+    for step in steps:
+        if _check_assembly_step_ready(db, order_id, step.step_number):
+            step.status = "ready"
+    db.flush()
+
+def _sync_component_from_job(db, comp):
+    """Sync component status from its linked job's status."""
+    if not comp.job_id:
+        return
+    job = db.query(Job).filter(Job.id == comp.job_id).first()
+    if not job:
+        return
+    if job.status == "completed":
+        comp.status = "done"
+    elif job.status in ("in_progress", "scheduled"):
+        comp.status = "in_progress"
+    else:
+        comp.status = "pending"
+
+
+@app.get("/api/orders/{order_id}/assembly")
+def get_assembly_details(order_id: int):
+    """Get full assembly details: components + steps with readiness info."""
+    db = SessionLocal()
+    o = db.query(CustomerOrder).filter(CustomerOrder.id == order_id).first()
+    if not o: db.close(); raise HTTPException(404, "Order not found")
+
+    # Sync component statuses from jobs
+    for comp in o.components:
+        _sync_component_from_job(db, comp)
+    _sync_assembly_steps(db, order_id)
+    db.commit()
+
+    comps = [component_dict(c) for c in o.components]
+    steps = [assembly_step_dict(s) for s in o.assembly_steps]
+
+    # Annotate each step with which components it needs
+    for step in steps:
+        needed = [c for c in comps if c["assembly_step"] <= step["step_number"]]
+        done   = [c for c in needed if c["status"] in ("done","received")]
+        step["components_needed"] = len(needed)
+        step["components_done"]   = len(done)
+        step["is_ready"]          = len(needed) == len(done)
+
+    db.close()
+    return {"components": comps, "assembly_steps": steps}
+
+
+@app.post("/api/orders/{order_id}/components")
+def add_component(order_id: int, data: dict):
+    """Add a component to an assembly order. If type=make, auto-creates a Job."""
+    db = SessionLocal()
+    o = db.query(CustomerOrder).filter(CustomerOrder.id == order_id).first()
+    if not o: db.close(); raise HTTPException(404, "Order not found")
+
+    comp = OrderComponent(
+        order_id       = order_id,
+        name           = data["name"],
+        component_type = data.get("component_type", "make"),
+        assembly_step  = int(data.get("assembly_step", 1)),
+        quantity       = int(data.get("quantity", 1)),
+        notes          = data.get("notes", ""),
+        routing_id     = data.get("routing_id"),
+        vendor_name    = data.get("vendor_name", ""),
+        status         = "pending",
+    )
+    db.add(comp); db.flush()
+
+    # Auto-create job for "make" components
+    if comp.component_type == "make" and comp.routing_id:
+        job_num = next_job_number(db)
+        mat_ready = parse_dt(data.get("material_ready_date")) if data.get("material_ready_date") else None
+        op_overrides = data.get("op_overrides")
+        j = Job(
+            job_number          = job_num,
+            customer_id         = o.customer_id,
+            customer_name       = o.customer_name,
+            product_type        = comp.name,
+            product_size        = o.product_size or "",
+            due_date            = o.due_date,
+            routing_id          = comp.routing_id,
+            order_id            = order_id,
+            material_ready_date = mat_ready,
+            op_overrides        = json.dumps(op_overrides) if op_overrides else None,
+            notes               = f"Component of {o.order_number}: {comp.name}",
+            status              = "pending",
+        )
+        db.add(j); db.flush()
+        comp.job_id = j.id
+
+    # Mark order as assembly type
+    o.order_type = "assembly"
+    db.commit()
+    result = component_dict(comp)
+    db.close()
+    return result
+
+
+@app.put("/api/orders/{order_id}/components/{comp_id}")
+def update_component(order_id: int, comp_id: int, data: dict):
+    db = SessionLocal()
+    comp = db.query(OrderComponent).filter(
+        OrderComponent.id == comp_id, OrderComponent.order_id == order_id
+    ).first()
+    if not comp: db.close(); raise HTTPException(404, "Component not found")
+
+    if "name"           in data: comp.name           = data["name"]
+    if "assembly_step"  in data: comp.assembly_step  = int(data["assembly_step"])
+    if "notes"          in data: comp.notes           = data["notes"]
+    if "vendor_name"    in data: comp.vendor_name     = data["vendor_name"]
+    if "expected_back"  in data: comp.expected_back   = parse_dt(data["expected_back"]).date() if data["expected_back"] else None
+    if "quantity"       in data: comp.quantity        = int(data["quantity"])
+
+    # Status transitions for outside/purchase components
+    if "status" in data:
+        new_status = data["status"]
+        comp.status = new_status
+        today = now_ist().date()
+        if new_status == "sent"     and comp.component_type == "outside":
+            if not comp.sent_date: comp.sent_date = today
+        if new_status == "received":
+            if not comp.received_date: comp.received_date = today
+        if new_status == "ordered"  and comp.component_type == "purchase":
+            if not comp.ordered_date: comp.ordered_date = today
+
+    _sync_assembly_steps(db, order_id)
+    db.commit()
+    result = component_dict(comp)
+    db.close()
+    return result
+
+
+@app.delete("/api/orders/{order_id}/components/{comp_id}")
+def delete_component(order_id: int, comp_id: int):
+    db = SessionLocal()
+    comp = db.query(OrderComponent).filter(
+        OrderComponent.id == comp_id, OrderComponent.order_id == order_id
+    ).first()
+    if not comp: db.close(); raise HTTPException(404, "Component not found")
+    # If it has a pending job, delete it too
+    if comp.job_id:
+        j = db.query(Job).filter(Job.id == comp.job_id).first()
+        if j and j.status == "pending":
+            db.delete(j)
+    db.delete(comp)
+    db.commit(); db.close()
+    return {"ok": True}
+
+
+@app.post("/api/orders/{order_id}/assembly-steps")
+def add_assembly_step(order_id: int, data: dict):
+    db = SessionLocal()
+    o = db.query(CustomerOrder).filter(CustomerOrder.id == order_id).first()
+    if not o: db.close(); raise HTTPException(404, "Order not found")
+
+    worker_id   = data.get("worker_id")
+    worker_name = ""
+    if worker_id:
+        w = db.query(Worker).filter(Worker.id == worker_id).first()
+        if w: worker_name = w.name
+
+    step_num = int(data.get("step_number", 1))
+    # Default status: if all required components already done → ready
+    status = "ready" if _check_assembly_step_ready(db, order_id, step_num) else "waiting"
+
+    step = AssemblyStep(
+        order_id    = order_id,
+        step_number = step_num,
+        name        = data["name"],
+        description = data.get("description", ""),
+        est_hours   = float(data["est_hours"]) if data.get("est_hours") else None,
+        worker_id   = worker_id,
+        worker_name = worker_name,
+        status      = status,
+        notes       = data.get("notes", ""),
+    )
+    db.add(step)
+    o.order_type = "assembly"
+    db.commit()
+    result = assembly_step_dict(step)
+    db.close()
+    return result
+
+
+@app.put("/api/orders/{order_id}/assembly-steps/{step_id}")
+def update_assembly_step(order_id: int, step_id: int, data: dict):
+    db = SessionLocal()
+    step = db.query(AssemblyStep).filter(
+        AssemblyStep.id == step_id, AssemblyStep.order_id == order_id
+    ).first()
+    if not step: db.close(); raise HTTPException(404, "Step not found")
+
+    if "name"        in data: step.name        = data["name"]
+    if "description" in data: step.description = data["description"]
+    if "est_hours"   in data: step.est_hours   = float(data["est_hours"]) if data["est_hours"] else None
+    if "notes"       in data: step.notes       = data["notes"]
+    if "step_number" in data: step.step_number = int(data["step_number"])
+    if "worker_id"   in data:
+        step.worker_id = data["worker_id"]
+        if data["worker_id"]:
+            w = db.query(Worker).filter(Worker.id == data["worker_id"]).first()
+            step.worker_name = w.name if w else ""
+        else:
+            step.worker_name = ""
+
+    if "status" in data:
+        new_st = data["status"]
+        # Validate transition
+        if new_st == "in_progress" and step.status not in ("ready","in_progress"):
+            db.close(); raise HTTPException(400, f"Step not ready yet — required components not done")
+        step.status = new_st
+        if new_st == "in_progress" and not step.started_at:
+            step.started_at = now_ist()
+        if new_st == "done" and not step.completed_at:
+            step.completed_at = now_ist()
+            # Unlock next step if ready
+            next_step = db.query(AssemblyStep).filter(
+                AssemblyStep.order_id == order_id,
+                AssemblyStep.step_number == step.step_number + 1
+            ).first()
+            if next_step and next_step.status == "waiting":
+                if _check_assembly_step_ready(db, order_id, next_step.step_number):
+                    next_step.status = "ready"
+
+    db.commit()
+    result = assembly_step_dict(step)
+    db.close()
+    return result
+
+
+@app.delete("/api/orders/{order_id}/assembly-steps/{step_id}")
+def delete_assembly_step(order_id: int, step_id: int):
+    db = SessionLocal()
+    step = db.query(AssemblyStep).filter(
+        AssemblyStep.id == step_id, AssemblyStep.order_id == order_id
+    ).first()
+    if not step: db.close(); raise HTTPException(404, "Step not found")
+    db.delete(step); db.commit(); db.close()
+    return {"ok": True}
+
+
+@app.put("/api/scheduled-ops/{op_id}/outside")
+def update_outside_op(op_id: int, data: dict):
+    """Mark an outside operation as sent-out or received-back."""
+    db = SessionLocal()
+    s = db.query(ScheduledOp).filter(ScheduledOp.id == op_id).first()
+    if not s: db.close(); raise HTTPException(404, "Op not found")
+    action = data.get("action")  # "send_out" | "receive_back"
+    if action == "send_out":
+        s.status       = "in_progress"
+        s.sent_out_at  = now_ist()
+        s.actual_start = now_ist()
+    elif action == "receive_back":
+        s.status            = "completed"
+        s.received_back_at  = now_ist()
+        s.actual_end        = now_ist()
+        # Pull forward next op in same job
+        next_op = db.query(ScheduledOp).filter(
+            ScheduledOp.job_id   == s.job_id,
+            ScheduledOp.sequence == s.sequence + 1,
+            ScheduledOp.status   == "pending"
+        ).first()
+        if next_op:
+            next_op.scheduled_start = now_ist()
+        # Check if job complete
+        pending = db.query(ScheduledOp).filter(
+            ScheduledOp.job_id == s.job_id,
+            ScheduledOp.status != "completed"
+        ).count()
+        if pending == 0:
+            job = db.query(Job).filter(Job.id == s.job_id).first()
+            if job: job.status = "completed"; job.completed_at = now_ist()
+    db.commit()
+    db.close()
+    return {"ok": True, "op_id": op_id, "status": s.status}
+
+
 @app.get("/api/gantt")
 def get_gantt():
     db = SessionLocal()
@@ -3476,6 +3828,10 @@ def get_today(user: dict = Depends(require_any)):
             "scheduled_start": fmt(s.scheduled_start), "scheduled_end": fmt(s.scheduled_end),
             "actual_start": fmt(s.actual_start), "actual_end": fmt(s.actual_end),
             "status": s.status,
+            "op_type": getattr(s, 'op_type', 'inhouse') or 'inhouse',
+            "outside_vendor": getattr(s, 'outside_vendor', None) or '',
+            "sent_out_at": fmt(getattr(s, 'sent_out_at', None)),
+            "received_back_at": fmt(getattr(s, 'received_back_at', None)),
             "pause_reason": s.pause_reason, "pause_notes": s.pause_notes,
             "priority": j.priority_flag, "due_date": fmt(j.due_date),
         })

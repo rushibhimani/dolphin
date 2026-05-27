@@ -182,18 +182,29 @@ function renderTimelineCard(op, nowISO, canControlOps=true, ownOpsOnly=false, my
   const pauseInfo = isPaused && op.pause_reason
     ? `<div style="font-size:11px;color:var(--amber);margin-top:4px">⏸ ${pauseReasonLabel(op.pause_reason)}</div>` : '';
 
-  /* Action buttons — only shown when user can control ops */
+  /* Action buttons — handles both inhouse and outside ops */
+  const isOutside = op.op_type === 'outside';
   const actionHtml = canActOnThis ? `<div style="display:flex;gap:8px;padding-top:10px;border-top:1px solid var(--border)">
-    ${op.status==='scheduled'
-      ? `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Start</button>`
-      : ''}
-    ${op.status==='in_progress'
-      ? `<button class="btn btn-secondary" style="flex:1;min-height:44px;font-size:14px" onclick="promptPause(${op.op_id})">⏸ Pause</button>
-         <button class="btn btn-primary" style="flex:1;min-height:44px;font-size:14px" onclick="promptComplete(${op.op_id},'${op.actual_start||''}')">✓ Done</button>`
-      : ''}
-    ${op.status==='paused'
-      ? `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Resume</button>`
-      : ''}
+    ${isOutside ? `
+      ${op.status==='scheduled'||op.status==='pending'
+        ? `<button class="btn btn-warning" style="flex:1;min-height:44px;font-size:14px" onclick="markOutsideSent(${op.op_id})">📤 Send Out${op.outside_vendor?' to '+escHtml(op.outside_vendor):''}</button>`
+        : ''}
+      ${op.status==='in_progress'
+        ? `<div style="flex:1;text-align:center;font-size:12px;color:var(--amber)">📤 Sent out — waiting for return</div>
+           <button class="btn btn-primary" style="flex:1;min-height:44px;font-size:14px" onclick="markOutsideReceived(${op.op_id})">📥 Mark Received</button>`
+        : ''}
+    ` : `
+      ${op.status==='scheduled'
+        ? `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Start</button>`
+        : ''}
+      ${op.status==='in_progress'
+        ? `<button class="btn btn-secondary" style="flex:1;min-height:44px;font-size:14px" onclick="promptPause(${op.op_id})">⏸ Pause</button>
+           <button class="btn btn-primary" style="flex:1;min-height:44px;font-size:14px" onclick="promptComplete(${op.op_id},'${op.actual_start||''}')">✓ Done</button>`
+        : ''}
+      ${op.status==='paused'
+        ? `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Resume</button>`
+        : ''}
+    `}
   </div>` : '';
 
   return `<div style="background:${cardBg};border:1px solid var(--border);border-left:4px solid ${borderColor};
@@ -394,3 +405,16 @@ async function updateOpStatus(opId, status){
 // ── JOBS ──
 let expandedJobId = null;
 let jobNextOps = {};
+
+async function markOutsideSent(opId) {
+  try {
+    await api('PUT', `/api/scheduled-ops/${opId}/outside`, { action: 'send_out' });
+    toast('Marked as sent out'); renderToday();
+  } catch(e) { toast(e.message,'error'); }
+}
+async function markOutsideReceived(opId) {
+  try {
+    await api('PUT', `/api/scheduled-ops/${opId}/outside`, { action: 'receive_back' });
+    toast('Marked as received back'); renderToday();
+  } catch(e) { toast(e.message,'error'); }
+}
