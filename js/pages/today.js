@@ -143,6 +143,11 @@ function renderTimelineCard(op, nowISO, canControlOps=true, ownOpsOnly=false, my
   const isOverdue= op.scheduled_end && op.scheduled_end.slice(0,19) < nowISO && op.status === 'scheduled';
   const estMins  = (op.work_time_mins || 0) + (op.setup_time_mins || 0);
 
+  // FIX 6: Show assembly context (e.g. "[ORD-2026-004] Base Plate")
+  const contextLabel = op.assembly_context
+    ? `<span style="font-size:10px;color:var(--accent);font-weight:600;display:block;margin-bottom:2px">${escHtml(op.assembly_context)}</span>`
+    : '';
+
   const startTime = op.scheduled_start
     ? new Date(op.scheduled_start).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:true})
     : '';
@@ -209,6 +214,7 @@ function renderTimelineCard(op, nowISO, canControlOps=true, ownOpsOnly=false, my
 
   return `<div style="background:${cardBg};border:1px solid var(--border);border-left:4px solid ${borderColor};
                       border-radius:10px;padding:12px;margin-bottom:10px">
+    ${contextLabel}
     <!-- Time -->
     <div style="font-family:var(--mono);font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px">
       ${startTime}${startTime&&endTime?' → ':''}${endTime}

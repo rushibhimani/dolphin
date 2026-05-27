@@ -60,6 +60,19 @@ def parse_dt(s):
     try: return datetime.fromisoformat(s)
     except: return None
 
+from contextlib import contextmanager
+@contextmanager
+def get_db():
+    """Context manager for safe db session — always closes even on exception."""
+    db = SessionLocal()
+    try:
+        yield db
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
 def parse_date(s):
     if not s: return None
     try: return date.fromisoformat(s[:10])
@@ -662,6 +675,8 @@ def _ops_for_job(db, j):
                 "is_optional":        op.is_optional,
                 "operation_id":       op.id,
                 "has_sub_ops":        bool(op.sub_operations),
+                "op_type":            getattr(op, "op_type", "inhouse") or "inhouse",
+                "outside_vendor":     getattr(op, "outside_vendor", None) or "",
             })
 
     elif j.inline_ops:
@@ -752,6 +767,34 @@ def _do_schedule(db, j):
         seq = ops.index(op) + 1
         affinity_worker_id = get_order_affinity_worker(db, j, op["work_center_id"], seq)
 
+        # FIX 5: Outside ops use calendar time only — don't compete for machine slots
+        if op.get("op_type") == "outside":
+            # Calendar days estimate: work_time_hrs treated as calendar days
+            # (e.g. 72 hrs hardening = 3 working days)
+            est_end = snap_to_shift(current_start)
+            cal_hrs = work_hrs if work_hrs > 0 else 24.0
+            from datetime import timedelta as _td
+            est_end = current_start + _td(hours=cal_hrs)
+            db.add(ScheduledOp(
+                job_id=j.id,
+                operation_id=op["operation_id"],
+                work_center_id=op["work_center_id"],
+                worker_id=None, worker_name=None,
+                sequence=ops.index(op) + 1,
+                op_name=op["name"], wc_name=wc_name,
+                machine_setup_mins=0,
+                job_setup_mins=0,
+                setup_time_mins=0,
+                work_time_hrs=work_hrs,
+                machine_setup_waived=False,
+                scheduled_start=current_start, scheduled_end=est_end,
+                op_type="outside",
+                outside_vendor=op.get("outside_vendor", ""),
+                status="scheduled",
+            ))
+            current_start = snap_to_shift(est_end)
+            continue
+
         try:
             start, end, worker, waived = find_next_slot_with_worker(
                 db,
@@ -764,7 +807,6 @@ def _do_schedule(db, j):
             )
         except ValueError as e:
             # BUG-FIX #5: advance current_start even when machine blocked
-            # Leave this op as unscheduled pending, continue chain from same time
             db.add(ScheduledOp(
                 job_id=j.id,
                 operation_id=op["operation_id"],
@@ -780,7 +822,6 @@ def _do_schedule(db, j):
                 scheduled_start=None, scheduled_end=None,
                 status="pending",
             ))
-            # BUG-FIX #5: do NOT freeze current_start — keep advancing
             continue
 
         # BUG-FIX #3: write machine_setup_waived
@@ -3048,9 +3089,16 @@ def job_dict(j, db):
     }
 
 @app.get("/api/jobs")
-def list_jobs():
+def list_jobs(days: int = 90, include_completed: bool = True):
+    """FIX 8: Limit job list to recent + active jobs to keep loadAll fast."""
     db = SessionLocal()
-    jobs = db.query(Job).order_by(Job.created_at.desc()).all()
+    cutoff = now_ist() - timedelta(days=days)
+    q = db.query(Job).filter(
+        (Job.status != "completed") |
+        (Job.completed_at >= cutoff) |
+        (Job.created_at  >= cutoff)
+    ).order_by(Job.created_at.desc())
+    jobs = q.all()
     result = [job_dict(j, db) for j in jobs]; db.close(); return result
 
 @app.get("/api/jobs/{job_id}")
@@ -3816,9 +3864,17 @@ def get_today(user: dict = Depends(require_any)):
         if j.order_id and j.piece_number:
             order = db.query(CustomerOrder).filter(CustomerOrder.id == j.order_id).first()
             if order: label = f"{order.order_number} P{j.piece_number:02d}"
+        # FIX 6: Assembly context — show component name + order if this is an assembly component job
+        asm_context = ""
+        if j.order_id:
+            comp_link = db.query(OrderComponent).filter(OrderComponent.job_id == j.id).first()
+            if comp_link:
+                asm_context = f"[{label}] {comp_link.name}"
+
         result.append({
             "op_id": s.id, "job_id": j.id, "job_number": j.job_number,
             "order_label": label, "piece_number": j.piece_number,
+            "assembly_context": asm_context,
             "customer": j.customer_name, "op_name": s.op_name, "wc_name": s.wc_name,
             "worker_id": s.worker_id, "worker_name": s.worker_name,
             "machine_setup_mins": s.machine_setup_mins, "job_setup_mins": s.job_setup_mins,
@@ -3965,7 +4021,15 @@ def update_op_status(op_id: int, data: dict, request: Request):
         elif not any_inprog:
             j.status = "in_progress"
         _reactive_reschedule(db, s.work_center_id, s.worker_id, s.actual_end or now)
-        if j.order_id: _update_order_status(db, j.order_id)
+        if j.order_id:
+            _update_order_status(db, j.order_id)
+            # FIX 1: Auto-sync assembly component status + unlock assembly steps
+            if all_done:
+                comp = db.query(OrderComponent).filter(OrderComponent.job_id == j.id).first()
+                if comp:
+                    comp.status = "done"
+                    db.flush()
+                    _sync_assembly_steps(db, j.order_id)
 
     db.commit(); db.close()
     return {"ok": True}
