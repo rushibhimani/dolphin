@@ -1,59 +1,88 @@
 /**
  * Dolphin ERP — User Management (Admin only)
- * Supports per-user custom permissions that override role defaults.
+ * Three-tier page permissions: No Access / View / Modify / Full Control
+ * Plus capability toggles for cross-cutting features.
  */
 
-// ── All available pages & capabilities ───────────────────────────────────────
+// ── All pages ─────────────────────────────────────────────────────────────────
 const ALL_PAGES = [
-  { id:'dashboard',    label:'Dashboard',      icon:'⊞', desc:'Overview, stats, quick actions' },
-  { id:'today',        label:"Today's Work",   icon:'⏱', desc:'Floor operations — live view' },
-  { id:'tasks',        label:'Staff Tasks',    icon:'✓', desc:'Office task management' },
-  { id:'upcoming',     label:'Upcoming',       icon:'📅', desc:'Next scheduled operations' },
-  { id:'jobs',         label:'Jobs',           icon:'📋', desc:'Create and manage jobs' },
-  { id:'orders',       label:'Orders',         icon:'📦', desc:'Customer orders' },
-  { id:'quote',        label:'Quote',          icon:'💰', desc:'Quotation builder' },
-  { id:'schedule',     label:'Gantt Schedule', icon:'📊', desc:'Gantt chart view' },
-  { id:'capacity',     label:'Capacity',       icon:'📈', desc:'Machine load heatmap' },
-  { id:'floorplan',    label:'Floor Plan',     icon:'🏭', desc:'Machine layout view' },
-  { id:'routings',     label:'Routings',       icon:'≡',  desc:'Operation sequence templates' },
-  { id:'machines',     label:'Machines',       icon:'⚙',  desc:'Machine management' },
-  { id:'workers',      label:'Workers',        icon:'👷', desc:'Worker management & leaves' },
-  { id:'customers',    label:'Customers',      icon:'👤', desc:'Customer directory' },
-  { id:'reports',      label:'Reports',        icon:'📉', desc:'Monthly reports & stats' },
-  { id:'settings',     label:'Settings',       icon:'⚙',  desc:'App preferences' },
-  { id:'users',        label:'Users',          icon:'🔑', desc:'User & access management' },
+  { id:'dashboard',    label:'Dashboard',       icon:'⊞', group:'Main' },
+  { id:'today',        label:"Today's Work",    icon:'⏱', group:'Main' },
+  { id:'past-work',    label:'Past Work',       icon:'🕐', group:'Main' },
+  { id:'tasks',        label:'Staff Tasks',     icon:'✓',  group:'Main' },
+  { id:'upcoming',     label:'Upcoming',        icon:'📅', group:'Main' },
+  { id:'jobs',         label:'Jobs',            icon:'📋', group:'Production' },
+  { id:'orders',       label:'Orders',          icon:'📦', group:'Production' },
+  { id:'quote',        label:'Quotation',       icon:'💰', group:'Production' },
+  { id:'quotations',   label:'Quotation List',  icon:'📄', group:'Production' },
+  { id:'schedule',     label:'Gantt Schedule',  icon:'📊', group:'Production' },
+  { id:'capacity',     label:'Capacity',        icon:'📈', group:'Production' },
+  { id:'floorplan',    label:'Floor Plan',      icon:'🏭', group:'Production' },
+  { id:'routings',     label:'Routings',        icon:'≡',  group:'Setup' },
+  { id:'machines',     label:'Machines',        icon:'⚙',  group:'Setup' },
+  { id:'workers',      label:'Workers',         icon:'👷', group:'Setup' },
+  { id:'customers',    label:'Customers',       icon:'👤', group:'Setup' },
+  { id:'reports',      label:'Reports',         icon:'📉', group:'Reports' },
+  { id:'routing-stats',label:'Routing Stats',   icon:'📐', group:'Reports' },
+  { id:'settings',     label:'App Settings',    icon:'⚙',  group:'Admin' },
+  { id:'users',        label:'User Management', icon:'🔑', group:'Admin' },
 ];
 
+// Capability overrides (cross-cutting, not page-specific)
 const ALL_CAPS = [
-  { id:'can_control_ops',          label:'Control Operations',     desc:'Start, pause, and complete shop floor ops' },
-  { id:'can_control_own_ops_only', label:'Own Operations Only',    desc:'When enabled: can only control ops assigned to themselves (not others)' },
-  { id:'can_schedule',             label:'Schedule Jobs',          desc:'Run the scheduler, assign ops to workers' },
-  { id:'can_edit_routings',        label:'Edit Routings',          desc:'Create and modify operation templates' },
-  { id:'can_delete',               label:'Delete Records',         desc:'Delete jobs, orders, workers, customers' },
-  { id:'can_see_financials',       label:'See Financials',         desc:'View revenue, pricing, pipeline value' },
-  { id:'can_see_all_workers',      label:'See All Workers',        desc:"View all workers' ops on floor (not just own)" },
-  { id:'can_manage_users',         label:'Manage Users',           desc:'Create, edit, delete user accounts' },
+  { id:'can_control_ops',          label:'Control Shop Ops',      desc:'Start, pause, complete operations on the floor' },
+  { id:'can_control_own_ops_only', label:'Own Ops Only',          desc:'If enabled: can only control ops assigned to themselves' },
+  { id:'can_schedule',             label:'Run Scheduler',         desc:'Trigger Schedule All / schedule individual jobs' },
+  { id:'can_see_financials',       label:'See Financials',        desc:'View revenue, pricing, pipeline value' },
+  { id:'can_see_all_workers',      label:'See All Workers',       desc:"See all workers' ops on Today's Work (not just own)" },
 ];
 
-// Role default pages (for pre-filling toggles)
+// ── Role defaults (page_levels) ───────────────────────────────────────────────
+// Level: 0=none, 1=view, 2=modify, 3=full
+const ALL_PAGE_IDS = ALL_PAGES.map(p => p.id);
+
+function _levels(overrides) {
+  const base = {};
+  ALL_PAGE_IDS.forEach(id => base[id] = 0);
+  Object.assign(base, overrides);
+  return base;
+}
+
 const ROLE_DEFAULTS = {
-  admin:    { pages: ALL_PAGES.map(p=>p.id),
-              can_control_ops:true, can_control_own_ops_only:false,
-              can_schedule:true, can_edit_routings:true,
-              can_delete:true, can_see_financials:true, can_see_all_workers:true, can_manage_users:true },
-  manager:  { pages: ['dashboard','today','tasks','upcoming','jobs','orders','quote','schedule',
-                       'capacity','floorplan','routings','machines','workers','customers','reports','settings'],
-              can_control_ops:true, can_control_own_ops_only:false,
-              can_schedule:true, can_edit_routings:true,
-              can_delete:true, can_see_financials:true, can_see_all_workers:true, can_manage_users:false },
-  staff:    { pages: ['today','tasks'],
-              can_control_ops:false, can_control_own_ops_only:false,
-              can_schedule:false, can_edit_routings:false,
-              can_delete:false, can_see_financials:false, can_see_all_workers:true, can_manage_users:false },
-  operator: { pages: ['today','tasks'],
-              can_control_ops:true, can_control_own_ops_only:true,
-              can_schedule:false, can_edit_routings:false,
-              can_delete:false, can_see_financials:false, can_see_all_workers:false, can_manage_users:false },
+  admin: {
+    page_levels: _levels(Object.fromEntries(ALL_PAGE_IDS.map(id => [id, 3]))),
+    can_control_ops: true, can_control_own_ops_only: false,
+    can_schedule: true, can_see_financials: true,
+    can_see_all_workers: true,
+  },
+  manager: {
+    page_levels: _levels({
+      dashboard:3, today:3, 'past-work':3, tasks:3, upcoming:3,
+      jobs:3, orders:3, quote:3, quotations:3, schedule:3,
+      capacity:3, floorplan:3, routings:3, machines:3, workers:3,
+      customers:3, reports:3, 'routing-stats':3, settings:2,
+      users: 0,
+    }),
+    can_control_ops: true, can_control_own_ops_only: false,
+    can_schedule: true, can_see_financials: true,
+    can_see_all_workers: true,
+  },
+  staff: {
+    page_levels: _levels({
+      dashboard:1, today:1, 'past-work':1, tasks:3, upcoming:1,
+      jobs:1, orders:1, schedule:1, capacity:1, floorplan:1,
+      routings:1, machines:1, workers:1, customers:1, reports:1,
+    }),
+    can_control_ops: false, can_control_own_ops_only: false,
+    can_schedule: false, can_see_financials: false,
+    can_see_all_workers: true,
+  },
+  operator: {
+    page_levels: _levels({ today:3, 'past-work':3, tasks:3 }),
+    can_control_ops: true, can_control_own_ops_only: true,
+    can_schedule: false, can_see_financials: false,
+    can_see_all_workers: false,
+  },
 };
 
 // ── Render ────────────────────────────────────────────────────────────────────
@@ -61,10 +90,10 @@ async function renderUsers(){
   document.getElementById('topbarActions').innerHTML =
     `<button class="btn btn-primary" onclick="openUserModal(null)">+ Add User</button>`;
   document.getElementById('content').innerHTML =
-    `<div style="max-width:960px;margin:0 auto">
+    `<div style="max-width:980px;margin:0 auto">
       <div style="margin-bottom:16px">
         <div style="font-size:18px;font-weight:700;margin:0 0 4px">User Management</div>
-        <div style="font-size:12px;color:var(--muted)">Control who can access Dolphin ERP and exactly what they can do. Every user can have fully custom permissions.</div>
+        <div style="font-size:12px;color:var(--muted)">Control who can access Dolphin ERP and exactly what they can do per page.</div>
       </div>
       <div id="usersContent"><div style="color:var(--muted)">Loading…</div></div>
     </div>`;
@@ -83,10 +112,10 @@ async function _loadUsers(){
 
 function _roleBadge(role, hasCustom){
   const cfg = {
-    admin:    { bg:'var(--red-soft)',    border:'var(--red)',    color:'var(--red)',    label:'Admin' },
-    manager:  { bg:'var(--accent-soft)', border:'var(--accent)', color:'var(--accent)', label:'Manager' },
-    staff:    { bg:'rgba(99,102,241,.12)', border:'#818cf8', color:'#818cf8', label:'Staff' },
-    operator: { bg:'var(--surface)',     border:'var(--border)', color:'var(--muted)',  label:'Operator' },
+    admin:    { bg:'var(--red-soft)',       border:'var(--red)',    color:'var(--red)',    label:'Admin' },
+    manager:  { bg:'var(--accent-soft)',    border:'var(--accent)', color:'var(--accent)', label:'Manager' },
+    staff:    { bg:'rgba(99,102,241,.12)',  border:'#818cf8',       color:'#818cf8',       label:'Staff' },
+    operator: { bg:'var(--surface)',        border:'var(--border)', color:'var(--muted)',  label:'Operator' },
   }[role] || { bg:'var(--surface)', border:'var(--border)', color:'var(--muted)', label: role };
   const customBadge = hasCustom
     ? `<span style="margin-left:4px;display:inline-block;padding:1px 6px;border-radius:10px;font-size:10px;
@@ -163,7 +192,7 @@ function _renderUserList(users){
     </div>
     <div style="margin-top:12px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--muted)">
       <b>Custom</b> badge = user has hand-picked permissions overriding their role defaults.
-      Click Edit → Permissions tab to customise.
+      Click Edit → Permissions tab to customise per-page access levels.
     </div>`;
 }
 
@@ -177,19 +206,18 @@ async function openUserModal(userId){
   _buildUserModal(u);
 }
 
-// Switch tab — just toggle visibility, never re-render (preserves all typed values)
 function _switchUmTab(tab){
-  document.getElementById('um_tab_details').style.display     = tab === 'details'     ? '' : 'none';
-  document.getElementById('um_tab_perms').style.display       = tab === 'permissions' ? '' : 'none';
-  document.getElementById('um_btn_details').style.background  = tab === 'details'     ? 'var(--accent)' : 'var(--surface)';
-  document.getElementById('um_btn_details').style.color       = tab === 'details'     ? '#000'          : 'var(--text)';
-  document.getElementById('um_btn_perms').style.background    = tab === 'permissions' ? 'var(--accent)' : 'var(--surface)';
-  document.getElementById('um_btn_perms').style.color         = tab === 'permissions' ? '#000'          : 'var(--text)';
+  ['details','permissions'].forEach(t => {
+    document.getElementById(`um_tab_${t}`).style.display     = t === tab ? '' : 'none';
+    const btn = document.getElementById(`um_btn_${t}`);
+    btn.style.background = t === tab ? 'var(--accent)' : 'var(--surface)';
+    btn.style.color      = t === tab ? '#000'          : 'var(--text)';
+  });
 }
 
 function _buildUserModal(u){
-  const isNew      = !u;
-  const userId     = _umUserId;
+  const isNew  = !u;
+  const userId = _umUserId;
 
   // Parse existing custom_permissions
   let existing = null;
@@ -197,15 +225,15 @@ function _buildUserModal(u){
     try { existing = JSON.parse(u.custom_permissions); } catch {}
   }
 
-  // Effective permissions = custom if set, else role defaults
-  const roleDefault = ROLE_DEFAULTS[u?.role||'operator'] || ROLE_DEFAULTS.operator;
-  const effective   = existing || roleDefault;
+  const roleDefault  = ROLE_DEFAULTS[u?.role || 'operator'] || ROLE_DEFAULTS.operator;
+  const effective    = existing || roleDefault;
+  const effectivePL  = effective.page_levels || roleDefault.page_levels;
 
   const workerOpts = (allWorkers||[]).map(w =>
     `<option value="${w.id}" ${u?.worker_id===w.id?'selected':''}>${escHtml(w.name)} (${w.code||'W??'})</option>`
   ).join('');
 
-  // ── DETAILS TAB HTML ──────────────────────────────────────────────────────
+  // ── DETAILS TAB ───────────────────────────────────────────────────────────
   const detailsHtml = `
     <div class="form-row cols-2">
       <div class="form-group">
@@ -221,7 +249,7 @@ function _buildUserModal(u){
     <div class="form-row cols-2">
       <div class="form-group">
         <div class="fld-label">Base Role <span style="color:var(--red)">*</span>
-          <span style="font-size:10px;color:var(--muted);font-weight:400"> — template for permissions</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:400"> — sets permission defaults</span>
         </div>
         <select id="um_role" onchange="umRoleChange()">
           <option value="admin"    ${u?.role==='admin'   ?'selected':''}>Admin</option>
@@ -238,9 +266,9 @@ function _buildUserModal(u){
         </select>
       </div>
     </div>
-    <div class="form-group" id="um_worker_wrap" style="${(!isNew&&u?.role!=='operator'&&u?.role!=='staff')?'display:none':''}">
+    <div class="form-group">
       <div class="fld-label">Link to Worker
-        <span style="font-size:10px;color:var(--muted);font-weight:400"> (required for operators; optional for staff)</span>
+        <span style="font-size:10px;color:var(--muted);font-weight:400"> (required for operators; links this login to a shop floor worker)</span>
       </div>
       <select id="um_worker">
         <option value="">— Not linked —</option>
@@ -282,35 +310,57 @@ function _buildUserModal(u){
       Last login: ${u.last_login?new Date(u.last_login).toLocaleDateString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'Never'}
     </div>`:''}`;
 
-  // ── PERMISSIONS TAB HTML ──────────────────────────────────────────────────
+  // ── PERMISSIONS TAB ───────────────────────────────────────────────────────
   const hasCustom = !!existing;
+  const LEVEL_LABELS = ['No Access','View Only','Modify','Full Control'];
+  const LEVEL_COLORS = ['var(--muted)','#3b82f6','var(--accent)','var(--green)'];
+  const LEVEL_ICONS  = ['✗','👁','✎','✓'];
 
-  const pageChecks = ALL_PAGES.map(p => {
-    const checked = effective.pages?.includes(p.id);
-    return `<label class="perm-label" style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;
-              border-radius:6px;cursor:pointer;border:1px solid var(--border);
-              background:${checked?'var(--accent-soft)':'var(--surface)'};transition:background .1s"
-              onclick="umTogglePerm(this,'page')">
-      <input type="checkbox" class="perm-page" value="${p.id}" ${checked?'checked':''}
-        style="margin-top:2px;accent-color:var(--accent);width:15px;height:15px;flex-shrink:0;pointer-events:none">
-      <div style="min-width:0">
-        <div style="font-size:13px;font-weight:600">${p.icon} ${p.label}</div>
-        <div style="font-size:11px;color:var(--muted);line-height:1.3">${p.desc}</div>
+  // Group pages
+  const groups = {};
+  ALL_PAGES.forEach(p => {
+    if(!groups[p.group]) groups[p.group] = [];
+    groups[p.group].push(p);
+  });
+
+  const pageRows = Object.entries(groups).map(([grpName, pages]) => `
+    <div style="margin-bottom:18px">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;
+                  color:var(--muted);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)">
+        ${grpName}
       </div>
-    </label>`;
-  }).join('');
+      ${pages.map(p => {
+        const lvl = effectivePL[p.id] ?? 0;
+        return `<div style="display:flex;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);gap:10px" id="plrow_${p.id}">
+          <div style="flex:1;font-size:13px">${p.icon} ${p.label}</div>
+          <div style="display:flex;gap:4px" id="plbtn_${p.id}">
+            ${[0,1,2,3].map(lv => `
+              <button onclick="umSetPageLevel('${p.id}',${lv})"
+                id="pl_${p.id}_${lv}"
+                data-active="${lv===lvl?'1':'0'}"
+                style="padding:3px 8px;border-radius:5px;border:1px solid ${lv===lvl?LEVEL_COLORS[lv]:'var(--border)'};
+                       font-size:11px;font-weight:600;cursor:pointer;transition:all .12s;
+                       background:${lv===lvl?LEVEL_COLORS[lv]:'var(--surface)'};
+                       color:${lv===lvl?'#fff':'var(--muted)'}"
+                title="${LEVEL_LABELS[lv]}">
+                ${LEVEL_ICONS[lv]} ${LEVEL_LABELS[lv]}
+              </button>`).join('')}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`).join('');
 
-  const capChecks = ALL_CAPS.map(c => {
+  const capRows = ALL_CAPS.map(c => {
     const checked = !!effective[c.id];
-    return `<label class="perm-label" style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;
+    return `<label style="display:flex;align-items:flex-start;gap:10px;padding:9px 12px;
               border-radius:6px;cursor:pointer;border:1px solid var(--border);
               background:${checked?'var(--green-soft)':'var(--surface)'};transition:background .1s"
-              onclick="umTogglePerm(this,'cap')">
+              onclick="umToggleCap(this)">
       <input type="checkbox" class="perm-cap" value="${c.id}" ${checked?'checked':''}
         style="margin-top:2px;accent-color:var(--green);width:15px;height:15px;flex-shrink:0;pointer-events:none">
-      <div style="min-width:0">
+      <div>
         <div style="font-size:13px;font-weight:600">${c.label}</div>
-        <div style="font-size:11px;color:var(--muted);line-height:1.3">${c.desc}</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.3;margin-top:2px">${c.desc}</div>
       </div>
     </label>`;
   }).join('');
@@ -319,42 +369,56 @@ function _buildUserModal(u){
     <div id="um_custom_banner" style="margin-bottom:14px;padding:10px 14px;border-radius:8px;
          background:${hasCustom?'var(--green-soft)':'var(--surface)'};border:1px solid ${hasCustom?'var(--green)':'var(--border)'}">
       <div style="font-size:13px;font-weight:600;color:${hasCustom?'var(--green)':'var(--text)'}">
-        ${hasCustom?'✓ Custom permissions active.':'Using role defaults. Toggle anything to customise.'}
+        ${hasCustom?'✓ Custom permissions active — these override role defaults.':'Using role defaults. Change any level to customise.'}
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:4px">
         Base role: <b id="um_role_label">${u?.role||'operator'}</b>
         · <button onclick="umResetPerms()" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:12px;padding:0;text-decoration:underline">Reset to role defaults</button>
       </div>
     </div>
-    <div style="margin-bottom:16px">
-      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:10px">Pages &amp; Navigation</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px">${pageChecks}</div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:var(--muted)">
+      <b style="color:var(--text)">Access levels per page:</b>
+      &nbsp;
+      <span style="color:var(--muted)">✗ No Access</span> &nbsp;·&nbsp;
+      <span style="color:#3b82f6">👁 View Only — can see but not change anything</span> &nbsp;·&nbsp;
+      <span style="color:var(--accent)">✎ Modify — can add &amp; edit, not delete</span> &nbsp;·&nbsp;
+      <span style="color:var(--green)">✓ Full Control — add, edit, delete</span>
     </div>
+
+    <div style="margin-bottom:20px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:10px">
+        Page Access Levels
+      </div>
+      ${pageRows}
+    </div>
+
     <div>
-      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:10px">Capabilities</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px">${capChecks}</div>
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:10px">
+        Additional Capabilities
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px">
+        ${capRows}
+      </div>
     </div>`;
 
-  // ── RENDER MODAL — both tabs always in DOM ────────────────────────────────
+  // ── Build modal ───────────────────────────────────────────────────────────
   showModal(
     isNew ? 'Add User' : `Edit — ${escHtml(u.display_name)}`,
-    `<!-- Tab bar -->
-    <div style="display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:12px">
+    `<div style="display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:12px">
       <button id="um_btn_details" onclick="_switchUmTab('details')"
         style="padding:6px 14px;border-radius:6px;border:1px solid var(--border);cursor:pointer;
                font-size:13px;font-weight:600;background:var(--accent);color:#000">
         👤 Details
       </button>
-      <button id="um_btn_perms" onclick="_switchUmTab('permissions')"
+      <button id="um_btn_permissions" onclick="_switchUmTab('permissions')"
         style="padding:6px 14px;border-radius:6px;border:1px solid var(--border);cursor:pointer;
                font-size:13px;font-weight:600;background:var(--surface);color:var(--text)">
         🔐 Permissions ${hasCustom?'<span style="color:var(--green)">●</span>':''}
       </button>
     </div>
-    <!-- Details tab -->
     <div id="um_tab_details">${detailsHtml}</div>
-    <!-- Permissions tab (hidden by default) -->
-    <div id="um_tab_perms" style="display:none">${permsHtml}</div>`,
+    <div id="um_tab_permissions" style="display:none">${permsHtml}</div>`,
     `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
      <button class="btn btn-primary" id="umSaveBtn" onclick="saveUser()">
        ${isNew?'Create User':'Save Changes'}
@@ -363,65 +427,104 @@ function _buildUserModal(u){
   );
 }
 
-// Toggle checkbox + background on label click (pointer-events:none on input prevents double-fire)
-function umTogglePerm(label, type){
-  const cb = label.querySelector('input[type=checkbox]');
-  cb.checked = !cb.checked;
-  label.style.background = cb.checked
-    ? (type==='page' ? 'var(--accent-soft)' : 'var(--green-soft)')
-    : 'var(--surface)';
+// ── Permission controls ───────────────────────────────────────────────────────
+
+function umSetPageLevel(pageId, level){
+  const LEVEL_COLORS = ['var(--muted)','#3b82f6','var(--accent)','var(--green)'];
+  for(let lv = 0; lv <= 3; lv++){
+    const btn = document.getElementById(`pl_${pageId}_${lv}`);
+    if(!btn) continue;
+    const active = lv === level;
+    btn.dataset.active   = active ? '1' : '0';
+    btn.style.background = active ? LEVEL_COLORS[lv] : 'var(--surface)';
+    btn.style.color      = active ? '#fff'           : 'var(--muted)';
+    btn.style.borderColor = active ? LEVEL_COLORS[lv] : 'var(--border)';
+  }
 }
 
-// Reset permission checkboxes to current role defaults
+function umToggleCap(label){
+  const cb = label.querySelector('input[type=checkbox]');
+  cb.checked = !cb.checked;
+  label.style.background = cb.checked ? 'var(--green-soft)' : 'var(--surface)';
+}
+
 function umResetPerms(){
   const role = document.getElementById('um_role')?.value || 'operator';
   const def  = ROLE_DEFAULTS[role] || ROLE_DEFAULTS.operator;
-  document.querySelectorAll('.perm-page').forEach(cb => {
-    cb.checked = def.pages.includes(cb.value);
-    cb.closest('label').style.background = cb.checked ? 'var(--accent-soft)' : 'var(--surface)';
+  // Reset page levels
+  ALL_PAGES.forEach(p => {
+    const lv = def.page_levels?.[p.id] ?? 0;
+    umSetPageLevel(p.id, lv);
   });
-  document.querySelectorAll('.perm-cap').forEach(cb => {
-    cb.checked = !!def[cb.value];
+  // Reset caps
+  ALL_CAPS.forEach(c => {
+    const cb = document.querySelector(`.perm-cap[value="${c.id}"]`);
+    if(!cb) return;
+    cb.checked = !!def[c.id];
     cb.closest('label').style.background = cb.checked ? 'var(--green-soft)' : 'var(--surface)';
   });
+  const lbl = document.getElementById('um_role_label');
+  if(lbl) lbl.textContent = role;
 }
-
-function clearCustomPerms(){ umResetPerms(); }  // alias for old calls
 
 function umRoleChange(){
   const role = document.getElementById('um_role')?.value;
-  // Show/hide worker link
-  const wrap = document.getElementById('um_worker_wrap');
-  if(wrap) wrap.style.display = (role === 'operator' || role === 'staff') ? '' : 'none';
   // Update role label in permissions banner
   const lbl = document.getElementById('um_role_label');
   if(lbl) lbl.textContent = role;
-  // Update permission checkboxes to reflect new role defaults
+  // Worker link: always visible — any user can be linked to a worker
+  // (operators require it; managers/admins may optionally be linked)
+  // Reset permissions to new role defaults
   umResetPerms();
 }
 
 function _collectPermissions(){
-  const pageEls = document.querySelectorAll('.perm-page');
-  const capEls  = document.querySelectorAll('.perm-cap');
-  // Both tabs always in DOM, so this always works
-  const pages = [...pageEls].filter(e=>e.checked).map(e=>e.value);
-  const caps  = {};
-  capEls.forEach(e => { caps[e.value] = e.checked; });
-  return JSON.stringify({ pages, ...caps });
+  // Collect page_levels
+  const page_levels = {};
+  ALL_PAGES.forEach(p => {
+    let level = 0;
+    // Read active level via data-active attribute (set by umSetPageLevel)
+    for(let lv = 0; lv <= 3; lv++){
+      const btn = document.getElementById(`pl_${p.id}_${lv}`);
+      if(btn && btn.dataset.active === '1'){
+        level = lv;
+      }
+    }
+    page_levels[p.id] = level;
+  });
+
+  // Collect caps
+  const caps = {};
+  ALL_CAPS.forEach(c => {
+    const cb = document.querySelector(`.perm-cap[value="${c.id}"]`);
+    if(cb) caps[c.id] = cb.checked;
+  });
+
+  // Derive legacy fields for backend compatibility
+  const pages = Object.entries(page_levels).filter(([,l])=>l>0).map(([p])=>p);
+  const can_delete = Object.values(page_levels).some(l => l >= 3);
+  const can_edit_routings = (page_levels['routings'] || 0) >= 2;
+  const can_manage_users  = (page_levels['users']    || 0) >= 2;
+
+  return JSON.stringify({
+    page_levels, pages,
+    can_delete, can_edit_routings, can_manage_users,
+    ...caps
+  });
 }
 
 async function saveUser(){
   const userId = _umUserId;
-  const isNew = !userId;
-  const name  = document.getElementById('um_name')?.value.trim();
-  const uname = document.getElementById('um_user')?.value.trim().toLowerCase();
-  const role  = document.getElementById('um_role')?.value;
-  const active= document.getElementById('um_active')?.value === '1';
-  const wid   = document.getElementById('um_worker')?.value || null;
-  const pw    = document.getElementById('um_pw')?.value;
-  const pw2   = document.getElementById('um_pw2')?.value;
-  const pin   = document.getElementById('um_pin')?.value;
-  const pin2  = document.getElementById('um_pin2')?.value;
+  const isNew  = !userId;
+  const name   = document.getElementById('um_name')?.value.trim();
+  const uname  = document.getElementById('um_user')?.value.trim().toLowerCase();
+  const role   = document.getElementById('um_role')?.value;
+  const active = document.getElementById('um_active')?.value === '1';
+  const wid    = document.getElementById('um_worker')?.value || null;
+  const pw     = document.getElementById('um_pw')?.value;
+  const pw2    = document.getElementById('um_pw2')?.value;
+  const pin    = document.getElementById('um_pin')?.value;
+  const pin2   = document.getElementById('um_pin2')?.value;
 
   if(!name){ toast('Display name required','error'); return; }
   if(isNew && !uname){ toast('Username required','error'); return; }

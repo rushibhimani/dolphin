@@ -5,7 +5,10 @@
 // ── MACHINES ──
 async function renderMachines(){
   await loadAll();
-  document.getElementById('topbarActions').innerHTML=`<button class="btn btn-primary" onclick="openMachineModal()">+ Add Machine</button>`;
+  const canModify = authCanModify('machines');
+  const canDelete = authCanDelete('machines');
+  document.getElementById('topbarActions').innerHTML=canModify?`<button class="btn btn-primary" onclick="openMachineModal()">+ Add Machine</button>`:
+    `<span style="font-size:11px;color:var(--muted);padding:4px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px">👁 View Only</span>`;
   const byType={};
   allMachines.forEach(m=>{if(!byType[m.machine_type])byType[m.machine_type]=[];byType[m.machine_type].push(m);});
   document.getElementById('content').innerHTML=`
@@ -27,8 +30,8 @@ async function renderMachines(){
             </td>
             <td style="padding:9px 14px 9px 0">
               <div style="display:flex;gap:4px;justify-content:flex-end">
-                <button class="btn btn-ghost" style="font-size:11px;padding:3px 7px" onclick='openMachineModal(${JSON.stringify(m)})'>Edit</button>
-                <button class="btn btn-danger btn-icon" onclick="delMachine(${m.id})">✕</button>
+                ${canModify?`<button class="btn btn-ghost" style="font-size:11px;padding:3px 7px" onclick='openMachineModal(${JSON.stringify(m)})'>Edit</button>`:''}
+                ${canDelete?`<button class="btn btn-danger btn-icon" onclick="delMachine(${m.id})">✕</button>`:''}
               </div>
             </td>
           </tr>`).join('')}

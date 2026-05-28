@@ -10,9 +10,12 @@ async function loadWorkers(){
 
 async function renderWorkers(){
   await loadAll(); await loadWorkers();
+  const canModify = authCanModify('workers');
+  const canDelete = authCanDelete('workers');
   document.getElementById('topbarActions').innerHTML=`
     <button class="btn btn-secondary" onclick="showWorkerAvailability()">📅 Availability</button>
-    <button class="btn btn-primary" onclick="openWorkerModal()">+ Add Worker</button>`;
+    ${canModify?`<button class="btn btn-primary" onclick="openWorkerModal()">+ Add Worker</button>`:
+      `<span style="font-size:11px;color:var(--muted);padding:4px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px">👁 View Only</span>`}`;
 
   // Today's leave banner
   let todayLeaves = [];
@@ -45,7 +48,7 @@ function workerCard(w){
       </div>
       <div style="display:flex;gap:5px;align-items:center">
         <span class="badge" style="background:${w.is_active?'rgba(16,185,129,.12)':'rgba(107,116,138,.15)'};color:${statusCol}">${w.is_active?'Active':'Inactive'}</span>
-        <button class="btn btn-ghost" style="font-size:11px;padding:3px 7px" onclick="openWorkerModal(${w.id})">Edit</button>
+        ${canModify?`<button class="btn btn-ghost" style="font-size:11px;padding:3px 7px" onclick="openWorkerModal(${w.id})">Edit</button>`:''}
       </div>
     </div>
     <div class="card-body" style="padding:12px 16px">

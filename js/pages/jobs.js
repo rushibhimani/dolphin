@@ -8,9 +8,11 @@ async function renderJobs(){
   // Load next-op data in background
   api('GET','/api/jobs/next-ops').then(d=>{ jobNextOps=d||{}; renderJobsTable(); }).catch(()=>{});
 
+  const canModify  = authCanModify('jobs');
+  const canSched   = authHasPerm('can_schedule');
   document.getElementById('topbarActions').innerHTML=`
-    <button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button>
-    <button class="btn btn-primary" onclick="navigate('/jobs/new')">+ New Job</button>`;
+    ${canSched?`<button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button>`:''}
+    ${canModify?`<button class="btn btn-primary" onclick="navigate('/jobs/new')">+ New Job</button>`:''}`;
 
   renderJobsTable();
 }
@@ -142,6 +144,9 @@ async function bulkDeleteJobs(){
 }
 
 function jobRowHTML(j, inGroup=false){
+  const _jCanModify = authCanModify('jobs');
+  const _jCanDelete = authCanDelete('jobs');
+  const _jCanSched  = authHasPerm('can_schedule');
   const pct = j.ops_total ? Math.round(j.ops_done/j.ops_total*100) : 0;
   const nxt = jobNextOps[j.id];
   const nextOpHtml = nxt
@@ -194,16 +199,17 @@ function jobRowHTML(j, inGroup=false){
       </div>
 
       <div style="flex:0 0 auto;display:flex;gap:5px;flex-wrap:wrap" onclick="event.stopPropagation()">
-        ${j.priority_flag?'':'<button class="btn btn-danger btn-icon" title="Mark Urgent" onclick="setUrgent('+j.id+')">🚨</button>'}
-        ${j.is_on_hold
+        ${_jCanModify&&!j.priority_flag?'<button class="btn btn-danger btn-icon" title="Mark Urgent" onclick="setUrgent('+j.id+')">🚨</button>':''}
+        ${_jCanModify ? (j.is_on_hold
           ? `<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px;color:var(--amber)" title="Job on hold — schedule cleared. Click to release and allow rescheduling." onclick="unholdJob(${j.id})">⏸ On Hold</button>`
-          : `<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" title="Hold job — clears the schedule and pauses it until manually released." onclick="holdJob(${j.id})">Hold</button>`
+          : `<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" title="Hold job — clears the schedule and pauses it until manually released." onclick="holdJob(${j.id})">Hold</button>`)
+          : (j.is_on_hold?`<span style="font-size:11px;color:var(--amber);padding:3px 8px">⏸ On Hold</span>`:'')
         }
-        <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;${j.is_frozen?'color:var(--blue,#1d4ed8);font-weight:600':''}" title="${j.is_frozen?'Job is frozen — excluded from Schedule All. Click to unfreeze.':'Freeze job — keeps current schedule intact but excludes it from Schedule All.'}" onclick="toggleFreeze(${j.id})">${j.is_frozen?'🔒 Frozen':'🔒 Freeze'}</button>
-        <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="navigate('/jobs/${j.id}')">Edit</button>
-        <button class="btn btn-ghost btn-icon" title="Duplicate" onclick="duplicateJob(${j.id})">⧉</button>
-        ${j.status==='pending'&&!j.is_frozen&&!j.is_on_hold?`<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="scheduleJob(${j.id})">Schedule</button>`:''}
-        <button class="btn btn-danger btn-icon" title="Delete" onclick="delJob(${j.id})">✕</button>
+        ${_jCanModify?`<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;${j.is_frozen?'color:var(--blue,#1d4ed8);font-weight:600':''}" title="${j.is_frozen?'Job is frozen — excluded from Schedule All. Click to unfreeze.':'Freeze job — keeps current schedule intact but excludes it from Schedule All.'}" onclick="toggleFreeze(${j.id})">${j.is_frozen?'🔒 Frozen':'🔒 Freeze'}</button>`:''}
+        ${_jCanModify?`<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="navigate('/jobs/${j.id}')">Edit</button>`:''}
+        ${_jCanModify?`<button class="btn btn-ghost btn-icon" title="Duplicate" onclick="duplicateJob(${j.id})">⧉</button>`:''}
+        ${_jCanSched&&j.status==='pending'&&!j.is_frozen&&!j.is_on_hold?`<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="scheduleJob(${j.id})">Schedule</button>`:''}
+        ${_jCanDelete?`<button class="btn btn-danger btn-icon" title="Delete" onclick="delJob(${j.id})">✕</button>`:''}
       </div>
     </div>
     <div class="job-detail-panel" id="jpanel_${j.id}" onclick="expandJob(${j.id},true)"></div>

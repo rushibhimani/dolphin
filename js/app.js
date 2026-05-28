@@ -111,18 +111,22 @@ function toggleUserMenu(){
 function applyRoleUI(user) {
   const role = user?.role || 'operator';
   const perms = user?.permissions || {};
-  const allowedPages = new Set(perms.pages || []);
+  // Support both new page_levels and legacy pages array
+  const pageLevels = perms.page_levels || {};
+  const legacyPages = new Set(perms.pages || []);
 
-  // ── Sidebar nav items ──
+  function _pageLevel(page) {
+    if(typeof pageLevels[page] === 'number') return pageLevels[page];
+    return legacyPages.has(page) ? 3 : 0;
+  }
+
+  // ── Sidebar nav items — show if level >= 1 (any access) ──
   document.querySelectorAll('.nav-item[data-page]').forEach(el => {
     const page = el.dataset.page;
-    const show = allowedPages.has(page) ||
-                 (page === 'jobs'   && allowedPages.has('jobs')) ||
-                 (page === 'orders' && allowedPages.has('orders'));
-    el.style.display = show ? '' : 'none';
+    el.style.display = _pageLevel(page) >= 1 ? '' : 'none';
   });
 
-  // ── Section labels: hide "Setup" group label if nothing under it is visible ──
+  // ── Section labels: hide group label if nothing under it is visible ──
   document.querySelectorAll('.nav-group').forEach(label => {
     let sibling = label.nextElementSibling;
     let anyVisible = false;
@@ -146,7 +150,7 @@ function applyRoleUI(user) {
   ];
   const nav = document.getElementById('bottomNav');
   if (nav) {
-    const visible = BOT_NAV_ITEMS.filter(it => allowedPages.has(it.page));
+    const visible = BOT_NAV_ITEMS.filter(it => _pageLevel(it.page) >= 1);
     nav.innerHTML = visible.map(it =>
       `<button class="bn-item" data-page="${it.page}" onclick="navigate('/${it.page}')">
         <span class="bn-icon">${it.icon}</span>

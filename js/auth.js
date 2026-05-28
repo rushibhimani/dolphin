@@ -9,7 +9,6 @@ const AUTH_TOKEN_KEY  = 'dolphin_token';
 const AUTH_USER_KEY   = 'dolphin_user';
 
 // ── Current session ────────────────────────────────────────────────────────────
-// Populated after login or on page load from localStorage
 let _authToken = null;
 let _authUser  = null;   // { role, username, display_name, worker_id, permissions }
 
@@ -24,6 +23,32 @@ function authHasPerm(perm){
 function authCanAccess(page){
   return !!(_authUser?.permissions?.pages?.includes(page));
 }
+
+/**
+ * Get numeric access level for a page:
+ *   0 = no access
+ *   1 = view only  (can see page, cannot add/edit/delete)
+ *   2 = modify     (can add & edit, cannot delete)
+ *   3 = full       (can add, edit, delete)
+ *
+ * page_levels is an object like { routings: 2, machines: 1 }
+ * If not set, falls back to: pages array membership = level 3 (legacy behaviour)
+ */
+function authPageLevel(page){
+  const perms = _authUser?.permissions || {};
+  // New granular system
+  if(perms.page_levels && typeof perms.page_levels[page] === 'number'){
+    return perms.page_levels[page];
+  }
+  // Legacy fallback: if page is in the allowed pages list, treat as full control
+  if(perms.pages?.includes(page)) return 3;
+  return 0;
+}
+
+// Convenience helpers — use these in page renderers
+function authCanView(page)   { return authPageLevel(page) >= 1; }
+function authCanModify(page) { return authPageLevel(page) >= 2; }
+function authCanDelete(page) { return authPageLevel(page) >= 3; }
 
 function authSaveSession(token, user){
   _authToken = token;
@@ -48,7 +73,6 @@ function authLoadFromStorage(){
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
     const user  = localStorage.getItem(AUTH_USER_KEY);
     if(token && user){
-      // Quick expiry check without verifying signature (backend verifies on each request)
       try {
         const parts = token.split('.');
         if(parts.length === 3){
@@ -117,7 +141,6 @@ function authLogout(){
 // ── Called by api.js on 401 response ──────────────────────────────────────────
 function authHandle401(){
   authClearSession();
-  // Avoid redirect loop
   if(!window.location.pathname.includes('login')){
     window.location.href = '/login';
   }

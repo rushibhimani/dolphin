@@ -5,7 +5,10 @@
 // ── CUSTOMERS PAGE ──
 async function renderCustomers(){
   await loadAll();
-  document.getElementById('topbarActions').innerHTML=`<button class="btn btn-primary" onclick="openCustomerModal()">+ New Customer</button>`;
+  const canModify = authCanModify('customers');
+  const canDelete = authCanDelete('customers');
+  document.getElementById('topbarActions').innerHTML=canModify?`<button class="btn btn-primary" onclick="openCustomerModal()">+ New Customer</button>`:
+    `<span style="font-size:11px;color:var(--muted);padding:4px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px">👁 View Only</span>`;
   if(!allCustomers.length){
     document.getElementById('content').innerHTML=`<div class="card"><div class="empty">No customers yet. Click "+ New Customer" to add one.</div></div>`;
     return;
@@ -43,8 +46,8 @@ async function renderCustomers(){
           <td style="padding:10px 14px">
             <div style="display:flex;gap:5px">
               <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px" onclick="viewCustomer(${c.id})">View</button>
-              <button class="btn btn-ghost" style="font-size:11px;padding:4px 8px" onclick="openCustomerModal(${c.id})">Edit</button>
-              <button class="btn btn-danger btn-icon" onclick="delCustomer(${c.id})">✕</button>
+              ${canModify?`<button class="btn btn-ghost" style="font-size:11px;padding:4px 8px" onclick="openCustomerModal(${c.id})">Edit</button>`:''}
+              ${canDelete?`<button class="btn btn-danger btn-icon" onclick="delCustomer(${c.id})">✕</button>`:''}
             </div>
           </td>
         </tr>`).join('')}

@@ -14,9 +14,11 @@ async function renderOrders(){
 function _renderOrdersContent(){
   const el = document.getElementById('content');
 
+  const _ordCanModify = authCanModify('orders');
+  const _ordCanSched  = authHasPerm('can_schedule');
   document.getElementById('topbarActions').innerHTML = `
-    <button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button>
-    <button class="btn btn-primary" onclick="navigate('/orders/new')">+ New Order</button>`;
+    ${_ordCanSched?`<button class="btn btn-secondary" onclick="scheduleAll()">⚡ Schedule All</button>`:''}
+    ${_ordCanModify?`<button class="btn btn-primary" onclick="navigate('/orders/new')">+ New Order</button>`:''}`;
 
   if(!allOrders.length){
     el.innerHTML = `<div class="card"><div class="empty">No orders yet. Create one to get started.</div></div>`;
