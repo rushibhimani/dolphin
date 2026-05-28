@@ -240,7 +240,8 @@ class Job(Base):
     not_before          = Column(DateTime, nullable=True)
     material_ready_date = Column(DateTime, nullable=True)
     priority_flag       = Column(Boolean, default=False)
-    is_frozen           = Column(Boolean, default=False)   # skip in schedule-all
+    is_frozen           = Column(Boolean, default=False)   # skip in schedule-all (schedule kept intact)
+    is_on_hold          = Column(Boolean, default=False)   # schedule cleared, paused until released
     status              = Column(String, default="pending")
     notes               = Column(Text, nullable=True)
     total_price         = Column(Float, nullable=True)

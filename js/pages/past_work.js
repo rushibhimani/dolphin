@@ -24,7 +24,7 @@ async function renderPastWork() {
         <div class="card" style="padding:40px;text-align:center">
           <div style="font-size:32px;margin-bottom:12px">✅</div>
           <div style="font-size:15px;font-weight:600;margin-bottom:6px">All caught up!</div>
-          <div style="font-size:13px;color:var(--muted)">No unstarted operations from previous days.</div>
+          <div style="font-size:13px;color:var(--muted)">No overdue or running operations from previous days.</div>
         </div>`;
       return;
     }
@@ -40,7 +40,7 @@ async function renderPastWork() {
     let html = `
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
         <div style="font-size:13px;color:var(--muted)">
-          ${ops.length} unstarted operation(s) from ${dates.length} previous day(s)
+          ${ops.length} overdue/running operation(s) from ${dates.length} previous day(s)
         </div>
         <button class="btn btn-ghost" style="font-size:12px;margin-left:auto"
           onclick="scheduleAll()" title="Reschedule all to fit from today onwards">

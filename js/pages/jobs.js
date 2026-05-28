@@ -162,7 +162,8 @@ function jobRowHTML(j, inGroup=false){
 
       <div style="flex:0 0 110px;min-width:0" onclick="expandJob(${j.id})">
         <div class="mono" style="font-size:12px;font-weight:600">${j.job_number}</div>
-        ${j.is_frozen?'<span class="badge" style="background:var(--blue-soft,#dbeafe);color:var(--blue,#1d4ed8);margin-left:4px" title="Frozen — excluded from Schedule All">🔒 Frozen</span>':""}
+        ${j.is_frozen?'<span class="badge" style="background:var(--blue-soft,#dbeafe);color:var(--blue,#1d4ed8);margin-left:4px" title="Frozen — schedule intact, excluded from Schedule All">🔒 Frozen</span>':""}
+        ${j.is_on_hold?'<span class="badge" style="background:#fff7ed;color:var(--amber);margin-left:4px" title="On Hold — schedule cleared, waiting for manual release">⏸ Hold</span>':""}
         ${j.piece_number?`<div style="font-size:10px;color:var(--muted)">Piece ${j.piece_number}</div>`:''}
       </div>
 
@@ -194,13 +195,14 @@ function jobRowHTML(j, inGroup=false){
 
       <div style="flex:0 0 auto;display:flex;gap:5px;flex-wrap:wrap" onclick="event.stopPropagation()">
         ${j.priority_flag?'':'<button class="btn btn-danger btn-icon" title="Mark Urgent" onclick="setUrgent('+j.id+')">🚨</button>'}
-        ${j.is_frozen && j.status === 'pending'
-          ? `<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px;color:var(--amber)" title="Job on hold — click to release and allow rescheduling" onclick="unholdJob(${j.id})">⏸ On Hold</button>`
-          : `<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" title="Hold job — clears schedule and pauses it until manually released" onclick="holdJob(${j.id})">Hold</button>`
+        ${j.is_on_hold
+          ? `<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px;color:var(--amber)" title="Job on hold — schedule cleared. Click to release and allow rescheduling." onclick="unholdJob(${j.id})">⏸ On Hold</button>`
+          : `<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" title="Hold job — clears the schedule and pauses it until manually released." onclick="holdJob(${j.id})">Hold</button>`
         }
+        <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;${j.is_frozen?'color:var(--blue,#1d4ed8);font-weight:600':''}" title="${j.is_frozen?'Job is frozen — excluded from Schedule All. Click to unfreeze.':'Freeze job — keeps current schedule intact but excludes it from Schedule All.'}" onclick="toggleFreeze(${j.id})">${j.is_frozen?'🔒 Frozen':'🔒 Freeze'}</button>
         <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="navigate('/jobs/${j.id}')">Edit</button>
         <button class="btn btn-ghost btn-icon" title="Duplicate" onclick="duplicateJob(${j.id})">⧉</button>
-        ${j.status==='pending'&&!j.is_frozen?`<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="scheduleJob(${j.id})">Schedule</button>`:''}
+        ${j.status==='pending'&&!j.is_frozen&&!j.is_on_hold?`<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="scheduleJob(${j.id})">Schedule</button>`:''}
         <button class="btn btn-danger btn-icon" title="Delete" onclick="delJob(${j.id})">✕</button>
       </div>
     </div>
@@ -275,9 +277,11 @@ async function holdJob(id) {
     `Put ${name} on hold?
 
 This will:
-• Remove it from the Gantt schedule
-• Freeze it so Schedule All ignores it
-• Job stays in the system — release it to reschedule`,
+• Clear all pending/scheduled ops from the Gantt
+• Pause the job until you manually release it
+• Job stays in the system — unhold it to reschedule
+
+Note: Freeze keeps schedule intact but skips Schedule All.`,
     'Put on Hold'
   );
   if (!ok) return;

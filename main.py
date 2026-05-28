@@ -3199,7 +3199,7 @@ def job_dict(j, db):
         "product_variant": j.product_variant,
         "due_date": fmt(j.due_date), "not_before": fmt(j.not_before),
         "material_ready_date": fmt(j.material_ready_date),
-        "priority_flag": j.priority_flag, "is_frozen": bool(getattr(j, "is_frozen", False)), "status": j.status,
+        "priority_flag": j.priority_flag, "is_frozen": bool(getattr(j, "is_frozen", False)), "is_on_hold": bool(getattr(j, "is_on_hold", False)), "status": j.status,
         "routing_id": j.routing_id,
         "has_inline_ops": bool(j.inline_ops),
         "notes": j.notes,
@@ -3341,9 +3341,11 @@ def toggle_freeze(job_id: int):
 @app.post("/api/jobs/{job_id}/hold")
 def hold_job(job_id: int):
     """
-    Put a job on hold — clears scheduled/pending ops, freezes it.
-    Job stays in DB but disappears from Gantt and Today's Work.
-    Unhold to reschedule.
+    Put a job on hold — clears scheduled/pending ops and marks is_on_hold=True.
+    is_on_hold is separate from is_frozen:
+      - is_on_hold: schedule is cleared, job paused until manually released
+      - is_frozen:  schedule kept intact, just excluded from Schedule All
+    Job stays in DB but disappears from Gantt and Today's Work until unhold.
     """
     db = SessionLocal()
     j = db.query(Job).filter(Job.id == job_id).first()
@@ -3355,21 +3357,21 @@ def hold_job(job_id: int):
     for s in list(j.scheduled_ops):
         if s.status in ("scheduled", "pending"):
             db.delete(s)
-    j.is_frozen = True
-    j.status    = "pending"
+    j.is_on_hold = True
+    j.status     = "pending"
     db.commit(); db.close()
-    return {"id": job_id, "status": "pending", "is_frozen": True}
+    return {"id": job_id, "status": "pending", "is_on_hold": True}
 
 
 @app.post("/api/jobs/{job_id}/unhold")
 def unhold_job(job_id: int):
-    """Remove hold — unfreezes job so Schedule All picks it up."""
+    """Remove hold — clears is_on_hold so Schedule All picks it up again."""
     db = SessionLocal()
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j: db.close(); raise HTTPException(404, "Not found")
-    j.is_frozen = False
+    j.is_on_hold = False
     db.commit(); db.close()
-    return {"id": job_id, "is_frozen": False}
+    return {"id": job_id, "is_on_hold": False}
 
 
 @app.post("/api/jobs/{job_id}/duplicate")
@@ -3447,6 +3449,8 @@ def schedule_job(job_id: int):
     if not j: raise HTTPException(404, "Not found")
     if getattr(j, 'is_frozen', False):
         raise HTTPException(400, "Job is frozen — unfreeze it first")
+    if getattr(j, 'is_on_hold', False):
+        raise HTTPException(400, "Job is on hold — release hold first")
     if not j.routing_id and not j.inline_ops:
         raise HTTPException(400, "Job has no routing or inline ops")
     ok = _do_schedule(db, j)
@@ -3473,7 +3477,7 @@ def schedule_all():
     has_active = set()
     frozen_set = set()
     for j in jobs:
-        if getattr(j, 'is_frozen', False):
+        if getattr(j, 'is_frozen', False) or getattr(j, 'is_on_hold', False):
             frozen_set.add(j.id)
             continue
         active = any(s.status == "in_progress" for s in j.scheduled_ops)
@@ -4170,8 +4174,10 @@ def get_today(user: dict = Depends(require_any)):
 @app.get("/api/past-work")
 def get_past_work(days: int = 30, user: dict = Depends(require_any)):
     """
-    Return scheduled ops from past days that were never started.
-    These are ops with status=scheduled AND scheduled_end < today_start.
+    Return ops from past days that were never started OR are still running.
+    Includes:
+      - status=scheduled AND scheduled_end < today_start  (missed/unstarted)
+      - status=in_progress AND scheduled_start < today_start (started in a past day, still running)
     """
     db = SessionLocal()
     today     = now_ist().date()
@@ -4182,10 +4188,18 @@ def get_past_work(days: int = 30, user: dict = Depends(require_any)):
     if user.get("role") == "operator" and user.get("worker_id"):
         worker_filter_id = int(user["worker_id"])
 
+    from sqlalchemy import or_
     q = db.query(ScheduledOp).filter(
-        ScheduledOp.status == "scheduled",
-        ScheduledOp.scheduled_end   != None,
-        ScheduledOp.scheduled_end   <  t_start,
+        or_(
+            # Unstarted ops whose scheduled window is entirely in the past
+            (ScheduledOp.status == "scheduled") &
+            (ScheduledOp.scheduled_end != None) &
+            (ScheduledOp.scheduled_end < t_start),
+            # In-progress ops that were scheduled to start before today
+            (ScheduledOp.status == "in_progress") &
+            (ScheduledOp.scheduled_start != None) &
+            (ScheduledOp.scheduled_start < t_start),
+        ),
         ScheduledOp.scheduled_start >= cutoff,
     )
     if worker_filter_id:
