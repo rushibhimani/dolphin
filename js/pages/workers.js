@@ -35,6 +35,7 @@ async function renderWorkers(){
 }
 
 function workerCard(w){
+  const canModify = (typeof authCanModify === 'function') ? authCanModify('workers') : true;
   const statusCol = w.is_active ? 'var(--green)' : 'var(--muted)';
   return `<div class="card">
     <div class="card-hdr">
