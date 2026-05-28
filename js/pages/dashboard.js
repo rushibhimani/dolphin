@@ -117,10 +117,10 @@ async function renderDashboard(){
   <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.25);border-radius:10px;padding:12px 16px;margin-bottom:14px">
     <div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:8px">⚠ Needs Attention</div>
     <div style="display:flex;flex-direction:column;gap:6px;font-size:12px">
-      ${lateJobs.slice(0,3).map(j=>`<div>🔴 <strong>${j.job_number}</strong> (${j.customer_name}) — <span style="color:var(--red)">overdue by ${Math.round((new Date()-new Date(j.due_date))/86400000)}d</span>
+      ${lateJobs.slice(0,3).map(j=>`<div>🔴 <strong>${j.job_number}</strong> (${escHtml(j.customer_name)}) — <span style="color:var(--red)">overdue by ${Math.round((new Date()-new Date(j.due_date))/86400000)}d</span>
         <a onclick="navigate('/jobs');setTimeout(()=>expandJob(${j.id}),200)" style="cursor:pointer;color:var(--accent);margin-left:8px;font-size:11px">View →</a></div>`).join('')}
-      ${downMachines.map(m=>`<div>🔧 <strong>${m.name}</strong> — ${m.status} <a onclick="navigate('/machines')" style="cursor:pointer;color:var(--accent);margin-left:8px;font-size:11px">Manage →</a></div>`).join('')}
-      ${alerts.slice(0,2).map(a=>`<div>⚡ Urgent: <strong>${a.urgent_job}</strong> — worker <strong>${a.worker_name}</strong> tied up on lower-priority job</div>`).join('')}
+      ${downMachines.map(m=>`<div>🔧 <strong>${escHtml(m.name)}</strong> — ${m.status} <a onclick="navigate('/machines')" style="cursor:pointer;color:var(--accent);margin-left:8px;font-size:11px">Manage →</a></div>`).join('')}
+      ${alerts.slice(0,2).map(a=>`<div>⚡ Urgent: <strong>${a.urgent_job}</strong> — worker <strong>${escHtml(a.worker_name)}</strong> tied up on lower-priority job</div>`).join('')}
     </div>
   </div>` : ''}
 
@@ -141,7 +141,7 @@ async function renderDashboard(){
             <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
               ${j.job_number} ${j.priority_flag ? '🚨' : ''}
             </div>
-            <div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${j.customer_name} · Due ${fmtD(j.due_date)}</div>
+            <div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(j.customer_name)} · Due ${fmtD(j.due_date)}</div>
           </div>
           <div style="flex-shrink:0;text-align:right">
             <span class="cr-chip" style="background:${crColor}22;color:${crColor};border:1px solid ${crColor}55">CR ${cr.toFixed(1)}</span>
@@ -179,8 +179,8 @@ async function renderDashboard(){
         <div class="today-op-mini">
           <span style="width:8px;height:8px;border-radius:50%;background:var(--accent);flex-shrink:0"></span>
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${op.op_name}</div>
-            <div style="color:var(--muted);font-size:11px">${op.wc_name} · ${op.worker_name||'No worker'}</div>
+            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(op.op_name)}</div>
+            <div style="color:var(--muted);font-size:11px">${op.wc_name} · ${escHtml(op.worker_name||'No worker')}</div>
           </div>
           <span style="font-size:10px;color:var(--accent);flex-shrink:0">▶ Running</span>
         </div>`).join('')}
@@ -188,8 +188,8 @@ async function renderDashboard(){
         <div class="today-op-mini">
           <span style="width:8px;height:8px;border-radius:50%;background:var(--amber);flex-shrink:0"></span>
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${op.op_name}</div>
-            <div style="color:var(--muted);font-size:11px">${op.wc_name} · ${op.pause_reason||'Paused'}</div>
+            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(op.op_name)}</div>
+            <div style="color:var(--muted);font-size:11px">${op.wc_name} · ${escHtml(op.pause_reason||'Paused')}</div>
           </div>
           <span style="font-size:10px;color:var(--amber);flex-shrink:0">⏸ Paused</span>
         </div>`).join('')}
@@ -215,7 +215,7 @@ async function renderDashboard(){
         return `<div class="machine-row">
           <div style="display:flex;align-items:center;gap:8px">
             <span style="width:8px;height:8px;border-radius:50%;background:${dot};flex-shrink:0"></span>
-            <span style="font-weight:500">${m.name}</span>
+            <span style="font-weight:500">${escHtml(m.name)}</span>
           </div>
           <span style="font-size:11px;color:${isDown?'var(--red)':busy?'var(--accent)':'var(--muted)'}">${label}</span>
         </div>`;
@@ -233,8 +233,8 @@ async function renderDashboard(){
         ${pendingOrders.slice(0,4).map(o => `
           <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
             <div style="min-width:0">
-              <div style="font-weight:600">${o.order_number}</div>
-              <div style="color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${o.customer_name} · ${o.product_type}</div>
+              <div style="font-weight:600">${escHtml(o.order_number)}</div>
+              <div style="color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(o.customer_name)} · ${o.product_type}</div>
             </div>
             <div style="text-align:right;flex-shrink:0;margin-left:8px">
               <div style="font-size:11px;color:${o.is_late?'var(--red)':'var(--muted)'}">${fmtD(o.due_date)}</div>

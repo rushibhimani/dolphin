@@ -19,8 +19,8 @@ async function renderMachines(){
         <table style="width:100%;border-collapse:collapse"><tbody>
           ${ms.map(m=>`<tr style="border-bottom:1px solid var(--border)">
             <td style="padding:9px 14px">
-              <div style="font-family:var(--mono);font-size:12px">${m.name}</div>
-              ${m.code?`<span style="font-size:10px;color:var(--accent);font-family:var(--mono)">${m.code}</span>`:''}
+              <div style="font-family:var(--mono);font-size:12px">${escHtml(m.name)}</div>
+              ${m.code?`<span style="font-size:10px;color:var(--accent);font-family:var(--mono)">${escHtml(m.code)}</span>`:''}
               ${m.status&&m.status!=='active'?`<span style="font-size:10px;color:var(--orange);margin-left:4px">⚠ ${m.status}</span>`:''}
             </td>
             <td style="padding:9px 6px">
@@ -58,7 +58,7 @@ function openMachineModal(m){
       </div>
       <div class="form-group">
         <div class="fld-label">Machine Code</div>
-        <div style="padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:13px;color:var(--accent)">${m?.code||'Auto-assigned on save'}</div>
+        <div style="padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:13px;color:var(--accent)">${escHtml(m?.code||'Auto-assigned on save')}</div>
       </div>
     </div>
     <div class="form-row cols-2">

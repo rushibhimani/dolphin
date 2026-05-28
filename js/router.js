@@ -128,8 +128,8 @@ async function handleRoute() {
       case 'worker-reports': await renderWorkerReports(); break;
       case 'settings':      await renderSettings(); break;
       case 'users':
-        if (authGetUser()?.role !== 'admin') {
-          content.innerHTML = `<div class="empty" style="padding:40px">Access denied. Admin only.</div>`;
+        if (authPageLevel('users') < 1) {
+          content.innerHTML = `<div class="empty" style="padding:40px">Access denied — no permission for User Management.</div>`;
         } else { await renderUsers(); }
         break;
       default: await renderDashboard();
@@ -148,18 +148,28 @@ async function handleRoute() {
 function renderTopbarActions(page, params = {}) {
   const el = document.getElementById('topbarActions');
   if (!el) return;
+  // Permission-aware topbar actions — page renderers may override these
+  const canSched    = authHasPerm('can_schedule');
+  const jobsLevel   = authPageLevel('jobs');
+  const ordersLevel = authPageLevel('orders');
+  const quotLevel   = authPageLevel('quotations');
+  const routLevel   = authPageLevel('routings');
+  const machLevel   = authPageLevel('machines');
+  const workLevel   = authPageLevel('workers');
+  const custLevel   = authPageLevel('customers');
+
   const actions = {
     'dashboard':    ``,
-    'jobs':         `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Schedule All</span></button><button class="btn btn-primary" onclick="navigate('/jobs/new')">+ <span class="btn-label-long">New Job</span><span class="btn-label-short" style="display:none">Job</span></button>`,
+    'jobs':         `${canSched?`<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Schedule All</span></button>`:''}${jobsLevel>=2?`<button class="btn btn-primary" onclick="navigate('/jobs/new')">+ <span class="btn-label-long">New Job</span><span class="btn-label-short" style="display:none">Job</span></button>`:''}`,
     'job-new':      `<button class="btn btn-ghost" onclick="goBack('/jobs')">← <span class="btn-label-long">Back</span></button>`,
-    'orders':       `<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Schedule All</span></button><button class="btn btn-primary" onclick="navigate('/orders/new')">+ <span class="btn-label-long">New Order</span><span class="btn-label-short" style="display:none">Order</span></button>`,
-    'quotations':    `<button class="btn btn-primary" onclick="navigate('/quotations/new')">+ New Quote</button>`,
-    'quotation-new': `<button class="btn btn-ghost" onclick="navigate('/quotations')">← Back</button>`,
-    'quote':        `<button class="btn btn-secondary" onclick="navigate('/orders/new')">+ <span class="btn-label-long">New Order</span><span class="btn-label-short" style="display:none">Order</span></button>`,
-    'routings':     `<button class="btn btn-primary" onclick="navigate('/routings/new')">+ <span class="btn-label-long">New Routing</span><span class="btn-label-short" style="display:none">Routing</span></button>`,
-    'machines':     `<button class="btn btn-primary" onclick="openMachineModal(null)">+ <span class="btn-label-long">Add Machine</span><span class="btn-label-short" style="display:none">Machine</span></button>`,
-    'workers':      `<button class="btn btn-primary" onclick="openWorkerModal(null)">+ <span class="btn-label-long">Add Worker</span><span class="btn-label-short" style="display:none">Worker</span></button>`,
-    'customers':    `<button class="btn btn-primary" onclick="openCustomerModal(null)">+ <span class="btn-label-long">Add Customer</span><span class="btn-label-short" style="display:none">Customer</span></button>`,
+    'orders':       `${canSched?`<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Schedule All</span></button>`:''}${ordersLevel>=2?`<button class="btn btn-primary" onclick="navigate('/orders/new')">+ <span class="btn-label-long">New Order</span><span class="btn-label-short" style="display:none">Order</span></button>`:''}`,
+    'quotations':   `${quotLevel>=2?`<button class="btn btn-primary" onclick="navigate('/quotations/new')">+ New Quote</button>`:''}`,
+    'quotation-new':`<button class="btn btn-ghost" onclick="navigate('/quotations')">← Back</button>`,
+    'quote':        `${ordersLevel>=2?`<button class="btn btn-secondary" onclick="navigate('/orders/new')">+ <span class="btn-label-long">New Order</span><span class="btn-label-short" style="display:none">Order</span></button>`:''}`,
+    'routings':     `${routLevel>=2?`<button class="btn btn-primary" onclick="navigate('/routings/new')">+ <span class="btn-label-long">New Routing</span><span class="btn-label-short" style="display:none">Routing</span></button>`:''}`,
+    'machines':     `${machLevel>=2?`<button class="btn btn-primary" onclick="openMachineModal(null)">+ <span class="btn-label-long">Add Machine</span><span class="btn-label-short" style="display:none">Machine</span></button>`:''}`,
+    'workers':      `${workLevel>=2?`<button class="btn btn-primary" onclick="openWorkerModal(null)">+ <span class="btn-label-long">Add Worker</span><span class="btn-label-short" style="display:none">Worker</span></button>`:''}`,
+    'customers':    `${custLevel>=2?`<button class="btn btn-primary" onclick="openCustomerModal(null)">+ <span class="btn-label-long">Add Customer</span><span class="btn-label-short" style="display:none">Customer</span></button>`:''}`,
     'routing-new':  `<button class="btn btn-ghost" onclick="goBack('/routings')">← <span class="btn-label-long">Back</span></button>`,
     'routing-edit': `<button class="btn btn-ghost" onclick="goBack('/routings')">← <span class="btn-label-long">Back</span></button>`,
     'order-new':    `<button class="btn btn-ghost" onclick="goBack('/orders')">← <span class="btn-label-long">Back</span></button>`,

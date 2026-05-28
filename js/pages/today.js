@@ -240,14 +240,14 @@ function renderTimelineCard(op, nowISO, canControlOps=true, ownOpsOnly=false, my
     <!-- Job + Op name -->
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">
       <div style="flex:1;min-width:0">
-        <span style="font-size:13px;font-weight:700;color:var(--text)">${op.op_name}</span>
+        <span style="font-size:13px;font-weight:700;color:var(--text)">${escHtml(op.op_name)}</span>
         ${op.priority?'<span style="color:var(--red);margin-left:6px">🚨</span>':''}
       </div>
       ${statusBadge}
     </div>
     <!-- Customer / Job -->
     <div style="font-size:12px;color:var(--accent);font-family:var(--mono);margin-bottom:2px">${op.order_label||op.job_number}</div>
-    <div style="font-size:12px;color:var(--text-soft)">${op.customer}${op.worker_name?' · 👷 '+op.worker_name:''}</div>
+    <div style="font-size:12px;color:var(--text-soft)">${escHtml(op.customer)}${op.worker_name?' · 👷 '+op.worker_name:''}</div>
     ${pauseInfo}
     ${progressHtml}
     ${actionHtml}
@@ -295,7 +295,7 @@ function renderOpRow(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerI
         ${op.priority?'<span style="font-size:10px;color:var(--red)">🚨</span>':''}
         ${isOverdue?'<span style="font-size:10px;font-weight:700;color:var(--red);background:var(--red-soft);border:1px solid var(--red);border-radius:3px;padding:0 4px">LATE</span>':''}
         ${isPaused?'<span style="font-size:10px;font-weight:700;color:var(--amber);background:var(--amber-soft);border:1px solid var(--amber);border-radius:3px;padding:0 4px">PAUSED</span>':''}
-        <span style="font-size:13px;font-weight:600">${op.op_name}</span>
+        <span style="font-size:13px;font-weight:600">${escHtml(op.op_name)}</span>
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
         ${op.customer}${op.worker_name?' · 👷 '+op.worker_name:''}</div>

@@ -990,23 +990,78 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 # ── Auth Middleware ────────────────────────────────────────────────────────────
 # Protects ALL /api/ routes except the public allowlist below.
-# Also enforces operator restrictions at the route level.
+# Permission enforcement is based on resolved page_levels (from custom_permissions or role defaults).
 PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/pin-login", "/api/auth/pin-users"}
 
-# Routes operators are NOT allowed to access
-OPERATOR_BLOCKED = {
-    "/api/jobs", "/api/orders", "/api/customers", "/api/workers",
-    "/api/workcenters", "/api/routings", "/api/schedule-all", "/api/gantt",
-    "/api/capacity", "/api/reports", "/api/estimate", "/api/users", "/api/past-work",
-    "/api/shift-settings",
-}
+# Map URL path prefixes → page id for permission check
+# Ordered longest-first so more specific prefixes match first
+_PATH_TO_PAGE = [
+    ("/api/users",              "users"),
+    ("/api/shift-settings",     "settings"),
+    ("/api/company-settings",   "settings"),
+    ("/api/workcenters",        "machines"),
+    ("/api/machines",           "machines"),
+    ("/api/workers",            "workers"),
+    ("/api/leaves",             "workers"),
+    ("/api/routings",           "routings"),
+    ("/api/customers",          "customers"),
+    ("/api/tasks",              "tasks"),
+    ("/api/task-files",         "tasks"),
+    ("/api/quotations",         "quotations"),
+    ("/api/jobs",               "jobs"),
+    ("/api/schedule",           "jobs"),
+    ("/api/ops",                "today"),
+    ("/api/scheduled-ops",      "today"),
+    ("/api/orders",             "orders"),
+    ("/api/gantt",              "schedule"),
+    ("/api/heatmap",            "capacity"),
+    ("/api/capacity",           "capacity"),
+    ("/api/today",              "today"),
+    ("/api/past-work",          "past-work"),
+    ("/api/upcoming",           "upcoming"),
+    ("/api/reports",            "reports"),
+    ("/api/estimate",           "quote"),
+    ("/api/punch-calc",         "quote"),
+    ("/api/product-types",      "routings"),
+    ("/api/preemption-alerts",  "schedule"),
+    ("/api/notifications",      "dashboard"),
+    ("/api/pull-forward",       "today"),
+]
+
+# Read-only (GET) methods are allowed at level >= 1; write methods require level >= 2
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+def _page_for_path(path: str) -> str | None:
+    """Return the page id for an API path, or None if no match."""
+    for prefix, page in _PATH_TO_PAGE:
+        if path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + "?"):
+            return page
+    return None
+
+def _page_level_for_user(perms: dict, page: str) -> int:
+    """Return numeric access level for this page from resolved permissions."""
+    pl = perms.get("page_levels") or {}
+    if isinstance(pl, dict) and page in pl:
+        return int(pl[page])
+    # Fallback: legacy pages list = level 3
+    pages = perms.get("pages") or []
+    return 3 if page in pages else 0
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+def _sanitize_filename(name: str) -> str:
+    """Sanitize filename for Content-Disposition header to prevent header injection."""
+    import re
+    # Remove any characters that could break the header: quotes, newlines, semicolons
+    safe = re.sub(r'[\r\n"\';<>|]', '_', name or 'file')
+    return safe[:200]  # cap length
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        path = request.url.path
+        path   = request.url.path
+        method = request.method.upper()
 
         # Allow non-API paths (static files, frontend)
         if not path.startswith("/api/"):
@@ -1025,37 +1080,53 @@ class AuthMiddleware(BaseHTTPMiddleware):
         except Exception:
             return JSONResponse({"detail": "Invalid or expired token"}, status_code=401)
 
-        # Operators: only allowed to access today (own ops), tasks, and auth endpoints
-        if claims.get("role") == "operator":
-            allowed_for_operator = {"/api/today", "/api/auth/me", "/api/auth/change-password",
-                                    "/api/tasks", "/api/tasks/summary/counts"}
-            is_op_action = (
-                path.startswith("/api/scheduled-ops/") or
-                path.startswith("/api/ops/") or
-                path.startswith("/api/tasks/") or
-                path.startswith("/api/task-files/") or
-                path.startswith("/api/quotations") or
-                path.startswith("/api/company-settings")
-            )
-            if path not in allowed_for_operator and not is_op_action:
-                return JSONResponse({"detail": "Access denied for operator role"}, status_code=403)
+        role = claims.get("role", "operator")
 
-        # Staff (office): can see all today ops (read-only), tasks, workers list
-        if claims.get("role") == "staff":
-            allowed_for_staff = {"/api/today", "/api/auth/me", "/api/auth/change-password",
-                                 "/api/tasks", "/api/tasks/summary/counts", "/api/workers"}
-            is_staff_allowed = (
-                path.startswith("/api/tasks/") or
-                path.startswith("/api/task-files/") or
-                path.startswith("/api/workers") or
-                path.startswith("/api/quotations") or
-                path.startswith("/api/company-settings")
-            )
-            if path not in allowed_for_staff and not is_staff_allowed:
-                return JSONResponse({"detail": "Access denied for staff role"}, status_code=403)
+        # Always-allowed endpoints for any authenticated user
+        always_allowed = {"/api/auth/me", "/api/auth/change-password"}
+        if path in always_allowed:
+            request.state.user = claims
+            return await call_next(request)
 
-        # Attach user claims to request state for use in route handlers
-        request.state.user = claims
+        # Load resolved permissions from DB to get page_levels
+        # (JWT only carries role, not custom page_levels)
+        try:
+            _db = SessionLocal()
+            _u  = _db.query(User).filter(User.id == int(claims["sub"])).first()
+            perms = resolve_permissions(role, getattr(_u, "custom_permissions", None) if _u else None)
+            _db.close()
+        except Exception:
+            perms = resolve_permissions(role, None)
+
+        # Attach resolved permissions to request state for route handlers
+        request.state.user  = claims
+        request.state.perms = perms
+
+        # Determine which page this path maps to
+        page = _page_for_path(path)
+
+        if page is None:
+            # Unknown path — allow (debug/seed/misc endpoints handled below)
+            return await call_next(request)
+
+        level = _page_level_for_user(perms, page)
+
+        # No access at all
+        if level == 0:
+            return JSONResponse({"detail": f"Access denied — no permission for '{page}'"}, status_code=403)
+
+        # View-only: block all write operations
+        if level == 1 and method in _WRITE_METHODS:
+            return JSONResponse({"detail": f"Access denied — view-only permission for '{page}'"}, status_code=403)
+
+        # Modify (level 2): block DELETE operations
+        if level == 2 and method == "DELETE":
+            return JSONResponse({"detail": f"Access denied — cannot delete (modify-only permission for '{page}')"}, status_code=403)
+
+        # Operators: restrict to own ops only (additional check per op in route handler)
+        if role == "operator" and path.startswith("/api/ops/") and method in _WRITE_METHODS:
+            pass  # enforced inside the route handler with worker_id check
+
         return await call_next(request)
 
 app.add_middleware(AuthMiddleware)
@@ -1104,7 +1175,6 @@ def _user_dict(u):
         "custom_permissions": u.custom_permissions,   # raw JSON string or None
     }
 
-@app.post("/api/auth/login")
 @app.post("/api/auth/login")
 def login(data: dict, request: Request):
     """Password login — returns JWT token. Rate-limited: 10 attempts per 15 min per IP."""
@@ -1924,8 +1994,16 @@ async def upload_task_file(
     if len(content) > MAX_SIZE:
         db.close(); raise HTTPException(400, "File too large (max 20 MB)")
 
-    # Store with UUID name to avoid collisions
+    # Validate file extension — only allow safe document/image types
+    ALLOWED_EXTENSIONS = {
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+        '.txt', '.csv', '.jpg', '.jpeg', '.png', '.gif', '.webp',
+        '.mp4', '.mov', '.zip', '.rar', '.7z', '.dwg', '.dxf', '.step', '.stp',
+    }
     ext = os.path.splitext(file.filename or "file")[1].lower()
+    if ext and ext not in ALLOWED_EXTENSIONS:
+        db.close()
+        raise HTTPException(400, f"File type '{ext}' not allowed. Allowed types: documents, images, CAD files.")
     stored = f"{uuid.uuid4().hex}{ext}"
     path = os.path.join(TASK_FILES_DIR, stored)
     with open(path, "wb") as f_out:
@@ -1961,8 +2039,9 @@ def download_task_file(file_id: int, user: dict = Depends(require_any)):
     db.close()
     if not os.path.exists(path):
         raise HTTPException(404, "File missing from server")
+    safe_name = _sanitize_filename(filename)
     return FastFileResponse(path, media_type=mime,
-                            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+                            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'})
 
 @app.delete("/api/task-files/{file_id}")
 def delete_task_file(file_id: int, user: dict = Depends(require_any)):
@@ -2200,7 +2279,7 @@ def generate_quote_pdf(qid: int, user: dict = Depends(require_any)):
     _draw_quote_pdf(buf, q, items, co_name, co_addr, co_gstin, co_email, co_phone, co_website)
     buf.seek(0)
     return StreamingResponse(buf, media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{q.quote_number}.pdf"'})
+        headers={"Content-Disposition": f'attachment; filename="{_sanitize_filename(q.quote_number)}.pdf"'})
 
 
 def _draw_quote_pdf(buf, q, items, co_name, co_addr, co_gstin, co_email, co_phone, co_website):
@@ -4277,7 +4356,7 @@ def get_upcoming(days: int = 7):
     db.close(); return result
 
 @app.get("/api/debug/today")
-def debug_today():
+def debug_today(user: dict = Depends(require_admin)):
     db = SessionLocal()
     today = now_ist().date()
     t_start = datetime(today.year, today.month, today.day, 0, 0)
@@ -4381,7 +4460,7 @@ def update_op_status(op_id: int, data: dict, request: Request):
     return {"ok": True}
 
 @app.put("/api/ops/{op_id}/assign-worker")
-def assign_worker_to_op(op_id: int, data: dict):
+def assign_worker_to_op(op_id: int, data: dict, user: dict = Depends(require_manager)):
     db = SessionLocal()
     s = db.query(ScheduledOp).filter(ScheduledOp.id == op_id).first()
     if not s: raise HTTPException(404, "Not found")
@@ -5372,7 +5451,7 @@ def reports_summary():
 # SEED / UTILITY
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/api/backfill-codes")
-def backfill_codes():
+def backfill_codes(user: dict = Depends(require_admin)):
     db = SessionLocal()
     updated = 0
     for wc in db.query(WorkCenter).order_by(WorkCenter.id).all():
@@ -5384,7 +5463,7 @@ def backfill_codes():
     db.commit(); db.close(); return {"updated": updated}
 
 @app.post("/api/seed-real")
-def seed_real(data: dict = {}):
+def seed_real(data: dict, user: dict = Depends(require_admin)):
     db = SessionLocal()
     force = data.get("force", False)
     if not force and (db.query(Worker).count() > 0 or db.query(WorkCenter).count() > 0):
@@ -5434,7 +5513,7 @@ def seed_real(data: dict = {}):
     return {"msg":"Real data seeded","workers":len(workers_data),"machines":len(machines_data)}
 
 @app.post("/api/seed-punch-routings")
-def seed_punch_routings():
+def seed_punch_routings(user: dict = Depends(require_admin)):
     """
     Seed all 8 standard Punch routings with formula-based op times.
     Formula types, MRR, and depth values sourced from punch_lead_time.xlsx.

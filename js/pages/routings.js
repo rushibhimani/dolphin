@@ -14,8 +14,8 @@ async function renderRoutings(){
     return`<div style="padding:14px 18px;border-bottom:1px solid var(--border)">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
         <div>
-          <div style="font-weight:600;margin-bottom:2px">${r.name}</div>
-          <div style="font-size:11px;color:var(--muted)">${r.product_type}${r.description?' · '+r.description:''} · ${r.operations.length} operations · ${fmtTotal(totalMins)} total · ${r.material_lead_days}d material lead</div>
+          <div style="font-weight:600;margin-bottom:2px">${escHtml(r.name)}</div>
+          <div style="font-size:11px;color:var(--muted)">${escHtml(r.product_type)}${r.description?' · '+r.description:''} · ${r.operations.length} operations · ${fmtTotal(totalMins)} total · ${r.material_lead_days}d material lead</div>
           ${r.operations.length===0?`<div style="font-size:11px;color:var(--red);margin-top:3px">⚠ No operations defined — add at least one</div>`:''}
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0">

@@ -80,7 +80,7 @@ function renderJobsTable(){
       const anyLate = pieces.some(p=>p.is_late);
       html += `<div style="margin-bottom:6px">
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px 8px 0 0;padding:8px 14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-          <span class="mono" style="color:var(--accent);font-weight:600;font-size:13px">${order?.order_number||'ORD-?'}</span>
+          <span class="mono" style="color:var(--accent);font-weight:600;font-size:13px">${escHtml(order?.order_number||'ORD-?')}</span>
           <span style="font-size:12px;color:var(--muted)">${pieces[0]?.customer_name} · ${pieces[0]?.product_type} · ${pieces.length} pcs</span>
           <div class="prog-bar" style="width:80px;flex-shrink:0"><div class="prog-fill" style="width:${pct}%"></div></div>
           <span style="font-size:11px;color:var(--muted)">${done}/${pieces.length} done</span>
@@ -151,7 +151,7 @@ function jobRowHTML(j, inGroup=false){
   const nxt = jobNextOps[j.id];
   const nextOpHtml = nxt
     ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">
-        ${nxt.status==='in_progress'?'▶':'⏱'} <span style="color:var(--accent)">${nxt.op_name}</span> · ${nxt.wc_name}${nxt.scheduled_start?' · '+fmtDT(nxt.scheduled_start):''}
+        ${nxt.status==='in_progress'?'▶':'⏱'} <span style="color:var(--accent)">${nxt.op_name}</span> · ${escHtml(nxt.wc_name)}${nxt.scheduled_start?' · '+fmtDT(nxt.scheduled_start):''}
        </div>`
     : '';
   const blockHtml = j.status==='paused' ? `<span title="Paused" style="color:var(--amber)">⏸</span>` :
@@ -166,16 +166,16 @@ function jobRowHTML(j, inGroup=false){
       <svg class="expand-icon" id="jicon_${j.id}" fill="none" stroke="currentColor" viewBox="0 0 24 24" onclick="expandJob(${j.id})" style="width:14px;height:14px;flex-shrink:0;transition:transform .15s"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
 
       <div style="flex:0 0 110px;min-width:0" onclick="expandJob(${j.id})">
-        <div class="mono" style="font-size:12px;font-weight:600">${j.job_number}</div>
+        <div class="mono" style="font-size:12px;font-weight:600">${escHtml(j.job_number)}</div>
         ${j.is_frozen?'<span class="badge" style="background:var(--blue-soft,#dbeafe);color:var(--blue,#1d4ed8);margin-left:4px" title="Frozen — schedule intact, excluded from Schedule All">🔒 Frozen</span>':""}
         ${j.is_on_hold?'<span class="badge" style="background:#fff7ed;color:var(--amber);margin-left:4px" title="On Hold — schedule cleared, waiting for manual release">⏸ Hold</span>':""}
         ${j.piece_number?`<div style="font-size:10px;color:var(--muted)">Piece ${j.piece_number}</div>`:''}
       </div>
 
-      ${inGroup?'':`<div style="flex:1 1 120px;min-width:0;font-size:12px">${j.customer_name}</div>`}
+      ${inGroup?'':`<div style="flex:1 1 120px;min-width:0;font-size:12px">${escHtml(j.customer_name)}</div>`}
 
       <div style="flex:1 1 140px;min-width:0">
-        <div style="font-size:12px;font-weight:500">${j.product_type} ${j.product_size||''}</div>
+        <div style="font-size:12px;font-weight:500">${j.product_type} ${escHtml(j.product_size||'')}</div>
         ${nextOpHtml}
       </div>
 
@@ -231,14 +231,14 @@ async function expandJob(id,keepOpen=false){
   const ops=j.scheduled_ops||[];
   panel.innerHTML=`
     <div class="detail-grid">
-      <div class="detail-item"><div class="dl">PO Number</div><div class="dv mono" style="font-size:12px">${j.po_number||'—'}</div></div>
-      <div class="detail-item"><div class="dl">Size / Variant</div><div class="dv" style="font-size:12px">${j.product_size}${j.product_variant?' · '+j.product_variant:''}</div></div>
+      <div class="detail-item"><div class="dl">PO Number</div><div class="dv mono" style="font-size:12px">${escHtml(j.po_number||'—')}</div></div>
+      <div class="detail-item"><div class="dl">Size / Variant</div><div class="dv" style="font-size:12px">${escHtml(j.product_size)}${j.product_variant?' · '+j.product_variant:''}</div></div>
       <div class="detail-item"><div class="dl">Est. Finish</div><div class="dv mono" style="font-size:12px;color:${j.is_late?'var(--red)':'inherit'}">${fmtD(j.scheduled_finish)||'—'}${j.is_late?' ⚠':''}</div></div>
       <div class="detail-item"><div class="dl">Material Ready</div><div class="dv mono" style="font-size:12px">${j.material_ready_date?fmtD(j.material_ready_date):'Immediate'}</div></div>
       <div class="detail-item"><div class="dl">Not Before</div><div class="dv mono" style="font-size:12px">${j.not_before?fmtDT(j.not_before):'—'}</div></div>
       <div class="detail-item"><div class="dl">Created</div><div class="dv mono" style="font-size:12px">${fmtD(j.created_at)}</div></div>
       <div class="detail-item"><div class="dl">Total Price</div><div class="dv mono" style="font-size:13px;color:var(--green);font-weight:500">${fmtINR(j.total_price)}</div></div>
-      ${j.notes?`<div class="detail-item" style="grid-column:1/-1"><div class="dl">Notes</div><div class="dv" style="font-size:12px;color:var(--muted)">${j.notes}</div></div>`:''}
+      ${j.notes?`<div class="detail-item" style="grid-column:1/-1"><div class="dl">Notes</div><div class="dv" style="font-size:12px;color:var(--muted)">${escHtml(j.notes)}</div></div>`:''}
     </div>
     ${j.is_late?`<div class="warn-box">⚠ Scheduled finish <strong>${fmtD(j.scheduled_finish)}</strong> is after due date <strong>${fmtD(j.due_date)}</strong></div>`:''}
     <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:8px">Operations</div>
@@ -247,8 +247,8 @@ async function expandJob(id,keepOpen=false){
       const cls=op.status==='in_progress'?'op-line inprog':op.status==='completed'?'op-line done':op.status==='paused'?'op-line paused':'op-line';
       return`<div class="${cls}">
         <span class="mono" style="font-size:11px;color:var(--muted)">${op.sequence}</span>
-        <span style="font-size:12px;font-weight:500">${op.op_name}</span>
-        <span style="font-size:11px;color:var(--muted);font-family:var(--mono)">${op.wc_name} · ${op.worker_name?'👷 '+op.worker_name:'<span style=\'color:var(--orange)\'>⚠ No worker</span>'} · ${fmtSetup(op.setup_time_mins)} setup · ${fmtWork(op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60)} work${op.setup_waived?' <span style=\'color:var(--green);font-size:10px\'>(machine setup waived)</span>':''}</span>
+        <span style="font-size:12px;font-weight:500">${escHtml(op.op_name)}</span>
+        <span style="font-size:11px;color:var(--muted);font-family:var(--mono)">${escHtml(op.wc_name)} · ${op.worker_name?'👷 '+op.worker_name:'<span style=\'color:var(--orange)\'>⚠ No worker</span>'} · ${fmtSetup(op.setup_time_mins)} setup · ${fmtWork(op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60)} work${op.setup_waived?' <span style=\'color:var(--green);font-size:10px\'>(machine setup waived)</span>':''}</span>
         <span style="font-size:11px;color:var(--muted);font-family:var(--mono)">${op.scheduled_start?fmtDT(op.scheduled_start)+' → '+fmtDT(op.scheduled_end):'Not scheduled'}</span>
         <span>${sBadge(op.status)}</span>
         <span style="display:flex;gap:4px">
@@ -362,7 +362,7 @@ async function openJobModal(editId){
     .map(r=>`<option value="${r.id}" ${editJob?.routing_id==r.id?'selected':''}>${r.name} (${r.product_type})</option>`)
     .join('');
 
-  showModal(editJob ? `Edit — ${editJob.job_number}` : 'New Job', `
+  showModal(editJob ? `Edit — ${escHtml(editJob.job_number)}` : 'New Job', `
 
     <div class="form-section">Customer & Pricing</div>
     <div class="form-row cols-2">
@@ -571,8 +571,8 @@ function renderJobOpsTable(){
     <tr id="opovrow_${i}" class="${op.included?'':'excluded'}">
       <td><input type="checkbox" id="opchk_${i}" ${op.included?'checked':''} onchange="toggleOp(${i},this.checked)" style="width:14px;height:14px;accent-color:var(--accent)"></td>
       <td class="mono" style="color:var(--muted);text-align:center">${i+1}</td>
-      <td style="font-weight:500">${op.name}${op.is_optional?' <span style="font-size:10px;color:var(--muted)">(opt)</span>':''}</td>
-      <td style="color:var(--muted);font-family:var(--mono);font-size:11px">${op.wc_name}</td>
+      <td style="font-weight:500">${escHtml(op.name)}${op.is_optional?' <span style="font-size:10px;color:var(--muted)">(opt)</span>':''}</td>
+      <td style="color:var(--muted);font-family:var(--mono);font-size:11px">${escHtml(op.wc_name)}</td>
       <td><input type="number" id="opsetup_${i}" value="${Math.round(sMins)}" min="0" step="5" onchange="recalcOp(${i})" ${op.included?'':'disabled'} title="Setup time in minutes"></td>
       <td><input type="number" id="opwork_${i}" value="${Math.round(wMins)}" min="0" step="10" onchange="recalcOp(${i})" ${op.included?'':'disabled'} title="Work time in minutes"></td>
       <td id="optot_${i}" class="mono" style="color:var(--muted);text-align:right">${fmtTotal(totMins)}</td>

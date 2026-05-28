@@ -24,7 +24,7 @@ async function renderWorkers(){
   const leaveBanner = todayLeaves.length ? `
     <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <span style="font-size:12px;font-weight:600;color:var(--red)">⚠ On Leave Today:</span>
-      ${todayLeaves.map(l=>`<span class="badge badge-urgent">${l.worker_name} (${l.type})</span>
+      ${todayLeaves.map(l=>`<span class="badge badge-urgent">${escHtml(l.worker_name)} (${l.type})</span>
         <button class="btn btn-danger btn-sm" onclick="markAbsent(${l.worker_id},'${l.worker_name}')">Reassign Ops</button>`).join('')}
     </div>` : '';
 
@@ -39,9 +39,9 @@ function workerCard(w){
   return `<div class="card">
     <div class="card-hdr">
       <div>
-        <div style="font-weight:600;margin-bottom:2px">${w.name}</div>
+        <div style="font-weight:600;margin-bottom:2px">${escHtml(w.name)}</div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-          ${w.code?`<span style="font-family:var(--mono);font-size:11px;background:rgba(245,158,11,.12);color:var(--accent);padding:1px 6px;border-radius:4px">${w.code}</span>`:''}
+          ${w.code?`<span style="font-family:var(--mono);font-size:11px;background:rgba(245,158,11,.12);color:var(--accent);padding:1px 6px;border-radius:4px">${escHtml(w.code)}</span>`:''}
           ${w.worker_type==='office'?`<span style="font-size:11px;background:rgba(99,102,241,.12);color:#818cf8;padding:1px 6px;border-radius:4px">💼 Office</span>`:''}
           <span style="font-size:11px;color:var(--muted)">${w.role||'Operator'}${w.phone?' · '+w.phone:''}</span>
         </div>
@@ -93,7 +93,7 @@ async function showWorkerAvailability(){
       <tbody>
       ${data.map(w=>`<tr>
         <td style="padding:8px 12px;font-size:12px;white-space:nowrap">
-          <div style="font-weight:500">${w.name}</div>
+          <div style="font-weight:500">${escHtml(w.name)}</div>
           <div style="font-size:10px;color:var(--muted)">${w.role||''}</div>
         </td>
         ${days.map(d=>{
@@ -101,7 +101,7 @@ async function showWorkerAvailability(){
           const isToday=d===today.toISOString().slice(0,10);
           const bg=isLeave?'rgba(239,68,68,.25)':isToday?'rgba(245,158,11,.15)':'var(--surface)';
           const tc=isLeave?'var(--red)':isToday?'var(--accent)':'var(--border)';
-          return`<td style="padding:3px"><div style="width:40px;height:40px;border-radius:4px;background:${bg};display:flex;align-items:center;justify-content:center;font-size:11px;color:${tc};margin:auto" title="${w.name} - ${d}">${isLeave?'OFF':isToday?'★':''}</div></td>`;
+          return`<td style="padding:3px"><div style="width:40px;height:40px;border-radius:4px;background:${bg};display:flex;align-items:center;justify-content:center;font-size:11px;color:${tc};margin:auto" title="${escHtml(w.name)} - ${d}">${isLeave?'OFF':isToday?'★':''}</div></td>`;
         }).join('')}
       </tr>`).join('')}
       </tbody>
@@ -131,7 +131,7 @@ function openWorkerModal(editId){
       </div>
     </div>`).join('');
 
-  showModal(w?`Edit — ${w.name}`:'Add Worker',`
+  showModal(w?`Edit — ${escHtml(w.name)}`:'Add Worker',`
     <div class="form-section">Worker Details</div>
     <div class="form-row cols-2">
       <div class="form-group">

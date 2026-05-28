@@ -69,10 +69,10 @@ async function renderUpcoming(){
               ${op.priority?'<span style="color:var(--red);font-size:10px;margin-left:4px">🚨</span>':''}
             </td>
             <td style="padding:7px 8px;font-weight:600;font-size:13px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                title="${op.op_name}">${op.op_name}</td>
-            <td style="padding:7px 8px;font-size:12px;color:var(--muted);white-space:nowrap">${op.worker_name||'—'}</td>
+                title="${escHtml(op.op_name)}">${escHtml(op.op_name)}</td>
+            <td style="padding:7px 8px;font-size:12px;color:var(--muted);white-space:nowrap">${escHtml(op.worker_name||'—')}</td>
             <td style="padding:7px 8px;font-size:11px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                title="${op.customer}">${op.customer}</td>
+                title="${escHtml(op.customer)}">${escHtml(op.customer)}</td>
             <td style="padding:7px 12px;font-size:11px;font-family:var(--mono);color:var(--muted);white-space:nowrap;text-align:right">${startTime} → ${endTime}</td>
             <td style="padding:7px 8px;font-size:11px;font-family:var(--mono);color:var(--muted);text-align:right;white-space:nowrap">${estMins}min</td>
           </tr>`;

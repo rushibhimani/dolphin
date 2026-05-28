@@ -90,11 +90,11 @@ function orderCardHTML(o){
       </div>
       <div style="min-width:0;flex:1">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px">
-          <span class="mono" style="font-size:14px;font-weight:600;color:var(--accent)">${o.order_number}</span>
+          <span class="mono" style="font-size:14px;font-weight:600;color:var(--accent)">${escHtml(o.order_number)}</span>
           ${statusBadge}
           ${isLate?'<span class="badge badge-late">LATE</span>':''}
         </div>
-        <div style="font-size:13px;font-weight:500">${o.customer_name} · ${o.product_type} ${o.product_size||''} ${o.product_variant||''}</div>
+        <div style="font-size:13px;font-weight:500">${escHtml(o.customer_name)} · ${o.product_type} ${o.product_size||''} ${o.product_variant||''}</div>
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;align-items:center">
         <button class="btn btn-ghost" style="font-size:12px;padding:5px 10px" onclick="viewOrderPieces(${o.id})">View Pieces</button>
@@ -152,7 +152,7 @@ async function viewOrderPieces(orderId){
   const html = pieces.map(p=>`
     <tr style="border-top:1px solid var(--border)">
       <td style="padding:7px 10px;font-family:var(--mono);font-size:12px;color:var(--accent)">P${String(p.piece_number).padStart(2,'0')}</td>
-      <td style="padding:7px 10px;font-family:var(--mono);font-size:11px;color:var(--muted)">${p.job_number}</td>
+      <td style="padding:7px 10px;font-family:var(--mono);font-size:11px;color:var(--muted)">${escHtml(p.job_number)}</td>
       <td style="padding:7px 10px">${sBadge(p.status)}</td>
       <td style="padding:7px 10px;font-family:var(--mono);font-size:11px">${p.scheduled_finish?fmtD(p.scheduled_finish):'—'}</td>
       <td style="padding:7px 10px">
@@ -166,7 +166,7 @@ async function viewOrderPieces(orderId){
       </td>
     </tr>`).join('');
 
-  showModal(`${order.order_number} — Pieces (${order.quantity})`,`
+  showModal(`${escHtml(order.order_number)} — Pieces (${order.quantity})`,`
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
       <div class="stat-card" style="padding:10px"><div class="stat-label">Total</div><div class="stat-value">${order.quantity}</div></div>
       <div class="stat-card" style="padding:10px"><div class="stat-label">Done</div><div class="stat-value" style="color:var(--green)">${order.pieces_done}</div></div>
@@ -223,7 +223,7 @@ async function bulkOverrideOrder(orderId){
     work_time_mins: op.work_time_mins!=null?op.work_time_mins:(op.work_time_hrs||0)*60,
     work_time_hrs: op.work_time_hrs, is_optional: op.is_optional, included: true
   }));
-  showModal(`Edit Times — All Pieces of ${order.order_number}`,
+  showModal(`Edit Times — All Pieces of ${escHtml(order.order_number)}`,
     `<div style="font-size:12px;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px">
       ⚠ This will apply new times to <strong>all pending/scheduled pieces</strong>. In-progress and completed pieces are not affected. Jobs will be reset to pending and need rescheduling.
     </div>

@@ -36,7 +36,7 @@ async function renderCustomers(){
         </tr></thead>
         <tbody id="customersBody">
         ${sorted.map(c=>`<tr>
-          <td style="padding:10px 14px;font-weight:500">${c.name}</td>
+          <td style="padding:10px 14px;font-weight:500">${escHtml(c.name)}</td>
           <td style="padding:10px 14px;font-family:var(--mono);font-size:11px">${c.phone||'—'}</td>
           <td style="padding:10px 14px;font-size:12px;color:var(--muted)">${c.contact_person||'—'}</td>
           <td style="padding:10px 14px;font-family:var(--mono)">${c.job_count}</td>
@@ -65,7 +65,7 @@ function filterCustomers(q){
 
 function openCustomerModal(editId){
   const c = editId ? allCustomers.find(x=>x.id===editId) : null;
-  showModal(c?`Edit — ${c.name}`:'New Customer',`
+  showModal(c?`Edit — ${escHtml(c.name)}`:'New Customer',`
     <div class="form-row cols-2">
       <div class="form-group">
         <div class="fld-label">Customer Name <span style="color:var(--red)">*</span></div>
@@ -150,14 +150,14 @@ async function viewCustomer(id){
   const c = await api('GET',`/api/customers/${id}`);
   const jobsHtml = c.jobs.length ? c.jobs.map(j=>`
     <tr style="border-bottom:1px solid var(--border)">
-      <td style="padding:8px 12px;font-family:var(--mono);font-size:12px">${j.job_number}</td>
-      <td style="padding:8px 12px;font-size:12px">${j.product_type}${j.product_size?' '+j.product_size:''}</td>
+      <td style="padding:8px 12px;font-family:var(--mono);font-size:12px">${escHtml(j.job_number)}</td>
+      <td style="padding:8px 12px;font-size:12px">${escHtml(j.product_type)}${j.product_size?' '+j.product_size:''}</td>
       <td style="padding:8px 12px;font-size:11px;font-family:var(--mono)">${fmtD(j.due_date)}</td>
       <td style="padding:8px 12px">${sBadge(j.status)}${j.is_late?' <span class="badge badge-late">LATE</span>':''}</td>
       <td style="padding:8px 12px;font-family:var(--mono);font-size:12px">${fmtINR(j.total_price)}</td>
     </tr>`).join('') : '<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--muted)">No jobs yet</td></tr>';
 
-  showModal(`${c.name}`,`
+  showModal(`${escHtml(c.name)}`,`
     <div class="detail-grid" style="margin-bottom:16px">
       <div class="detail-item"><div class="dl">Phone</div><div class="dv">${c.phone||'—'}</div></div>
       <div class="detail-item"><div class="dl">Contact Person</div><div class="dv">${c.contact_person||'—'}</div></div>
@@ -167,7 +167,7 @@ async function viewCustomer(id){
       <div class="detail-item"><div class="dl">Total Jobs</div><div class="dv mono">${c.job_count}</div></div>
       <div class="detail-item"><div class="dl">On-Time / Late</div><div class="dv mono"><span style="color:var(--green)">${c.on_time_count}</span> / <span style="color:var(--red)">${c.late_count}</span></div></div>
       <div class="detail-item" style="grid-column:1/-1"><div class="dl">Total Revenue</div><div class="dv mono" style="font-size:18px;font-weight:600;color:var(--green)">${fmtINR(c.total_revenue)}</div></div>
-      ${c.notes?`<div class="detail-item" style="grid-column:1/-1"><div class="dl">Notes</div><div class="dv" style="color:var(--muted)">${c.notes}</div></div>`:''}
+      ${c.notes?`<div class="detail-item" style="grid-column:1/-1"><div class="dl">Notes</div><div class="dv" style="color:var(--muted)">${escHtml(c.notes)}</div></div>`:''}
     </div>
     <div class="form-section">Job History (${c.jobs.length})</div>
     <div style="max-height:300px;overflow-y:auto">

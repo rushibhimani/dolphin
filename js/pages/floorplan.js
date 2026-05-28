@@ -212,8 +212,8 @@ const floorPlan = {
       html += `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
         <div style="width:36px;height:36px;border-radius:6px;background:#1d4ed8;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700;flex-shrink:0">${asgn.worker_code}</div>
         <div>
-          <div style="font-size:14px;font-weight:600">${asgn.worker_name}</div>
-          <div style="font-size:12px;color:var(--muted)">${asgn.job_number} · ${asgn.op_name}</div>
+          <div style="font-size:14px;font-weight:600">${escHtml(asgn.worker_name)}</div>
+          <div style="font-size:12px;color:var(--muted)">${asgn.job_number} · ${escHtml(asgn.op_name)}</div>
         </div>
         <div style="margin-left:auto;font-size:11px;padding:2px 8px;background:var(--orange,#f59e0b);color:#fff;border-radius:20px;font-weight:600">In progress</div>
       </div>`;
@@ -238,8 +238,8 @@ const floorPlan = {
           opsHtml += `<div style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);align-items:flex-start">
             <div style="width:8px;height:8px;border-radius:50%;background:${sc};flex-shrink:0;margin-top:5px"></div>
             <div style="flex:1;min-width:0">
-              <div style="font-size:13px;font-weight:600;margin-bottom:2px">${op.job_number} · ${op.operation_name}</div>
-              <div style="font-size:12px;color:var(--muted);margin-bottom:2px">${op.worker_name} · ${op.estimated_duration}h · ${t}</div>
+              <div style="font-size:13px;font-weight:600;margin-bottom:2px">${escHtml(op.job_number)} · ${op.operation_name}</div>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:2px">${escHtml(op.worker_name)} · ${op.estimated_duration}h · ${t}</div>
             </div>
             <span style="font-size:10px;padding:2px 7px;border-radius:20px;background:${sc};color:#fff;font-weight:600;flex-shrink:0;margin-top:2px">${sl}</span>
           </div>`;

@@ -23,7 +23,7 @@ function renderReportsContent(r){
     const col = m.hours>180?'var(--red)':m.hours>120?'var(--accent)':'var(--accent2)';
     return `<div style="margin-bottom:9px">
       <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-        <span>${i+1}. ${m.name} <span style="color:var(--muted);font-size:10px">(${m.type})</span></span>
+        <span>${i+1}. ${escHtml(m.name)} <span style="color:var(--muted);font-size:10px">(${m.type})</span></span>
         <span class="mono" style="font-size:11px">${m.hours}h · ${m.ops_count} ops</span>
       </div>
       <div class="prog-bar"><div class="prog-fill" style="width:${pct}%;background:${col}"></div></div>
@@ -68,7 +68,7 @@ function renderReportsContent(r){
     <tr style="border-top:1px solid var(--border)">
       <td style="padding:8px 12px;font-size:11px;color:var(--muted);width:30px">${i+1}</td>
       <td style="padding:8px 12px;font-size:12px;font-weight:500">
-        <a onclick="viewCustomer(${c.customer_id})" style="cursor:pointer;color:var(--accent2)">${c.name}</a>
+        <a onclick="viewCustomer(${c.customer_id})" style="cursor:pointer;color:var(--accent2)">${escHtml(c.name)}</a>
       </td>
       <td style="padding:8px 12px;font-family:var(--mono);font-size:12px;text-align:right">${c.jobs}</td>
       <td style="padding:8px 12px;font-family:var(--mono);font-size:12px;text-align:right">${c.completed}</td>
@@ -78,8 +78,8 @@ function renderReportsContent(r){
 
   const lateJobsHtml = r.late_jobs.length ? r.late_jobs.map(j=>`
     <tr style="border-top:1px solid var(--border)">
-      <td style="padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--accent2)"><a onclick="navigate('/jobs');setTimeout(()=>expandJob(${j.id}),200)" style="cursor:pointer">${j.job_number}</a></td>
-      <td style="padding:8px 12px;font-size:12px">${j.customer_name}</td>
+      <td style="padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--accent2)"><a onclick="navigate('/jobs');setTimeout(()=>expandJob(${j.id}),200)" style="cursor:pointer">${escHtml(j.job_number)}</a></td>
+      <td style="padding:8px 12px;font-size:12px">${escHtml(j.customer_name)}</td>
       <td style="padding:8px 12px;font-family:var(--mono);font-size:11px">${fmtD(j.due_date)}</td>
       <td style="padding:8px 12px;font-family:var(--mono);font-size:11px;color:var(--red);font-weight:600">${j.days_late} days</td>
       <td style="padding:8px 12px">${sBadge(j.status)}</td>

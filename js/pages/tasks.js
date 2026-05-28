@@ -200,7 +200,7 @@ function taskCard(t){
       </span>
     </div>
     <!-- Description -->
-    ${t.description ? `<div style="font-size:13px;color:var(--text-soft);margin-bottom:6px;line-height:1.4">${t.description}</div>` : ''}
+    ${t.description ? `<div style="font-size:13px;color:var(--text-soft);margin-bottom:6px;line-height:1.4">${escHtml(t.description)}</div>` : ''}
     <!-- All assignees -->
     ${t.all_assignees && t.all_assignees.length > 1 ? `
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">
@@ -368,7 +368,7 @@ async function openTaskModal(editId){
       <div class="fld-label">Additional Assignees <span style="font-size:11px;color:var(--muted);font-weight:400">— for multi-person tasks</span></div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;min-height:44px;align-items:center" id="tk_extra_assignees">
         ${(task?.all_assignees||[]).filter(a=>a.worker_id!==task?.assigned_to_id).map(a=>`
-          <span class="extra-assignee-tag" data-id="${a.worker_id}" data-name="${a.worker_name}"
+          <span class="extra-assignee-tag" data-id="${a.worker_id}" data-name="${escHtml(a.worker_name)}"
             style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;
                    background:var(--accent-soft);border:1px solid var(--accent);border-radius:20px;font-size:12px">
             ${a.worker_name}

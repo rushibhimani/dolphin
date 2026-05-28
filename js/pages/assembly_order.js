@@ -57,8 +57,8 @@ function _renderAssemblyPage() {
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
           <div>
             <div style="font-size:11px;color:var(--muted);font-weight:600;letter-spacing:.05em">ASSEMBLY ORDER</div>
-            <div style="font-size:22px;font-weight:700;margin:2px 0">${o.order_number}</div>
-            <div style="font-size:14px;color:var(--muted)">${o.customer_name} · ${o.product_type}${o.product_size?' '+o.product_size:''}</div>
+            <div style="font-size:22px;font-weight:700;margin:2px 0">${escHtml(o.order_number)}</div>
+            <div style="font-size:14px;color:var(--muted)">${escHtml(o.customer_name)} · ${o.product_type}${o.product_size?' '+o.product_size:''}</div>
           </div>
           <div style="text-align:right">
             <div style="font-size:11px;color:var(--muted)">Due</div>
@@ -151,7 +151,7 @@ function _compCardHTML(c) {
   } else if (c.component_type === 'make') {
     if (c.job_number)
       statusActions = `
-        <span style="font-size:10px;color:var(--muted);font-family:var(--mono)">${c.job_number}</span>
+        <span style="font-size:10px;color:var(--muted);font-family:var(--mono)">${escHtml(c.job_number)}</span>
         <button class="btn btn-ghost" style="font-size:10px;padding:2px 7px" onclick="navigate('/jobs');setTimeout(()=>expandJob(${c.job_id}),400)" title="Open job to edit times">✎ Job</button>`;
   }
 
