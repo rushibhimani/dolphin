@@ -62,11 +62,29 @@ async function renderToday(){
         <b style="font-size:18px;color:var(--amber)">${paused.length}</b> Paused</div>
       <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:13px;display:flex;align-items:center;gap:6px">
         <b style="font-size:18px">${sched.length}</b> Scheduled</div>
-    </div>`;
+    </div>
+    `;
 
-    // Group by machine
+    // Group by machine — exclude overdue ops (they go to Past Work page)
+    const nowISO2    = new Date().toISOString().slice(0,19);
+    const overdueOps = ops.filter(o => o.status === 'scheduled' && o.scheduled_end && o.scheduled_end.slice(0,19) < nowISO2);
+    const currentOps = ops.filter(o => !(o.status === 'scheduled' && o.scheduled_end && o.scheduled_end.slice(0,19) < nowISO2));
+
+    // Show link to Past Work if there are overdue ops
+    if (overdueOps.length) {
+      html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;
+                            padding:8px 14px;margin-bottom:12px;display:flex;align-items:center;
+                            justify-content:space-between;gap:10px">
+        <span style="font-size:12px;color:var(--muted)">
+          ${overdueOps.length} operation(s) from previous days not yet started
+        </span>
+        <button class="btn btn-ghost" style="font-size:12px;flex-shrink:0"
+          onclick="navigate('/past-work')">View Past Work →</button>
+      </div>`;
+    }
+
     const byMachine = {};
-    ops.forEach(op=>{ (byMachine[op.wc_name]=byMachine[op.wc_name]||[]).push(op); });
+    currentOps.forEach(op=>{ (byMachine[op.wc_name]=byMachine[op.wc_name]||[]).push(op); });
     const machines = Object.keys(byMachine).sort();
 
     /* ── MOBILE (≤640px): timeline cards, one per op ────────────────────── */
@@ -327,6 +345,13 @@ function isoToLocalInput(iso){
   return iso.slice(0,16).replace('T',' ');
 }
 
+// Refresh the current work page (Today or Past Work) after an action
+function _refreshWorkPage() {
+  const path = window.location.pathname;
+  if (path.includes('past-work')) renderPastWork();
+  else renderToday();
+}
+
 function promptStart(opId, scheduledStart){
   const schLocal = scheduledStart ? isoToLocalInput(scheduledStart) : '';
   const nowLocal = nowLocalInput();
@@ -344,7 +369,7 @@ async function confirmStart(opId){
   if(!v){toast('Enter start time','error');return;}
   try{
     await api('PUT',`/api/ops/${opId}/status`,{status:'in_progress',actual_start:v.replace('T',' ')});
-    closeModal(); renderToday();
+    closeModal(); _refreshWorkPage();
   }catch(e){toast(e.message,'error');}
 }
 
@@ -370,7 +395,7 @@ async function confirmPause(opId){
   const n = document.getElementById('dlg_notes')?.value || '';
   try{
     await api('PUT',`/api/ops/${opId}/status`,{status:'paused',pause_reason:r,pause_notes:n});
-    closeModal(); renderToday();
+    closeModal(); _refreshWorkPage();
   }catch(e){toast(e.message,'error');}
 }
 
@@ -397,14 +422,14 @@ async function confirmComplete(opId){
       actual_start: s.replace('T',' '),
       actual_end:   e.replace('T',' ')
     });
-    closeModal(); renderToday();
+    closeModal(); _refreshWorkPage();
   }catch(e){toast(e.message,'error');}
 }
 
 async function updateOpStatus(opId, status){
   try{
     await api('PUT',`/api/ops/${opId}/status`,{status});
-    renderToday();
+    _refreshWorkPage();
   }catch(e){toast(e.message,'error');}
 }
 
@@ -415,12 +440,12 @@ let jobNextOps = {};
 async function markOutsideSent(opId) {
   try {
     await api('PUT', `/api/scheduled-ops/${opId}/outside`, { action: 'send_out' });
-    toast('Marked as sent out'); renderToday();
+    toast('Marked as sent out'); _refreshWorkPage();
   } catch(e) { toast(e.message,'error'); }
 }
 async function markOutsideReceived(opId) {
   try {
     await api('PUT', `/api/scheduled-ops/${opId}/outside`, { action: 'receive_back' });
-    toast('Marked as received back'); renderToday();
+    toast('Marked as received back'); _refreshWorkPage();
   } catch(e) { toast(e.message,'error'); }
 }

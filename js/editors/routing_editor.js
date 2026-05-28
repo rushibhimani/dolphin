@@ -127,6 +127,8 @@ function renderOpRows(){
       else if(ft==='Sandblasting')             preview=`L×W ÷ ${r}`;
     } else if(hasFormula&&ft==='Fixed') preview='Fixed time — enter Work(min) above';
 
+    const isOutside = op.op_type === 'outside';
+
     return `
     <div style="border:1px solid var(--border);border-radius:7px;margin-bottom:6px;overflow:hidden">
 
@@ -138,19 +140,31 @@ function renderOpRows(){
         </div>
         <span style="font-size:11px;color:var(--muted);font-family:var(--mono);flex-shrink:0;width:16px;text-align:center">${i+1}</span>
         <input id="oped_name_${i}" value="${op.name||''}" placeholder="Operation name" style="flex:2 1 130px;min-width:90px">
-        <select id="oped_wc_${i}" style="flex:2 1 140px;min-width:110px">${buildMachineOpts(op.work_center_id)}</select>
-        <div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:1px">
+        ${isOutside
+          ? `<div style="flex:2 1 140px;min-width:110px;display:flex;align-items:center;justify-content:center;
+                          padding:3px 8px;background:var(--red-soft,rgba(220,38,38,.08));border:1px solid var(--red,#DC2626);
+                          border-radius:5px;color:var(--red,#DC2626);font-size:11px;font-weight:600">
+               🏭 Outside / Vendor
+             </div>`
+          : `<select id="oped_wc_${i}" style="flex:2 1 140px;min-width:110px">${buildMachineOpts(op.work_center_id)}</select>`
+        }
+        <div style="flex-shrink:0;display:${isOutside?'none':'flex'};flex-direction:column;align-items:center;gap:1px">
           <span style="font-size:9px;color:var(--muted)">Setup</span>
           <input type="number" id="oped_setup_${i}" value="${op.setup_time_mins??0}" min="0" step="5" style="width:54px">
         </div>
-        ${hasFormula
-          ? `<div style="flex:1 1 auto;font-size:11px;color:var(--accent);font-family:var(--mono);padding:0 4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${preview}">${preview||'Formula set'}</div>`
-          : `<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:1px">
-               <span style="font-size:9px;color:var(--muted)">Work(min)</span>
-               <input type="number" id="oped_work_${i}" value="${wMins}" min="0" step="10" style="width:64px">
+        ${isOutside
+          ? `<div id="oped_days_row_${i}" style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:1px">
+               <span style="font-size:9px;color:var(--muted)">Transit(days)</span>
+               <input type="number" id="oped_transit_${i}" value="${Math.round((op.outside_transit_days||op.work_time_hrs/24||1)*10)/10}" min="0.5" step="0.5" style="width:64px">
              </div>`
+          : hasFormula
+            ? `<div style="flex:1 1 auto;font-size:11px;color:var(--accent);font-family:var(--mono);padding:0 4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${preview}">${preview||'Formula set'}</div>`
+            : `<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:1px">
+                 <span style="font-size:9px;color:var(--muted)">Work(min)</span>
+                 <input type="number" id="oped_work_${i}" value="${wMins}" min="0" step="10" style="width:64px">
+               </div>`
         }
-        <label style="font-size:10px;color:var(--muted);white-space:nowrap;cursor:pointer;display:flex;align-items:center;gap:3px;flex-shrink:0">
+        <label style="font-size:10px;color:var(--muted);white-space:nowrap;cursor:pointer;display:${isOutside?'none':'flex'};align-items:center;gap:3px;flex-shrink:0">
           <input type="checkbox" id="oped_useformula_${i}" ${hasFormula?'checked':''}
             onchange="toggleOpFormula(${i},this.checked)"
             style="accent-color:var(--accent);width:12px;height:12px"> ⚡
@@ -399,8 +413,13 @@ function syncRoutingOps(){
       work_time_mins: wMins,
       work_time_hrs:  wMins/60,
       is_optional:    !!document.getElementById(`oped_opt_${i}`)?.checked,
-      op_type:        document.getElementById(`oped_outside_${i}`)?.checked ? 'outside' : 'inhouse',
-      outside_vendor: document.getElementById(`oped_vendor_${i}`)?.value?.trim()||null,
+      op_type:              document.getElementById(`oped_outside_${i}`)?.checked ? 'outside' : 'inhouse',
+      outside_vendor:       document.getElementById(`oped_vendor_${i}`)?.value?.trim()||null,
+      outside_transit_days: parseFloat(document.getElementById(`oped_transit_${i}`)?.value)||null,
+      // Convert transit days → work_time_hrs for scheduler
+      work_time_hrs: document.getElementById(`oped_outside_${i}`)?.checked
+        ? (parseFloat(document.getElementById(`oped_transit_${i}`)?.value)||1) * 24
+        : (parseFloat(document.getElementById(`oped_work_${i}`)?.value)||0) / 60,
       formula_type:   useFormula?(ftype||null):null,
       mrr:            parseFloat(document.getElementById(`oped_mrr_${i}`)?.value)||null,
       depth_mm:       parseFloat(document.getElementById(`oped_depth_${i}`)?.value)||null,
@@ -419,8 +438,15 @@ function moveOp(i,dir){
   [routingOps[i],routingOps[j]]=[routingOps[j],routingOps[i]];
   renderOpRows();
 }
-function addOpRow(){syncRoutingOps();routingOps.push({name:'',work_center_id:allMachines[0]?.id,setup_time_mins:0,work_time_mins:0,work_time_hrs:0,is_optional:false,op_type:'inhouse',outside_vendor:null,sub_operations:[]});renderOpRows();}
-function toggleOpOutside(i,checked){const row=document.getElementById('oped_outside_row_'+i);if(row)row.style.display=checked?'flex':'none';}
+function addOpRow(){syncRoutingOps();routingOps.push({name:'',work_center_id:allMachines[0]?.id,setup_time_mins:0,work_time_mins:0,work_time_hrs:0,is_optional:false,op_type:'inhouse',outside_vendor:null,outside_transit_days:null,sub_operations:[]});renderOpRows();}
+function toggleOpOutside(i, checked) {
+  // Completely re-render this row so the machine/badge swap works cleanly
+  syncRoutingOps();
+  routingOps[i].op_type = checked ? 'outside' : 'inhouse';
+  renderOpRows();
+  // Re-focus on the name input so UX feels continuous
+  setTimeout(() => document.getElementById('oped_name_'+i)?.focus(), 50);
+}
 function removeOp(i){syncRoutingOps();routingOps.splice(i,1);renderOpRows();}
 
 async function saveRouting(editId){

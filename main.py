@@ -10,7 +10,7 @@ from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
                     Customer, Routing, Operation, SubOperation, Job, ScheduledOp,
                     JobCounter, CustomerOrder, OrderCounter, User, StaffTask, TaskFile,
                     TaskAssignee, TaskActivity, Quotation, QuoteCounter, CompanySetting,
-                    OrderComponent, AssemblyStep, now_ist)
+                    OrderComponent, AssemblyStep, Notification, WorkerDailyReport, now_ist)
 import json, os, subprocess, sys
 from auth import (
     create_token, verify_token, hash_password, verify_password,
@@ -72,6 +72,83 @@ def get_db():
         raise
     finally:
         db.close()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# NOTIFICATION ENGINE
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _notify(db, event_type: str, title: str, body: str,
+            link: str = None, job_id: int = None,
+            order_id: int = None, wc_id: int = None):
+    """
+    Create a notification. Deduplicates: won't create same event_type + same
+    reference more than once per hour (prevents spam on rapid state changes).
+    """
+    one_hour_ago = now_ist() - timedelta(hours=1)
+    existing = db.query(Notification).filter(
+        Notification.event_type == event_type,
+        Notification.is_read    == False,
+        Notification.created_at >= one_hour_ago,
+    )
+    if job_id:   existing = existing.filter(Notification.job_id   == job_id)
+    if order_id: existing = existing.filter(Notification.order_id == order_id)
+    if wc_id:    existing = existing.filter(Notification.wc_id    == wc_id)
+    if existing.first():
+        return   # already notified recently, skip
+
+    n = Notification(
+        event_type = event_type,
+        title      = title,
+        body       = body,
+        link       = link,
+        is_read    = False,
+        created_at = now_ist(),
+        job_id     = job_id,
+        order_id   = order_id,
+        wc_id      = wc_id,
+    )
+    db.add(n)
+    # No commit here — caller commits
+
+
+def _check_job_urgency(db, job):
+    """Notify if job just became urgent (CR < 0.5)."""
+    if job.status in ("completed", "pending"):
+        return
+    try:
+        cr = critical_ratio(job, db)
+        if cr < 0.5:
+            _notify(db,
+                event_type = "job_urgent",
+                title      = f"🚨 Urgent: {job.job_number}",
+                body       = f"{job.customer_name} — {job.product_type} {job.product_size}. CR={cr:.2f}",
+                link       = f"/jobs",
+                job_id     = job.id,
+                order_id   = job.order_id,
+            )
+    except Exception:
+        pass
+
+
+def _check_order_due_soon(db, order):
+    """Notify if order due in <= 2 days with pending/scheduled jobs."""
+    if order.status == "completed":
+        return
+    try:
+        days_left = (order.due_date - now_ist()).total_seconds() / 86400
+        if 0 < days_left <= 2:
+            pending = sum(1 for j in order.jobs if j.status not in ("completed",))
+            if pending > 0:
+                _notify(db,
+                    event_type = "order_due_soon",
+                    title      = f"⏰ Due Soon: {order.order_number}",
+                    body       = f"{order.customer_name} — due in {days_left:.0f} day(s), {pending} job(s) still pending",
+                    link       = f"/orders",
+                    order_id   = order.id,
+                )
+    except Exception:
+        pass
 
 def parse_date(s):
     if not s: return None
@@ -665,18 +742,24 @@ def _ops_for_job(db, j):
             else:
                 work = float(op.work_time_hrs or 0)
 
+            transit_days = getattr(op, "outside_transit_days", None)
+            op_type = getattr(op, "op_type", "inhouse") or "inhouse"
+            # For outside ops: work_time_hrs = transit days * 24 (calendar hours)
+            if op_type == "outside" and transit_days:
+                work = float(transit_days) * 24.0
             ops.append({
-                "name":               op.name,
-                "work_center_id":     op.work_center_id,
-                "machine_setup_mins": m_setup,
-                "job_setup_mins":     j_setup,
-                "setup_time_mins":    m_setup + j_setup,
-                "work_time_hrs":      work,
-                "is_optional":        op.is_optional,
-                "operation_id":       op.id,
-                "has_sub_ops":        bool(op.sub_operations),
-                "op_type":            getattr(op, "op_type", "inhouse") or "inhouse",
-                "outside_vendor":     getattr(op, "outside_vendor", None) or "",
+                "name":                 op.name,
+                "work_center_id":       op.work_center_id,
+                "machine_setup_mins":   m_setup,
+                "job_setup_mins":       j_setup,
+                "setup_time_mins":      m_setup + j_setup,
+                "work_time_hrs":        work,
+                "is_optional":          op.is_optional,
+                "operation_id":         op.id,
+                "has_sub_ops":          bool(op.sub_operations),
+                "op_type":              op_type,
+                "outside_vendor":       getattr(op, "outside_vendor", None) or "",
+                "outside_transit_days": transit_days,
             })
 
     elif j.inline_ops:
@@ -767,29 +850,35 @@ def _do_schedule(db, j):
         seq = ops.index(op) + 1
         affinity_worker_id = get_order_affinity_worker(db, j, op["work_center_id"], seq)
 
-        # FIX 5: Outside ops use calendar time only — don't compete for machine slots
+        # Outside ops: block calendar time, never compete for machine slots
         if op.get("op_type") == "outside":
-            # Calendar days estimate: work_time_hrs treated as calendar days
-            # (e.g. 72 hrs hardening = 3 working days)
-            est_end = snap_to_shift(current_start)
-            cal_hrs = work_hrs if work_hrs > 0 else 24.0
+            cal_hrs      = work_hrs if work_hrs > 0 else 24.0
             from datetime import timedelta as _td
-            est_end = current_start + _td(hours=cal_hrs)
+            est_end      = current_start + _td(hours=cal_hrs)
+            transit_days = op.get("outside_transit_days")
+            vendor_name  = op.get("outside_vendor") or "Outside"
+            display_name = f"{op['name']} → {vendor_name}"
+            if transit_days:
+                display_name += f" ({transit_days:.0f}d)"
+            # Use a real wc_id for FK integrity, but worker=None (no machine slot blocked)
+            wc_id_for_fk = op["work_center_id"] or (db.query(WorkCenter).first().id if db.query(WorkCenter).first() else 1)
             db.add(ScheduledOp(
                 job_id=j.id,
                 operation_id=op["operation_id"],
-                work_center_id=op["work_center_id"],
+                work_center_id=wc_id_for_fk,
                 worker_id=None, worker_name=None,
                 sequence=ops.index(op) + 1,
-                op_name=op["name"], wc_name=wc_name,
+                op_name=display_name,
+                wc_name=vendor_name,
                 machine_setup_mins=0,
                 job_setup_mins=0,
                 setup_time_mins=0,
                 work_time_hrs=work_hrs,
+                work_time_mins=round(work_hrs*60, 1),
                 machine_setup_waived=False,
                 scheduled_start=current_start, scheduled_end=est_end,
                 op_type="outside",
-                outside_vendor=op.get("outside_vendor", ""),
+                outside_vendor=vendor_name,
                 status="scheduled",
             ))
             current_start = snap_to_shift(est_end)
@@ -908,7 +997,7 @@ PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/pin-login", "/api/a
 OPERATOR_BLOCKED = {
     "/api/jobs", "/api/orders", "/api/customers", "/api/workers",
     "/api/workcenters", "/api/routings", "/api/schedule-all", "/api/gantt",
-    "/api/capacity", "/api/reports", "/api/estimate", "/api/users",
+    "/api/capacity", "/api/reports", "/api/estimate", "/api/users", "/api/past-work",
     "/api/shift-settings",
 }
 
@@ -1323,7 +1412,21 @@ def update_wc(wc_id: int, data: dict):
     wc.name = data.get("name", wc.name)
     wc.machine_type = data.get("machine_type", wc.machine_type)
     wc.is_bottleneck = data.get("is_bottleneck", wc.is_bottleneck)
-    if "status" in data: wc.status = data["status"]
+    if "status" in data:
+        old_status = wc.status
+        wc.status  = data["status"]
+        if data["status"] == "breakdown" and old_status != "breakdown":
+            affected = db.query(ScheduledOp).filter(
+                ScheduledOp.work_center_id == wc.id,
+                ScheduledOp.status.in_(["scheduled","pending"])
+            ).count()
+            _notify(db,
+                event_type = "machine_breakdown",
+                title      = f"🔴 Breakdown: {wc.name}",
+                body       = f"{affected} scheduled operation(s) affected. Reschedule needed.",
+                link       = "/machines",
+                wc_id      = wc.id,
+            )
     if "skill_level" in data: wc.skill_level = int(data["skill_level"])
     if "continuity_hours" in data: wc.continuity_hours = float(data["continuity_hours"])
     if "preferred_worker_id" in data:
@@ -2612,10 +2715,23 @@ def create_routing(data: dict):
                 is_active=bool(data.get("is_active", True)))
     db.add(r); db.flush()
     for i, op in enumerate(data.get("operations", [])):
-        wc_id = int(op["work_center_id"])
-        if not db.query(WorkCenter).filter(WorkCenter.id == wc_id).first():
-            db.rollback(); db.close()
-            raise HTTPException(400, f"Step {i+1}: machine {wc_id} not found")
+        wc_id_raw = op.get("work_center_id")
+        op_type_here = op.get("op_type", "inhouse") or "inhouse"
+        if not wc_id_raw and op_type_here == "outside":
+            # Outside ops don't need a real machine — use first available as FK placeholder
+            first_wc = db.query(WorkCenter).first()
+            wc_id = first_wc.id if first_wc else None
+            if not wc_id:
+                db.rollback(); db.close()
+                raise HTTPException(400, "No machines defined — add at least one machine first")
+        else:
+            wc_id = int(wc_id_raw) if wc_id_raw else None
+            if wc_id and not db.query(WorkCenter).filter(WorkCenter.id == wc_id).first():
+                db.rollback(); db.close()
+                raise HTTPException(400, f"Step {i+1}: machine {wc_id} not found")
+            if not wc_id and op_type_here != "outside":
+                db.rollback(); db.close()
+                raise HTTPException(400, f"Step {i+1}: machine required for in-house operations")
         m_s = float(op.get("machine_setup_mins", op.get("setup_time_mins", 0)) or 0)
         j_s = float(op.get("job_setup_mins", 0) or 0)
         # Accept work_time_mins (preferred) or work_time_hrs (legacy)
@@ -2625,13 +2741,23 @@ def create_routing(data: dict):
         else:
             w_hrs  = float(op.get("work_time_hrs", 0) or 0)
             w_mins = round(w_hrs * 60, 1)
+        op_type = op.get("op_type", "inhouse") or "inhouse"
+        # For outside ops, work_time_hrs is already transit_days*24 from frontend
+        # Store transit_days separately for display purposes
+        transit_days = float(op["outside_transit_days"]) if op.get("outside_transit_days") else (
+            round(w_hrs / 24.0, 1) if op_type == "outside" and w_hrs > 0 else None
+        )
         new_op = Operation(routing_id=r.id, sequence=i+1,
                             name=(op.get("name") or "").strip(),
                             work_center_id=wc_id,
-                            machine_setup_mins=m_s, job_setup_mins=j_s,
-                            setup_time_mins=m_s+j_s,
+                            machine_setup_mins=m_s if op_type != "outside" else 0,
+                            job_setup_mins=j_s if op_type != "outside" else 0,
+                            setup_time_mins=(m_s+j_s) if op_type != "outside" else 0,
                             work_time_hrs=w_hrs, work_time_mins=w_mins,
                             is_optional=bool(op.get("is_optional", False)),
+                            op_type=op_type,
+                            outside_vendor=op.get("outside_vendor") or None,
+                            outside_transit_days=transit_days,
                             formula_type=op.get("formula_type") or None,
                             mrr=float(op["mrr"]) if op.get("mrr") else None,
                             depth_mm=float(op["depth_mm"]) if op.get("depth_mm") else None,
@@ -3212,6 +3338,40 @@ def toggle_freeze(job_id: int):
     db.close(); return result
 
 
+@app.post("/api/jobs/{job_id}/hold")
+def hold_job(job_id: int):
+    """
+    Put a job on hold — clears scheduled/pending ops, freezes it.
+    Job stays in DB but disappears from Gantt and Today's Work.
+    Unhold to reschedule.
+    """
+    db = SessionLocal()
+    j = db.query(Job).filter(Job.id == job_id).first()
+    if not j: db.close(); raise HTTPException(404, "Not found")
+    active = [s for s in j.scheduled_ops if s.status == "in_progress"]
+    if active:
+        db.close()
+        raise HTTPException(400, "Cannot hold a job with an operation in progress — pause it first.")
+    for s in list(j.scheduled_ops):
+        if s.status in ("scheduled", "pending"):
+            db.delete(s)
+    j.is_frozen = True
+    j.status    = "pending"
+    db.commit(); db.close()
+    return {"id": job_id, "status": "pending", "is_frozen": True}
+
+
+@app.post("/api/jobs/{job_id}/unhold")
+def unhold_job(job_id: int):
+    """Remove hold — unfreezes job so Schedule All picks it up."""
+    db = SessionLocal()
+    j = db.query(Job).filter(Job.id == job_id).first()
+    if not j: db.close(); raise HTTPException(404, "Not found")
+    j.is_frozen = False
+    db.commit(); db.close()
+    return {"id": job_id, "is_frozen": False}
+
+
 @app.post("/api/jobs/{job_id}/duplicate")
 def duplicate_job(job_id: int):
     db = SessionLocal()
@@ -3351,6 +3511,12 @@ def schedule_all():
     order_ids = {j.order_id for j in jobs if j.order_id}
     for oid in order_ids:
         _update_order_status(db, oid)
+    # NOTIFY: check urgency and due-soon after full reschedule
+    for j in jobs:
+        _check_job_urgency(db, j)
+    for o in db.query(CustomerOrder).filter(CustomerOrder.status != "completed").all():
+        _check_order_due_soon(db, o)
+    db.commit()
     db.close()
     return {"scheduled": count, "unassigned_ops": unassigned,
             "skipped_active": skipped, "preempted": preempted,
@@ -3499,17 +3665,40 @@ def _check_assembly_step_ready(db, order_id, step_number):
 
 def _sync_assembly_steps(db, order_id):
     """
-    After any component status changes, re-evaluate which assembly steps
-    are now unlocked (waiting → ready).
+    After any component status changes, unlock assembly steps + notify.
     """
     steps = db.query(AssemblyStep).filter(
         AssemblyStep.order_id == order_id,
         AssemblyStep.status == "waiting"
     ).order_by(AssemblyStep.step_number).all()
+    order = db.query(CustomerOrder).filter(CustomerOrder.id == order_id).first()
     for step in steps:
         if _check_assembly_step_ready(db, order_id, step.step_number):
             step.status = "ready"
+            db.flush()
+            order_label = order.order_number if order else f"Order #{order_id}"
+            customer    = order.customer_name if order else ""
+            _notify(db,
+                event_type = "assembly_unlocked",
+                title      = f"🔧 Assembly Step {step.step_number} Ready — {order_label}",
+                body       = f"{customer}: {step.name} can now start"
+                             + (f" — assigned to {step.worker_name}" if step.worker_name else ""),
+                link       = f"/orders/{order_id}/assembly",
+                order_id   = order_id,
+            )
     db.flush()
+    # Notify if all assembly steps are done
+    all_steps = db.query(AssemblyStep).filter(AssemblyStep.order_id == order_id).all()
+    if all_steps and all(s.status == "done" for s in all_steps):
+        order_label = order.order_number if order else f"Order #{order_id}"
+        customer    = order.customer_name if order else ""
+        _notify(db,
+            event_type = "assembly_complete",
+            title      = f"✅ Assembly Complete — {order_label}",
+            body       = f"{customer}: All assembly steps finished. Ready to dispatch.",
+            link       = f"/orders/{order_id}/assembly",
+            order_id   = order_id,
+        )
 
 def _sync_component_from_job(db, comp):
     """Sync component status from its linked job's status."""
@@ -3778,9 +3967,88 @@ def update_outside_op(op_id: int, data: dict):
         if pending == 0:
             job = db.query(Job).filter(Job.id == s.job_id).first()
             if job: job.status = "completed"; job.completed_at = now_ist()
+        # NOTIFY: outside op received, next work can start
+        job = db.query(Job).filter(Job.id == s.job_id).first()
+        if job:
+            _notify(db,
+                event_type = "outside_received",
+                title      = f"📥 Received Back: {s.op_name}",
+                body       = f"{job.job_number} — {job.product_type} {job.product_size} ({job.customer_name}). Next operation can now start.",
+                link       = "/today",
+                job_id     = job.id,
+                order_id   = job.order_id,
+            )
     db.commit()
     db.close()
     return {"ok": True, "op_id": op_id, "status": s.status}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# NOTIFICATION API ENDPOINTS
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/notifications")
+def get_notifications(unread_only: bool = False, user: dict = Depends(require_manager)):
+    """Get notifications for manager/admin. Returns most recent 50."""
+    db = SessionLocal()
+    q = db.query(Notification).order_by(Notification.created_at.desc())
+    if unread_only:
+        q = q.filter(Notification.is_read == False)
+    notifs = q.limit(50).all()
+    result = [{
+        "id":         n.id,
+        "event_type": n.event_type,
+        "title":      n.title,
+        "body":       n.body,
+        "link":       n.link,
+        "is_read":    n.is_read,
+        "created_at": n.created_at.isoformat() if n.created_at else None,
+        "job_id":     n.job_id,
+        "order_id":   n.order_id,
+        "wc_id":      n.wc_id,
+    } for n in notifs]
+    db.close()
+    return result
+
+
+@app.get("/api/notifications/count")
+def get_notification_count(user: dict = Depends(require_manager)):
+    """Unread notification count — polled every 30s by the bell icon."""
+    db = SessionLocal()
+    count = db.query(Notification).filter(Notification.is_read == False).count()
+    db.close()
+    return {"unread": count}
+
+
+@app.put("/api/notifications/{notif_id}/read")
+def mark_notification_read(notif_id: int, user: dict = Depends(require_manager)):
+    db = SessionLocal()
+    n = db.query(Notification).filter(Notification.id == notif_id).first()
+    if not n: db.close(); raise HTTPException(404, "Not found")
+    n.is_read = True
+    db.commit(); db.close()
+    return {"ok": True}
+
+
+@app.put("/api/notifications/read-all")
+def mark_all_read(user: dict = Depends(require_manager)):
+    db = SessionLocal()
+    db.query(Notification).filter(Notification.is_read == False).update({"is_read": True})
+    db.commit(); db.close()
+    return {"ok": True}
+
+
+@app.delete("/api/notifications/clear-read")
+def clear_read_notifications(user: dict = Depends(require_manager)):
+    """Remove all read notifications older than 7 days to keep table small."""
+    db = SessionLocal()
+    cutoff = now_ist() - timedelta(days=7)
+    db.query(Notification).filter(
+        Notification.is_read == True,
+        Notification.created_at < cutoff
+    ).delete()
+    db.commit(); db.close()
+    return {"ok": True}
 
 
 @app.get("/api/gantt")
@@ -3841,15 +4109,20 @@ def get_today(user: dict = Depends(require_any)):
     )
     if worker_filter_id:
         q = q.filter(ScheduledOp.worker_id == worker_filter_id)
-    today_ops = q.order_by(ScheduledOp.scheduled_start).all()
+    all_active_ops = q.order_by(ScheduledOp.scheduled_start).all()
 
     pq = db.query(ScheduledOp).filter(ScheduledOp.status == "paused")
     if worker_filter_id:
         pq = pq.filter(ScheduledOp.worker_id == worker_filter_id)
     paused_ops = pq.order_by(ScheduledOp.scheduled_start).all()
 
-    ops = [s for s in today_ops
-           if s.scheduled_start <= t_end and s.scheduled_end >= t_start]
+    # Only show ops scheduled for today — overdue ops go to /api/past-work
+    ops = []
+    for s in all_active_ops:
+        is_today = s.scheduled_start <= t_end and s.scheduled_end >= t_start
+        if is_today:
+            ops.append(s)
+
     # Add paused ops not already in list
     paused_ids = {s.id for s in ops}
     for s in paused_ops:
@@ -3892,6 +4165,65 @@ def get_today(user: dict = Depends(require_any)):
             "priority": j.priority_flag, "due_date": fmt(j.due_date),
         })
     db.close(); return result
+
+
+@app.get("/api/past-work")
+def get_past_work(days: int = 30, user: dict = Depends(require_any)):
+    """
+    Return scheduled ops from past days that were never started.
+    These are ops with status=scheduled AND scheduled_end < today_start.
+    """
+    db = SessionLocal()
+    today     = now_ist().date()
+    t_start   = datetime(today.year, today.month, today.day, 0, 0)
+    cutoff    = t_start - timedelta(days=max(1, min(days, 90)))
+
+    worker_filter_id = None
+    if user.get("role") == "operator" and user.get("worker_id"):
+        worker_filter_id = int(user["worker_id"])
+
+    q = db.query(ScheduledOp).filter(
+        ScheduledOp.status == "scheduled",
+        ScheduledOp.scheduled_end   != None,
+        ScheduledOp.scheduled_end   <  t_start,
+        ScheduledOp.scheduled_start >= cutoff,
+    )
+    if worker_filter_id:
+        q = q.filter(ScheduledOp.worker_id == worker_filter_id)
+    past_ops = q.order_by(ScheduledOp.scheduled_start.desc()).all()
+
+    fmt = lambda dt: dt.isoformat() if dt else None
+    result = []
+    for s in past_ops:
+        j = s.job
+        if not j: continue
+        label = j.job_number
+        if j.order_id and j.piece_number:
+            order = db.query(CustomerOrder).filter(CustomerOrder.id == j.order_id).first()
+            if order: label = f"{order.order_number} P{j.piece_number:02d}"
+        asm_context = ""
+        if j.order_id:
+            comp_link = db.query(OrderComponent).filter(OrderComponent.job_id == j.id).first()
+            if comp_link: asm_context = f"[{label}] {comp_link.name}"
+        result.append({
+            "op_id": s.id, "job_id": j.id, "job_number": j.job_number,
+            "order_label": label, "piece_number": j.piece_number,
+            "assembly_context": asm_context,
+            "customer": j.customer_name, "op_name": s.op_name, "wc_name": s.wc_name,
+            "worker_id": s.worker_id, "worker_name": s.worker_name,
+            "setup_time_mins": s.setup_time_mins,
+            "work_time_hrs": s.work_time_hrs,
+            "work_time_mins": s.work_time_mins if s.work_time_mins else round(s.work_time_hrs * 60, 1),
+            "scheduled_start": fmt(s.scheduled_start), "scheduled_end": fmt(s.scheduled_end),
+            "actual_start": fmt(s.actual_start), "actual_end": fmt(s.actual_end),
+            "status": s.status,
+            "op_type": getattr(s, 'op_type', 'inhouse') or 'inhouse',
+            "outside_vendor": getattr(s, 'outside_vendor', None) or '',
+            "pause_reason": s.pause_reason, "pause_notes": getattr(s, 'pause_notes', None),
+            "priority": j.priority_flag, "due_date": fmt(j.due_date),
+        })
+    db.close()
+    return result
 
 
 @app.get("/api/upcoming")
@@ -4720,6 +5052,233 @@ def jobs_next_ops():
 # ─────────────────────────────────────────────────────────────────────────────
 # REPORTS
 # ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# WORKER DAILY REPORT
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _generate_worker_report(db, worker_id: int, report_date) -> dict:
+    """
+    Build (and upsert) a daily report for one worker on one date.
+    Returns the report dict. Call db.commit() after.
+    """
+    from datetime import date as _date
+    if isinstance(report_date, str):
+        report_date = _date.fromisoformat(report_date[:10])
+
+    day_start = datetime(report_date.year, report_date.month, report_date.day, 0, 0, 0)
+    day_end   = datetime(report_date.year, report_date.month, report_date.day, 23, 59, 59)
+
+    worker = db.query(Worker).filter(Worker.id == worker_id).first()
+    if not worker:
+        return {}
+
+    # All ops scheduled for this worker on this date
+    # "Scheduled for this day" = scheduled_start on this date
+    sched_ops = db.query(ScheduledOp).filter(
+        ScheduledOp.worker_id == worker_id,
+        ScheduledOp.scheduled_start >= day_start,
+        ScheduledOp.scheduled_start <= day_end,
+    ).all()
+
+    # Also include ops started on this day (actual_start)
+    started_ops = db.query(ScheduledOp).filter(
+        ScheduledOp.worker_id == worker_id,
+        ScheduledOp.actual_start >= day_start,
+        ScheduledOp.actual_start <= day_end,
+    ).all()
+
+    # Merge — use set of ids
+    seen_ids = set()
+    all_ops = []
+    for s in list(sched_ops) + list(started_ops):
+        if s.id not in seen_ids:
+            seen_ids.add(s.id)
+            all_ops.append(s)
+
+    ops_scheduled = len(sched_ops)  # only count scheduled ops (not extras from actual_start)
+    ops_completed = 0
+    ops_started   = 0
+    ops_missed    = 0
+    est_hours     = 0.0
+    actual_hours  = 0.0
+    ops_detail    = []
+
+    for s in all_ops:
+        j = s.job
+        est_mins    = round(s.work_time_hrs * 60, 1) if s.work_time_hrs else 0
+        est_hours  += s.work_time_hrs or 0
+
+        actual_mins = 0.0
+        if s.actual_start and s.actual_end:
+            actual_mins = (s.actual_end - s.actual_start).total_seconds() / 60
+            actual_hours += actual_mins / 60
+            ops_completed += 1
+        elif s.actual_start:
+            # Still in progress at report time — partial
+            end_ref = now_ist() if s.actual_end is None else s.actual_end
+            if end_ref > day_end: end_ref = day_end
+            actual_mins = (end_ref - s.actual_start).total_seconds() / 60
+            actual_hours += actual_mins / 60
+            ops_started += 1
+        elif s.scheduled_start and s.scheduled_start <= now_ist() and s.status == "scheduled":
+            ops_missed += 1
+
+        efficiency = round(actual_mins / est_mins * 100, 1) if est_mins > 0 and actual_mins > 0 else None
+
+        ops_detail.append({
+            "op_id":       s.id,
+            "job_number":  j.job_number if j else "",
+            "customer":    j.customer_name if j else "",
+            "product":     f"{j.product_type} {j.product_size}".strip() if j else "",
+            "op_name":     s.op_name,
+            "machine":     s.wc_name,
+            "status":      s.status,
+            "est_mins":    est_mins,
+            "actual_mins": round(actual_mins, 1),
+            "efficiency":  efficiency,
+            "scheduled_start": s.scheduled_start.isoformat() if s.scheduled_start else None,
+            "actual_start":    s.actual_start.isoformat()    if s.actual_start    else None,
+            "actual_end":      s.actual_end.isoformat()      if s.actual_end      else None,
+        })
+
+    overall_eff = round(actual_hours / est_hours * 100, 1) if est_hours > 0 and actual_hours > 0 else None
+
+    # Upsert: delete existing report for same worker+date, then insert
+    db.query(WorkerDailyReport).filter(
+        WorkerDailyReport.worker_id   == worker_id,
+        WorkerDailyReport.report_date == report_date,
+    ).delete()
+
+    rpt = WorkerDailyReport(
+        report_date   = report_date,
+        worker_id     = worker_id,
+        worker_name   = worker.name,
+        ops_scheduled = ops_scheduled,
+        ops_completed = ops_completed,
+        ops_started   = ops_started,
+        ops_missed    = ops_missed,
+        est_hours     = round(est_hours, 2),
+        actual_hours  = round(actual_hours, 2),
+        efficiency_pct= overall_eff,
+        ops_detail    = json.dumps(ops_detail),
+        generated_at  = now_ist(),
+    )
+    db.add(rpt)
+    db.flush()
+
+    return {
+        "id":           rpt.id,
+        "report_date":  report_date.isoformat(),
+        "worker_id":    worker_id,
+        "worker_name":  worker.name,
+        "ops_scheduled":ops_scheduled,
+        "ops_completed":ops_completed,
+        "ops_started":  ops_started,
+        "ops_missed":   ops_missed,
+        "est_hours":    round(est_hours, 2),
+        "actual_hours": round(actual_hours, 2),
+        "efficiency_pct": overall_eff,
+        "ops_detail":   ops_detail,
+        "generated_at": rpt.generated_at.isoformat(),
+    }
+
+
+@app.post("/api/reports/daily/generate")
+def generate_daily_reports(data: dict, user: dict = Depends(require_manager)):
+    """
+    Generate (or regenerate) daily reports for all workers for a given date.
+    POST body: { "date": "2026-05-28" }
+    If date is omitted, uses today.
+    """
+    from datetime import date as _date
+    report_date_str = data.get("date") or now_ist().strftime("%Y-%m-%d")
+    report_date = _date.fromisoformat(report_date_str[:10])
+
+    db = SessionLocal()
+    workers = db.query(Worker).filter(Worker.is_active == True).all()
+    results = []
+    for w in workers:
+        rpt = _generate_worker_report(db, w.id, report_date)
+        if rpt:
+            results.append(rpt)
+    db.commit(); db.close()
+    return {"date": report_date_str, "reports": results, "count": len(results)}
+
+
+@app.get("/api/reports/daily")
+def list_daily_reports(
+    date: str = None,
+    worker_id: int = None,
+    from_date: str = None,
+    to_date: str = None,
+    user: dict = Depends(require_manager)
+):
+    """
+    List saved daily reports.
+    Filter by date, worker_id, or date range (from_date / to_date).
+    """
+    from datetime import date as _date
+    db = SessionLocal()
+    q = db.query(WorkerDailyReport).order_by(
+        WorkerDailyReport.report_date.desc(),
+        WorkerDailyReport.worker_name
+    )
+    if date:
+        d = _date.fromisoformat(date[:10])
+        q = q.filter(WorkerDailyReport.report_date == d)
+    if worker_id:
+        q = q.filter(WorkerDailyReport.worker_id == worker_id)
+    if from_date:
+        q = q.filter(WorkerDailyReport.report_date >= _date.fromisoformat(from_date[:10]))
+    if to_date:
+        q = q.filter(WorkerDailyReport.report_date <= _date.fromisoformat(to_date[:10]))
+
+    reports = q.limit(500).all()
+    result = [{
+        "id":           r.id,
+        "report_date":  r.report_date.isoformat(),
+        "worker_id":    r.worker_id,
+        "worker_name":  r.worker_name,
+        "ops_scheduled":r.ops_scheduled,
+        "ops_completed":r.ops_completed,
+        "ops_started":  r.ops_started,
+        "ops_missed":   r.ops_missed,
+        "est_hours":    r.est_hours,
+        "actual_hours": r.actual_hours,
+        "efficiency_pct": r.efficiency_pct,
+        "ops_detail":   json.loads(r.ops_detail) if r.ops_detail else [],
+        "generated_at": r.generated_at.isoformat() if r.generated_at else None,
+    } for r in reports]
+    db.close()
+    return result
+
+
+@app.get("/api/reports/daily/worker/{worker_id}")
+def worker_report_history(
+    worker_id: int,
+    days: int = 30,
+    user: dict = Depends(require_manager)
+):
+    """Last N days of daily reports for one worker — for trend charts."""
+    from datetime import date as _date
+    db = SessionLocal()
+    cutoff = now_ist().date() - timedelta(days=days)
+    reports = db.query(WorkerDailyReport).filter(
+        WorkerDailyReport.worker_id   == worker_id,
+        WorkerDailyReport.report_date >= cutoff,
+    ).order_by(WorkerDailyReport.report_date).all()
+    result = [{
+        "report_date":   r.report_date.isoformat(),
+        "ops_completed": r.ops_completed,
+        "ops_missed":    r.ops_missed,
+        "est_hours":     r.est_hours,
+        "actual_hours":  r.actual_hours,
+        "efficiency_pct":r.efficiency_pct,
+    } for r in reports]
+    db.close()
+    return result
+
+
 @app.get("/api/reports/summary")
 def reports_summary():
     db = SessionLocal()

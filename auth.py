@@ -31,7 +31,7 @@ ROLE_WEIGHTS = {r: i for i, r in enumerate(ROLES)}  # admin=0 (highest)
 # Permissions per role
 PERMISSIONS = {
     "admin": {
-        "pages": ["dashboard","today","tasks","upcoming","jobs","orders","quote","quotations","schedule",
+        "pages": ["dashboard","today","past-work","tasks","upcoming","jobs","orders","quote","quotations","schedule",
                   "capacity","floorplan","routings","machines","workers","customers",
                   "reports","settings","routing-stats","users"],
         "can_see_all_workers": True,
@@ -43,7 +43,7 @@ PERMISSIONS = {
         "can_control_ops": True,   # start/pause/done on shop ops
     },
     "manager": {
-        "pages": ["dashboard","today","tasks","upcoming","jobs","orders","quote","quotations","schedule",
+        "pages": ["dashboard","today","past-work","tasks","upcoming","jobs","orders","quote","quotations","schedule",
                   "capacity","floorplan","routings","machines","workers","customers",
                   "reports","routing-stats","settings"],
         "can_see_all_workers": True,
@@ -57,7 +57,7 @@ PERMISSIONS = {
     "staff": {
         # Office staff: designers, admin, quality, etc.
         # Can see everything on the floor (read-only) + manage their own tasks
-        "pages": ["today","tasks"],
+        "pages": ["today","past-work","tasks"],
         "can_see_all_workers": True,   # sees all workers' ops on Today's Work
         "can_delete": False,
         "can_manage_users": False,
@@ -68,7 +68,7 @@ PERMISSIONS = {
     },
     "operator": {
         # Shop floor machine operator: only sees their own ops + tasks
-        "pages": ["today","tasks"],
+        "pages": ["today","past-work","tasks"],
         "can_see_all_workers": False,
         "can_delete": False,
         "can_manage_users": False,

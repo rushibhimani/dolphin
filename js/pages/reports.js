@@ -3,7 +3,9 @@
  */
 
 async function renderReports(){
-  document.getElementById('topbarActions').innerHTML=`<button class="btn btn-secondary" onclick="renderReports()">↻ Refresh</button>`;
+  document.getElementById('topbarActions').innerHTML=`
+    <button class="btn btn-secondary" onclick="renderReports()">↻ Refresh</button>
+    <button class="btn btn-ghost" onclick="navigate('/reports/workers')">👷 Worker Reports</button>`;
   document.getElementById('content').innerHTML=`<div style="padding:40px;text-align:center;color:var(--muted)">Loading reports...</div>`;
   try{
     const r = await api('GET','/api/reports/summary');
@@ -155,3 +157,163 @@ function renderReportsContent(r){
 }
 
 // ── INIT ──
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WORKER DAILY REPORT
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function renderWorkerReports() {
+  const today = new Date().toISOString().slice(0,10);
+  document.getElementById('topbarActions').innerHTML = `
+    <input type="date" id="wdr_date" value="${today}" style="font-size:13px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+    <select id="wdr_worker" style="font-size:13px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+      <option value="">All Workers</option>
+      ${(allWorkers||[]).filter(w=>w.is_active).map(w=>`<option value="${w.id}">${escHtml(w.name)}</option>`).join('')}
+    </select>
+    <button class="btn btn-secondary" onclick="loadWorkerReports()">↻ Load</button>
+    <button class="btn btn-primary"   onclick="generateWorkerReports()">⚡ Generate Report</button>`;
+
+  document.getElementById('content').innerHTML = `
+    <div class="card" style="padding:30px;text-align:center;color:var(--muted)">
+      Select a date and click <b>Generate Report</b> to create today's worker reports,
+      or <b>Load</b> to view previously saved reports.
+    </div>`;
+}
+
+async function generateWorkerReports() {
+  const date      = document.getElementById('wdr_date')?.value;
+  const btn       = event?.target;
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+  try {
+    const result = await api('POST', '/api/reports/daily/generate', { date });
+    toast(`Generated ${result.count} worker reports for ${date}`);
+    await loadWorkerReports();
+  } catch(e) {
+    toast(e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Generate Report'; }
+  }
+}
+
+async function loadWorkerReports() {
+  const date     = document.getElementById('wdr_date')?.value;
+  const workerId = document.getElementById('wdr_worker')?.value;
+  document.getElementById('content').innerHTML = `<div style="padding:30px;text-align:center;color:var(--muted)">Loading…</div>`;
+  try {
+    let url = `/api/reports/daily?date=${date}`;
+    if (workerId) url += `&worker_id=${workerId}`;
+    const reports = await api('GET', url);
+    renderWorkerReportsList(reports, date);
+  } catch(e) {
+    document.getElementById('content').innerHTML = `<div class="empty">${e.message}</div>`;
+  }
+}
+
+function renderWorkerReportsList(reports, date) {
+  if (!reports.length) {
+    document.getElementById('content').innerHTML = `
+      <div class="card" style="padding:30px;text-align:center;color:var(--muted)">
+        No reports found for ${date}. Click <b>Generate Report</b> to create them.
+      </div>`;
+    return;
+  }
+
+  const totalEst    = reports.reduce((a,r) => a + (r.est_hours||0), 0);
+  const totalActual = reports.reduce((a,r) => a + (r.actual_hours||0), 0);
+  const totalDone   = reports.reduce((a,r) => a + (r.ops_completed||0), 0);
+  const totalMissed = reports.reduce((a,r) => a + (r.ops_missed||0), 0);
+  const avgEff      = reports.filter(r=>r.efficiency_pct).length
+    ? Math.round(reports.filter(r=>r.efficiency_pct).reduce((a,r)=>a+(r.efficiency_pct||0),0) / reports.filter(r=>r.efficiency_pct).length)
+    : null;
+
+  const effColor = e => e == null ? 'var(--muted)' : e >= 90 ? 'var(--green)' : e >= 70 ? 'var(--accent)' : 'var(--red,#DC2626)';
+
+  const summaryHtml = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+      <div class="card" style="text-align:center;padding:14px 8px">
+        <div style="font-size:22px;font-weight:700">${totalDone}</div>
+        <div style="font-size:11px;color:var(--muted)">Ops Completed</div>
+      </div>
+      <div class="card" style="text-align:center;padding:14px 8px">
+        <div style="font-size:22px;font-weight:700;color:${totalMissed>0?'var(--red)':'var(--green)'}">${totalMissed}</div>
+        <div style="font-size:11px;color:var(--muted)">Ops Missed</div>
+      </div>
+      <div class="card" style="text-align:center;padding:14px 8px">
+        <div style="font-size:22px;font-weight:700">${totalActual.toFixed(1)}h</div>
+        <div style="font-size:11px;color:var(--muted)">Actual Work (est: ${totalEst.toFixed(1)}h)</div>
+      </div>
+      <div class="card" style="text-align:center;padding:14px 8px">
+        <div style="font-size:22px;font-weight:700;color:${effColor(avgEff)}">${avgEff!=null?avgEff+'%':'—'}</div>
+        <div style="font-size:11px;color:var(--muted)">Avg Efficiency</div>
+      </div>
+    </div>`;
+
+  const workerCards = reports.map(r => {
+    const eff = r.efficiency_pct;
+    const effBar = r.est_hours > 0
+      ? `<div style="height:6px;background:var(--surface);border-radius:3px;margin-top:6px;overflow:hidden">
+           <div style="height:100%;width:${Math.min(100,eff||0)}%;background:${effColor(eff)};border-radius:3px"></div>
+         </div>` : '';
+
+    const detailRows = (r.ops_detail||[]).map(op => {
+      const statusCol = op.status==='completed'?'var(--green)':op.status==='in_progress'?'var(--accent)':'var(--muted)';
+      const effVal    = op.efficiency!=null ? `${op.efficiency}%` : '—';
+      return `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:5px 8px;font-size:11px;font-family:var(--mono)">${escHtml(op.job_number)}</td>
+        <td style="padding:5px 8px;font-size:11px">${escHtml(op.op_name)}</td>
+        <td style="padding:5px 8px;font-size:11px;color:var(--muted)">${escHtml(op.machine)}</td>
+        <td style="padding:5px 8px;font-size:11px;text-align:right">${Math.round(op.est_mins)}m</td>
+        <td style="padding:5px 8px;font-size:11px;text-align:right">${op.actual_mins>0?Math.round(op.actual_mins)+'m':'—'}</td>
+        <td style="padding:5px 8px;font-size:11px;text-align:right;font-weight:600;color:${effColor(op.efficiency)}">${effVal}</td>
+        <td style="padding:5px 8px;font-size:11px;text-align:center">
+          <span style="color:${statusCol};font-weight:600;text-transform:capitalize">${op.status}</span>
+        </td>
+      </tr>`;
+    }).join('');
+
+    return `<div class="card" style="padding:0;overflow:hidden;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;
+                  padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border)">
+        <div>
+          <div style="font-size:14px;font-weight:700">${escHtml(r.worker_name)}</div>
+          <div style="font-size:11px;color:var(--muted)">
+            ${r.ops_completed} done · ${r.ops_started} in-progress · ${r.ops_missed} missed
+          </div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:16px;font-weight:700;color:${effColor(eff)}">${eff!=null?eff+'%':'—'}</div>
+          <div style="font-size:10px;color:var(--muted)">${r.actual_hours.toFixed(1)}h / ${r.est_hours.toFixed(1)}h est</div>
+          ${effBar}
+        </div>
+      </div>
+      ${r.ops_detail?.length ? `
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface)">
+            <th style="padding:5px 8px;font-size:10px;color:var(--muted);text-align:left;text-transform:uppercase">Job</th>
+            <th style="padding:5px 8px;font-size:10px;color:var(--muted);text-align:left;text-transform:uppercase">Operation</th>
+            <th style="padding:5px 8px;font-size:10px;color:var(--muted);text-align:left;text-transform:uppercase">Machine</th>
+            <th style="padding:5px 8px;font-size:10px;color:var(--muted);text-align:right;text-transform:uppercase">Est</th>
+            <th style="padding:5px 8px;font-size:10px;color:var(--muted);text-align:right;text-transform:uppercase">Actual</th>
+            <th style="padding:5px 8px;font-size:10px;color:var(--muted);text-align:right;text-transform:uppercase">Eff%</th>
+            <th style="padding:5px 8px;font-size:10px;color:var(--muted);text-align:center;text-transform:uppercase">Status</th>
+          </tr></thead>
+          <tbody>${detailRows}</tbody>
+        </table>
+      </div>` : `<div style="padding:12px;color:var(--muted);font-size:12px;text-align:center">No operations scheduled</div>`}
+      <div style="padding:6px 14px;font-size:10px;color:var(--muted);border-top:1px solid var(--border);text-align:right">
+        Generated: ${new Date(r.generated_at).toLocaleString('en-IN')}
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('content').innerHTML = `
+    <div style="max-width:960px;margin:0 auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-size:16px;font-weight:700">Worker Reports — ${date}</div>
+        <div style="font-size:11px;color:var(--muted)">${reports.length} worker(s)</div>
+      </div>
+      ${summaryHtml}
+      ${workerCards}
+    </div>`;
+}

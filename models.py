@@ -167,10 +167,11 @@ class Operation(Base):
     job_setup_mins     = Column(Float, default=0)
     work_time_hrs      = Column(Float, default=0)
     work_time_mins     = Column(Float, default=0)
-    is_optional        = Column(Boolean, default=False)
-    op_type            = Column(String, default="inhouse")  # inhouse | outside
-    outside_vendor     = Column(String, nullable=True)       # vendor name if outside
-    setup_time_mins    = Column(Float, default=0)
+    is_optional           = Column(Boolean, default=False)
+    op_type               = Column(String, default="inhouse")  # inhouse | outside
+    outside_vendor        = Column(String, nullable=True)
+    outside_transit_days  = Column(Float, nullable=True)   # calendar days away (e.g. 3.0 = 3 days)
+    setup_time_mins       = Column(Float, default=0)
     # ── Formula-based time calculation ──────────────────────────────────────
     # formula_type: none | volume_milling | area | perimeter_side | perimeter_weld | fixed
     formula_type       = Column(String, nullable=True)
@@ -455,4 +456,55 @@ class AssemblyStep(Base):
     notes          = Column(Text, nullable=True)
     order          = relationship("CustomerOrder", back_populates="assembly_steps")
     worker         = relationship("Worker")
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+class Notification(Base):
+    """
+    Real-time notification for manager/admin users.
+    event_type values:
+      assembly_unlocked  — assembly step is now ready to start
+      job_urgent         — job CR dropped below 0.5
+      machine_breakdown  — machine marked as breakdown
+      outside_received   — outside operation received back
+      order_due_soon     — order due in <= 2 days with pending jobs
+      assembly_complete  — all assembly steps done, ready to dispatch
+    """
+    __tablename__ = "notifications"
+    id           = Column(Integer, primary_key=True)
+    event_type   = Column(String, nullable=False)
+    title        = Column(String, nullable=False)
+    body         = Column(String, nullable=False)
+    link         = Column(String, nullable=True)   # frontend route to navigate to
+    is_read      = Column(Boolean, default=False)
+    created_at   = Column(DateTime, default=now_ist)
+    # Optional references
+    job_id       = Column(Integer, nullable=True)
+    order_id     = Column(Integer, nullable=True)
+    wc_id        = Column(Integer, nullable=True)
+
+# ── Worker Daily Report ────────────────────────────────────────────────────────
+class WorkerDailyReport(Base):
+    """
+    Snapshot of one worker's productivity for one day.
+    Generated on-demand or at end of day. Stored permanently.
+    One row per worker per date.
+    """
+    __tablename__ = "worker_daily_reports"
+    id              = Column(Integer, primary_key=True)
+    report_date     = Column(Date, nullable=False)
+    worker_id       = Column(Integer, ForeignKey("workers.id"), nullable=False)
+    worker_name     = Column(String, nullable=False)
+    # Counts
+    ops_scheduled   = Column(Integer, default=0)   # ops that were scheduled for this day
+    ops_completed   = Column(Integer, default=0)   # ops completed (actual_end on this date)
+    ops_started     = Column(Integer, default=0)   # ops started (actual_start on this date)
+    ops_missed      = Column(Integer, default=0)   # ops scheduled but not started
+    # Time (hours)
+    est_hours       = Column(Float, default=0)     # sum of work_time_hrs for scheduled ops
+    actual_hours    = Column(Float, default=0)     # sum of (actual_end - actual_start)
+    efficiency_pct  = Column(Float, nullable=True) # actual / est * 100
+    # Detail (JSON list of op summaries)
+    ops_detail      = Column(Text, nullable=True)  # JSON: [{job_number, op_name, est_mins, actual_mins, status}]
+    generated_at    = Column(DateTime, default=now_ist)
+    worker          = relationship("Worker")
 

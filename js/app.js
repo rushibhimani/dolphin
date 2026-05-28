@@ -224,6 +224,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Manager / Admin: full app
   await loadAll();
+  // Init notification bell (manager/admin only)
+  if (typeof initNotifications === 'function') initNotifications();
   // If at root or no meaningful path, go to dashboard; otherwise honour the URL
   const initPath = window.location.pathname;
   if (!initPath || initPath === '/' || initPath === '/index.html') {

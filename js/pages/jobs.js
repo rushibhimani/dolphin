@@ -193,11 +193,14 @@ function jobRowHTML(j, inGroup=false){
       </div>
 
       <div style="flex:0 0 auto;display:flex;gap:5px;flex-wrap:wrap" onclick="event.stopPropagation()">
-        ${j.priority_flag?'':'<button class="btn btn-danger btn-icon" title="Urgent" onclick="setUrgent('+j.id+')">🚨</button>'}
-        <button class="btn btn-ghost btn-icon" title="${j.is_frozen?'Unfreeze — allow rescheduling':'Freeze — skip in Schedule All'}" onclick="toggleFreeze(${j.id})">${j.is_frozen?'🔓':'🔒'}</button>
+        ${j.priority_flag?'':'<button class="btn btn-danger btn-icon" title="Mark Urgent" onclick="setUrgent('+j.id+')">🚨</button>'}
+        ${j.is_frozen && j.status === 'pending'
+          ? `<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px;color:var(--amber)" title="Job on hold — click to release and allow rescheduling" onclick="unholdJob(${j.id})">⏸ On Hold</button>`
+          : `<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" title="Hold job — clears schedule and pauses it until manually released" onclick="holdJob(${j.id})">Hold</button>`
+        }
         <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="navigate('/jobs/${j.id}')">Edit</button>
         <button class="btn btn-ghost btn-icon" title="Duplicate" onclick="duplicateJob(${j.id})">⧉</button>
-        ${j.status==='pending'?`<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="scheduleJob(${j.id})">Schedule</button>`:''}
+        ${j.status==='pending'&&!j.is_frozen?`<button class="btn btn-secondary" style="font-size:11px;padding:3px 8px" onclick="scheduleJob(${j.id})">Schedule</button>`:''}
         <button class="btn btn-danger btn-icon" title="Delete" onclick="delJob(${j.id})">✕</button>
       </div>
     </div>
@@ -265,6 +268,34 @@ async function duplicateJob(id){
 
 async function scheduleJob(id){try{await api('POST',`/api/schedule/${id}`);toast('Scheduled!');await loadAll();navigate('/jobs')}catch(e){toast(e.message,'error')}}
 async function setUrgent(id){try{await api('PUT',`/api/jobs/${id}`,{priority_flag:true});toast('Marked urgent!');await loadAll();navigate('/jobs')}catch(e){toast(e.message,'error')}}
+async function holdJob(id) {
+  const j = (allJobs||[]).find(x=>x.id===id);
+  const name = j ? j.job_number : `Job #${id}`;
+  const ok = await confirm2(
+    `Put ${name} on hold?
+
+This will:
+• Remove it from the Gantt schedule
+• Freeze it so Schedule All ignores it
+• Job stays in the system — release it to reschedule`,
+    'Put on Hold'
+  );
+  if (!ok) return;
+  try {
+    await api('POST', `/api/jobs/${id}/hold`);
+    toast('Job put on hold — release it when ready to reschedule');
+    await loadAll(); renderJobsTable();
+  } catch(e) { toast(e.message,'error'); }
+}
+
+async function unholdJob(id) {
+  try {
+    await api('POST', `/api/jobs/${id}/unhold`);
+    toast('Job released — run Schedule All to reschedule it');
+    await loadAll(); renderJobsTable();
+  } catch(e) { toast(e.message,'error'); }
+}
+
 async function toggleFreeze(id){
   try{
     const r=await api('POST',`/api/jobs/${id}/toggle-freeze`);

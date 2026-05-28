@@ -6,11 +6,13 @@ const ROUTES = [
   { pattern: /^\/?$/,                         page: 'dashboard',    title: 'Dashboard' },
   { pattern: /^\/dashboard$/,                 page: 'dashboard',    title: 'Dashboard' },
   { pattern: /^\/today$/,                     page: 'today',        title: "Today's Work" },
+  { pattern: /^\/past-work$/,                  page: 'past-work',    title: 'Past Work' },
   { pattern: /^\/upcoming$/,                  page: 'upcoming',     title: 'Upcoming' },
   { pattern: /^\/schedule$/,                  page: 'schedule',     title: 'Gantt Schedule' },
   { pattern: /^\/capacity$/,                  page: 'capacity',     title: 'Capacity' },
   { pattern: /^\/floorplan$/,                 page: 'floorplan',    title: 'Floor Plan' },
   { pattern: /^\/reports$/,                   page: 'reports',      title: 'Reports' },
+  { pattern: /^\/reports\/workers$/,           page: 'worker-reports', title: 'Worker Reports' },
   { pattern: /^\/settings$/,                  page: 'settings',     title: 'Settings' },
   { pattern: /^\/quote$/,                     page: 'quote',        title: 'Estimator' },
   { pattern: /^\/quotations$/,                 page: 'quotations',      title: 'Quotations' },
@@ -98,6 +100,7 @@ async function handleRoute() {
     switch (page) {
       case 'dashboard':     await renderDashboard(); break;
       case 'today':         await renderToday(); break;
+      case 'past-work':     await renderPastWork(); break;
       case 'upcoming':      await renderUpcoming(); break;
       case 'jobs':          await renderJobs(); break;
       case 'job-new':       await renderJobEditor(null); break;
@@ -122,6 +125,7 @@ async function handleRoute() {
       case 'customers':     await renderCustomers(); break;
       case 'tasks':         await renderTasks(); break;
       case 'reports':       await renderReports(); break;
+      case 'worker-reports': await renderWorkerReports(); break;
       case 'settings':      await renderSettings(); break;
       case 'users':
         if (authGetUser()?.role !== 'admin') {
