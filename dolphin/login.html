@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Login — Dolphin ERP</title>
+<script>
+try {
+  var p = JSON.parse(localStorage.getItem("dolphin-prefs")||"null");
+  if(p?.theme) document.documentElement.setAttribute("data-theme", p.theme);
+} catch(e){}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/app.css">
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:16px}
+
+.login-wrap{width:100%;max-width:480px}
+.logo{text-align:center;margin-bottom:24px}
+.logo-title{font-size:22px;font-weight:800;color:var(--accent);letter-spacing:.04em}
+.logo-sub{font-size:12px;color:var(--muted);margin-top:2px}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px}
+.tabs{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:20px}
+.tab{flex:1;padding:9px;font-size:13px;font-weight:500;text-align:center;cursor:pointer;
+     background:transparent;border:none;color:var(--muted);transition:all .15s}
+.tab.active{background:var(--accent);color:#000;font-weight:600}
+
+/* Password form */
+.fg{margin-bottom:14px}
+.lbl{font-size:12px;color:var(--muted);font-weight:500;display:block;margin-bottom:5px}
+input[type=text],input[type=password]{width:100%;padding:10px 12px;font-size:14px;
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  color:var(--text);outline:none}
+input[type=text]:focus,input[type=password]:focus{border-color:var(--accent)}
+.btn-full{width:100%;padding:11px;font-size:14px;font-weight:600;background:var(--accent);color:#000;
+          border:none;border-radius:8px;cursor:pointer;transition:opacity .15s;margin-top:4px}
+.btn-full:hover{opacity:.88}
+.btn-full:disabled{opacity:.45;cursor:not-allowed}
+
+/* Error box — hardcoded colors so visible in both light/dark without CSS var dependency */
+.err-box{
+  background:#FEE2E2;
+  border:2px solid #DC2626;
+  border-radius:8px;
+  padding:12px 16px;
+  font-size:14px;
+  font-weight:600;
+  color:#991B1B;
+  margin-top:14px;
+  display:none;
+  text-align:center;
+  animation:shake .4s ease;
+}
+[data-theme="dark"] .err-box{
+  background:rgba(220,38,38,.15);
+  border-color:#EF4444;
+  color:#FCA5A5;
+}
+@keyframes shake{
+  0%,100%{transform:translateX(0)}
+  20%{transform:translateX(-8px)}
+  40%{transform:translateX(8px)}
+  60%{transform:translateX(-6px)}
+  80%{transform:translateX(6px)}
+}
+.warn-box{background:var(--amber-soft);border:1px solid var(--amber);border-radius:6px;
+          padding:9px 12px;font-size:11px;color:var(--amber);margin-bottom:14px}
+
+/* ── PIN panel — always-visible single layout ── */
+.pin-panel{display:flex;flex-direction:column;gap:14px}
+
+/* Worker list */
+.worker-list-label{font-size:11px;font-weight:600;text-transform:uppercase;
+                   letter-spacing:.06em;color:var(--muted);margin-bottom:6px}
+.worker-list{display:grid;grid-template-columns:1fr 1fr;gap:8px;max-height:200px;overflow-y:auto}
+.wb{padding:11px 12px;background:var(--surface);border:1.5px solid var(--border);border-radius:10px;
+    cursor:pointer;text-align:left;transition:all .12s;width:100%}
+.wb:hover{border-color:var(--accent);background:var(--accent-soft)}
+.wb.sel{border-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 2px var(--accent)}
+.wb .wcode{font-size:10px;font-family:var(--mono);color:var(--muted);margin-bottom:2px;font-weight:500}
+.wb .wname{font-size:13px;font-weight:600;color:var(--text)}
+
+/* Selected indicator */
+.sel-who{background:var(--accent-soft);border:1px solid var(--accent);border-radius:8px;
+         padding:9px 14px;font-size:14px;font-weight:600;color:var(--accent);text-align:center;
+         display:none}
+
+/* PIN display */
+.pin-row{display:flex;flex-direction:column;gap:10px}
+.pin-display{font-size:32px;text-align:center;letter-spacing:12px;font-family:var(--mono);
+             padding:10px 8px;background:var(--surface);border:1px solid var(--border);
+             border-radius:8px;color:var(--text);min-height:56px;user-select:none}
+
+/* PIN keypad */
+.pin-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.pk{padding:14px 8px;font-size:22px;font-weight:600;background:var(--surface);
+    border:1.5px solid var(--border);border-radius:10px;cursor:pointer;text-align:center;
+    transition:background .08s;font-family:var(--mono);color:var(--text);
+    -webkit-tap-highlight-color:transparent;user-select:none}
+.pk:hover{background:var(--accent-soft);border-color:var(--accent)}
+.pk:active{background:var(--accent)!important;color:#000!important;border-color:var(--accent)}
+.pk.del{font-size:17px;color:var(--muted)}
+
+.footer{text-align:center;font-size:11px;color:var(--muted);margin-top:16px}
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <div class="logo">
+    <div class="logo-title">🐬 DOLPHIN ERP</div>
+    <div class="logo-sub">Mould &amp; Die Shop Management</div>
+  </div>
+
+  <div class="card">
+    <div class="tabs">
+      <button class="tab active" id="tab-pw"  onclick="switchTab('pw')">🔑 Password</button>
+      <button class="tab"        id="tab-pin" onclick="switchTab('pin')">🔢 PIN (Operator)</button>
+    </div>
+
+    <!-- ── PASSWORD FORM ── -->
+    <div id="form-pw">
+      <div class="fg">
+        <label class="lbl">Username</label>
+        <input type="text" id="inp-user" placeholder="e.g. admin"
+          autocomplete="username" autocapitalize="none" spellcheck="false">
+      </div>
+      <div class="fg">
+        <label class="lbl">Password</label>
+        <input type="password" id="inp-pass" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <button class="btn-full" id="btn-login" onclick="doPasswordLogin()">Sign In</button>
+      <div class="err-box" id="err-pw"></div>
+    </div>
+
+    <!-- ── PIN FORM — single always-visible layout ── -->
+    <div id="form-pin" style="display:none">
+      <div class="pin-panel">
+
+        <!-- 1. Worker dropdown -->
+        <div>
+          <div class="worker-list-label">Select your name</div>
+          <select id="workerSelect" onchange="selectWorker(this)"
+            style="width:100%;padding:10px 12px;font-size:14px;background:var(--surface);
+                   border:1px solid var(--border);border-radius:8px;color:var(--text);outline:none">
+            <option value="">— Who are you? —</option>
+          </select>
+        </div>
+
+        <!-- 2. PIN display -->
+        <div>
+          <div class="worker-list-label">Enter your PIN</div>
+          <div class="pin-display" id="pinDisplay">——</div>
+        </div>
+
+        <!-- 3. PIN keypad -->
+        <div class="pin-grid" id="pinGrid"></div>
+
+        <!-- 4. Login button -->
+        <button class="btn-full" id="btn-pin-login" onclick="doPinLogin()" disabled>
+          Sign In
+        </button>
+        <div class="err-box" id="err-pin"></div>
+
+        <div style="text-align:center;font-size:11px;color:var(--muted)">
+          No name shown? Ask admin to create your account with a PIN.
+        </div>
+
+      </div>
+    </div>
+  </div>
+  <div class="footer">Secure · Session expires after shift (12 hrs)</div>
+</div>
+
+<script>
+// ── Already logged in? ────────────────────────────────────────────────────────
+(function(){
+  try{
+    const t=localStorage.getItem('dolphin_token');
+    if(t){
+      const c=JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+      if(c.exp>Math.floor(Date.now()/1000)){window.location.href='/';return;}
+    }
+  }catch(e){}
+})();
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let _pin='';
+let _selWorkerId=null;
+let _selWorkerName=null;
+
+function escH(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+
+// ── Error helpers ──────────────────────────────────────────────────────────────
+function showErr(m, which){
+  const id = which==='pin' ? 'err-pin' : 'err-pw';
+  const e = document.getElementById(id);
+  if(!e) return;
+  // Show first, then set text, then re-trigger animation
+  e.style.display = 'block';
+  e.textContent = m;
+  // Re-trigger animation by removing and re-adding the class
+  e.style.animation = 'none';
+  requestAnimationFrame(()=>{
+    requestAnimationFrame(()=>{ e.style.animation = ''; });
+  });
+}
+function clearErr(){
+  ['err-pw','err-pin'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none';});
+}
+
+// ── Tab switch ────────────────────────────────────────────────────────────────
+function switchTab(t){
+  document.getElementById('tab-pw').classList.toggle('active',t==='pw');
+  document.getElementById('tab-pin').classList.toggle('active',t==='pin');
+  document.getElementById('form-pw').style.display=t==='pw'?'':'none';
+  document.getElementById('form-pin').style.display=t==='pin'?'':'none';
+  clearErr();
+  if(t==='pin') loadWorkers();
+}
+
+// ── Load workers for PIN picker ───────────────────────────────────────────────
+async function loadWorkers(){
+  const sel=document.getElementById('workerSelect');
+  if(sel.dataset.loaded) return;
+  try{
+    const r=await fetch('/api/auth/pin-users');
+    const d=await r.json();
+    const users=d.users||[];
+    if(!users.length){
+      sel.innerHTML='<option value="">No operator accounts with PIN set up</option>';
+      return;
+    }
+    sel.innerHTML='<option value="">— Who are you? —</option>'
+      +users.map(u=>`<option value="${u.worker_id||u.id}" data-name="${escH(u.display_name)}">${escH(u.display_name)} (${escH(u.username)})</option>`).join('');
+    sel.dataset.loaded='1';
+  }catch(e){
+    sel.innerHTML=`<option value="">Failed to load: ${e.message}</option>`;
+  }
+}
+
+// ── Select a worker ───────────────────────────────────────────────────────────
+function selectWorker(sel){
+  const opt=sel.options[sel.selectedIndex];
+  if(!sel.value){ _selWorkerId=null; _selWorkerName=null; document.getElementById('btn-pin-login').disabled=true; return; }
+  _selWorkerId=parseInt(sel.value);
+  _selWorkerName=opt.dataset.name||opt.text;
+  _pin='';
+  clearErr();
+  updatePinDisplay();
+  document.getElementById('btn-pin-login').disabled=false;
+}
+
+// ── PIN pad ───────────────────────────────────────────────────────────────────
+const KEYS=['1','2','3','4','5','6','7','8','9','','0','⌫'];
+
+function buildPinGrid(){
+  document.getElementById('pinGrid').innerHTML=KEYS.map(k=>k===''
+    ?'<div></div>'
+    :`<button class="pk${k==='⌫'?' del':''}" onclick="pinKey('${k}')">${k}</button>`
+  ).join('');
+}
+buildPinGrid();
+
+function updatePinDisplay(){
+  const el=document.getElementById('pinDisplay');
+  el.textContent=_pin.length ? '●'.repeat(_pin.length) : '——';
+}
+
+function pinKey(k){
+  clearErr();
+  if(!_selWorkerId){showErr('Select your name first','pin');return;}
+  if(k==='⌫') _pin=_pin.slice(0,-1);
+  else if(_pin.length<6) _pin+=k;
+  updatePinDisplay();
+  // No auto-submit — user must press Sign In button
+}
+
+// Keyboard support — digits and backspace only, no Enter auto-submit
+document.addEventListener('keydown',e=>{
+  if(document.getElementById('form-pin').style.display==='none') return;
+  if(e.key>='0'&&e.key<='9') pinKey(e.key);
+  else if(e.key==='Backspace') pinKey('⌫');
+});
+
+// ── Password login ────────────────────────────────────────────────────────────
+document.getElementById('inp-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doPasswordLogin();});
+document.getElementById('inp-user').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('inp-pass').focus();});
+
+// Check if default admin password still active
+fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({username:'admin',password:'admin123'})
+}).then(r=>{if(r.ok)document.getElementById('first-login-warn').style.display='';}).catch(()=>{});
+
+async function doPasswordLogin(){
+  clearErr();
+  const u=document.getElementById('inp-user').value.trim();
+  const p=document.getElementById('inp-pass').value;
+  if(!u||!p){showErr('Enter username and password','pw');return;}
+  const btn=document.getElementById('btn-login');
+  btn.disabled=true;btn.textContent='Signing in…';
+  try{
+    const res=await fetch('/api/auth/login',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:u.toLowerCase(),password:p})});
+    if(!res.ok){
+      const j=await res.json().catch(()=>({}));
+      if(res.status===429) throw new Error('🔒 Too many attempts. Try again in 15 minutes.');
+      if(res.status===401) throw new Error('❌ Wrong username or password.');
+      throw new Error(j.detail||'Login failed');
+    }
+    saveAndGo(await res.json());
+  }catch(e){
+    showErr(e.message,'pw');
+    btn.disabled=false;btn.textContent='Sign In';
+  }
+}
+
+async function doPinLogin(){
+  if(!_selWorkerId){showErr('Select your name first','pin');return;}
+  if(_pin.length<4){showErr('PIN must be at least 4 digits','pin');return;}
+  clearErr();
+  const btn=document.getElementById('btn-pin-login');
+  btn.disabled=true;btn.textContent='Verifying…';
+  try{
+    const res=await fetch('/api/auth/pin-login',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pin:_pin,worker_id:_selWorkerId})});
+    if(!res.ok){
+      const j=await res.json().catch(()=>({}));
+      if(res.status===429) throw new Error('🔒 Too many attempts. Try again in 15 minutes.');
+      if(res.status===401) throw new Error('❌ Wrong PIN. Try again.');
+      throw new Error(j.detail||'Login failed');
+    }
+    saveAndGo(await res.json());
+  }catch(e){
+    showErr(e.message,'pin');
+    _pin='';updatePinDisplay();
+    btn.disabled=false;btn.textContent='Sign In';
+  }
+}
+
+function saveAndGo(data){
+  localStorage.setItem('dolphin_token',data.token);
+  localStorage.setItem('dolphin_user',JSON.stringify({
+    role:data.role,username:data.username,
+    display_name:data.display_name,worker_id:data.worker_id,
+    permissions:data.permissions,
+  }));
+  window.location.href='/';
+}
+</script>
+</body>
+</html>
