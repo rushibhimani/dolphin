@@ -1026,6 +1026,8 @@ _PATH_TO_PAGE = [
     ("/api/preemption-alerts",  "schedule"),
     ("/api/notifications",      "dashboard"),
     ("/api/pull-forward",       "today"),
+    ("/api/dispatch",           "today"),
+    ("/api/company-logo",       "dashboard"),
 ]
 
 # Read-only (GET) methods are allowed at level >= 1; write methods require level >= 2
@@ -4273,13 +4275,16 @@ def get_past_work(days: int = 30, user: dict = Depends(require_any)):
             # Unstarted ops whose scheduled window is entirely in the past
             (ScheduledOp.status == "scheduled") &
             (ScheduledOp.scheduled_end != None) &
-            (ScheduledOp.scheduled_end < t_start),
-            # In-progress ops that were scheduled to start before today
+            (ScheduledOp.scheduled_end < t_start) &
+            (ScheduledOp.scheduled_start >= cutoff),
+            # In-progress ops started before today — include ALL, no cutoff restriction
+            # (a job started 5 days ago and still running must always be visible)
             (ScheduledOp.status == "in_progress") &
-            (ScheduledOp.scheduled_start != None) &
             (ScheduledOp.scheduled_start < t_start),
-        ),
-        ScheduledOp.scheduled_start >= cutoff,
+            # Paused ops from before today
+            (ScheduledOp.status == "paused") &
+            (ScheduledOp.scheduled_start < t_start),
+        )
     )
     if worker_filter_id:
         q = q.filter(ScheduledOp.worker_id == worker_filter_id)
@@ -5871,6 +5876,175 @@ def fp_machine_today(machine_code: str):
     db.close()
     return {'machine_code': machine_code, 'machine_name': m.name,
             'total_capacity_hours': 10, 'ops': ops_out}
+
+
+# ── Company logo (base64-encoded for embedding in printable HTML) ─────────────
+# Cached at module load so we read the file once, not on every request.
+_LOGO_CACHE: dict = {"data_url": None, "loaded": False}
+
+def _load_logo_data_url() -> str | None:
+    """Read logo from disk and return as a `data:image/...;base64,...` string.
+    Tries common filenames in priority order so it works regardless of which
+    variant the user has dropped in. Result is cached for the lifetime of the
+    process — restart the server to pick up a new logo file.
+    """
+    if _LOGO_CACHE["loaded"]:
+        return _LOGO_CACHE["data_url"]
+    _LOGO_CACHE["loaded"] = True
+
+    import os, base64
+    here = os.path.dirname(os.path.abspath(__file__))
+    # Priority: logo.png is the canonical company logo (used by the quotation
+    # PDF generator too). Transparent variants are alternates the user may have
+    # dropped in. Order from most-preferred to last-resort fallback.
+    candidates = [
+        "logo.png",
+        "logo_black_transparent.png",
+        "logo_new_transparent.png",
+        "logo_black_3.png",
+        "logo_original.png",
+    ]
+    for name in candidates:
+        p = os.path.join(here, name)
+        if os.path.exists(p):
+            try:
+                with open(p, "rb") as f:
+                    b = f.read()
+                ext = name.rsplit(".", 1)[-1].lower()
+                mime = "image/png" if ext == "png" else f"image/{ext}"
+                _LOGO_CACHE["data_url"] = f"data:{mime};base64," + base64.b64encode(b).decode("ascii")
+                return _LOGO_CACHE["data_url"]
+            except Exception:
+                continue
+    return None
+
+
+@app.get("/api/company-logo")
+def get_company_logo(user: dict = Depends(require_any)):
+    """Return the company logo as a base64 data URL for embedding in printable
+    documents (dispatch sheet, etc.). Returns null if no logo file is present."""
+    return {"data_url": _load_logo_data_url()}
+
+
+# ── Daily Dispatch Sheet ──────────────────────────────────────────────────────
+@app.get("/api/dispatch")
+def get_dispatch(date: str = None, user: dict = Depends(require_any)):
+    """
+    Return scheduled ops for a given date (default: tomorrow) grouped by worker.
+    Used by the manager at end-of-day to prepare the next day's work dispatch sheet.
+    Query param: date=YYYY-MM-DD  (defaults to tomorrow IST)
+    """
+    db = SessionLocal()
+    try:
+        if date:
+            try:
+                target = datetime.strptime(date, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
+        else:
+            target = (now_ist() + timedelta(days=1)).date()
+
+        t_start = datetime(target.year, target.month, target.day, 0, 0)
+        t_end   = datetime(target.year, target.month, target.day, 23, 59)
+
+        ops = (
+            db.query(ScheduledOp)
+            .filter(
+                ScheduledOp.status.in_(["scheduled", "in_progress", "paused"]),
+                ScheduledOp.scheduled_start != None,
+                ScheduledOp.scheduled_end   != None,
+                ScheduledOp.scheduled_start <= t_end,
+                ScheduledOp.scheduled_end   >= t_start,
+            )
+            .order_by(ScheduledOp.worker_name, ScheduledOp.scheduled_start)
+            .all()
+        )
+
+        fmt = lambda dt: dt.isoformat() if dt else None
+
+        # Pre-fetch all referenced WorkCenters and CustomerOrders in single
+        # queries — avoids N+1 lookups in the loop below.
+        wc_ids = {s.work_center_id for s in ops if s.work_center_id}
+        wc_codes_by_id = {
+            wc.id: wc.code
+            for wc in db.query(WorkCenter).filter(WorkCenter.id.in_(wc_ids)).all()
+        } if wc_ids else {}
+
+        order_ids = {j.order_id for j in (s.job for s in ops) if j.order_id}
+        orders_by_id = {
+            o.id: o
+            for o in db.query(CustomerOrder).filter(CustomerOrder.id.in_(order_ids)).all()
+        } if order_ids else {}
+
+        result = []
+        for s in ops:
+            j = s.job
+
+            # ── Product name: type + size + variant ────────────────────────
+            # The variant (e.g. "Lower Plain", "Upper Carbide") disambiguates
+            # the many sub-types of each product. Without it, "Punch 200×200"
+            # is ambiguous since you make Plain/Panel/Rustic and Upper/Lower
+            # variants at the same size.
+            product_name = " ".join(filter(None, [
+                j.product_type, j.product_size, j.product_variant
+            ])).strip() or "—"
+
+            # ── Order context: ORD-XXXX-NNN  P5/8 ──────────────────────────
+            # Job code is the primary ID (unique per piece) but the order +
+            # piece-position gives the worker context: "this is piece 5 of 8
+            # for the Milota order".
+            order_context = ""
+            if j.order_id and j.order_id in orders_by_id:
+                o = orders_by_id[j.order_id]
+                if j.piece_number and o.quantity:
+                    order_context = f"{o.order_number}  P{j.piece_number}/{o.quantity}"
+                else:
+                    order_context = o.order_number
+
+            # ── Assembly context: which component within a mould this is ──
+            asm_context = ""
+            if j.order_id:
+                comp_link = db.query(OrderComponent).filter(OrderComponent.job_id == j.id).first()
+                if comp_link:
+                    asm_context = comp_link.name
+
+            # ── Machine display: "DC Surface Grinder (M14)" ────────────────
+            wc_code = wc_codes_by_id.get(s.work_center_id) if s.work_center_id else None
+            wc_display = f"{s.wc_name} ({wc_code})" if wc_code else (s.wc_name or "—")
+
+            est_mins = (s.setup_time_mins or 0) + (
+                s.work_time_mins if s.work_time_mins else round((s.work_time_hrs or 0) * 60, 1)
+            )
+
+            result.append({
+                "op_id":         s.id,
+                "job_id":        j.id,
+                "job_number":    j.job_number,
+                "product_name":  product_name,
+                "order_context": order_context,
+                "assembly_context": asm_context,
+                "customer":      j.customer_name,
+                "op_name":       s.op_name,
+                "wc_name":       wc_display,
+                "worker_id":     s.worker_id,
+                "worker_name":   s.worker_name or "Unassigned",
+                "est_mins":      est_mins,
+                "setup_mins":    s.setup_time_mins or 0,
+                "work_mins":     s.work_time_mins if s.work_time_mins else round((s.work_time_hrs or 0) * 60, 1),
+                "scheduled_start": fmt(s.scheduled_start),
+                "scheduled_end":   fmt(s.scheduled_end),
+                "status":        s.status,
+                "priority":      j.priority_flag,
+                "due_date":      fmt(j.due_date),
+                "op_type":       getattr(s, "op_type", "inhouse") or "inhouse",
+                "outside_vendor": getattr(s, "outside_vendor", None) or "",
+                "job_notes":     (j.notes or "").strip(),
+                "notes":         getattr(s, "pause_notes", None) or "",
+            })
+
+        return result
+    finally:
+        db.close()
 
 
 # ── SPA catch-all — MUST be the very last route ──────────────────────────────

@@ -36,12 +36,20 @@ function authCanAccess(page){
  */
 function authPageLevel(page){
   const perms = _authUser?.permissions || {};
+  // Page aliases: dispatch inherits today's permission (it's a view onto today's work)
+  const PAGE_ALIASES = { dispatch: 'today' };
   // New granular system
   if(perms.page_levels && typeof perms.page_levels[page] === 'number'){
     return perms.page_levels[page];
   }
   // Legacy fallback: if page is in the allowed pages list, treat as full control
   if(perms.pages?.includes(page)) return 3;
+  // Try alias
+  const alias = PAGE_ALIASES[page];
+  if(alias){
+    if(perms.page_levels && typeof perms.page_levels[alias] === 'number') return perms.page_levels[alias];
+    if(perms.pages?.includes(alias)) return 3;
+  }
   return 0;
 }
 

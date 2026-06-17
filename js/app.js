@@ -115,9 +115,20 @@ function applyRoleUI(user) {
   const pageLevels = perms.page_levels || {};
   const legacyPages = new Set(perms.pages || []);
 
+  // Page aliases: a page that doesn't appear in user's permissions inherits
+  // from its "parent" page. Dispatch Sheet is a view onto today's work, so it
+  // inherits the today permission level rather than requiring its own entry.
+  const PAGE_ALIASES = { dispatch: 'today' };
+
   function _pageLevel(page) {
     if(typeof pageLevels[page] === 'number') return pageLevels[page];
-    return legacyPages.has(page) ? 3 : 0;
+    if(legacyPages.has(page)) return 3;
+    const alias = PAGE_ALIASES[page];
+    if(alias){
+      if(typeof pageLevels[alias] === 'number') return pageLevels[alias];
+      if(legacyPages.has(alias)) return 3;
+    }
+    return 0;
   }
 
   // ── Sidebar nav items — show if level >= 1 (any access) ──

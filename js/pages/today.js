@@ -16,15 +16,32 @@ function parseISTDate(s){
   return new Date(s.trim().replace(' ', 'T') + '+05:30');
 }
 
+// ── Supervisor Mode state ────────────────────────────────────────────────────
+// Persisted in localStorage so it survives page refreshes within the same session.
+function _supModeOn()  { return localStorage.getItem('dolphin-sup-mode') === '1'; }
+function _setSupMode(v){ localStorage.setItem('dolphin-sup-mode', v ? '1' : '0'); }
+function toggleSupMode(){ _setSupMode(!_supModeOn()); renderToday(); }
+
 async function renderToday(){
   if(todayRefreshTimer) clearInterval(todayRefreshTimer);
   if(window._elapsedTimer) clearInterval(window._elapsedTimer);
 
   const canControl = authGetUser()?.permissions?.can_control_ops !== false;
+  const supMode    = canControl && _supModeOn();
+
+  const supBtnCss = supMode
+    ? 'background:var(--accent);color:#000;border:none;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap'
+    : 'background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;white-space:nowrap';
 
   document.getElementById('topbarActions').innerHTML=`
     <span id="todayTs" style="font-size:12px;color:var(--muted)"></span>
-    ${canControl ? `<button class="btn btn-secondary" style="font-size:12px" onclick="pullForwardOps()" title="Pull future ops forward after early completion">⏩ Pull Forward</button>` : ''}
+    ${canControl ? `
+      <button style="${supBtnCss}" onclick="toggleSupMode()"
+        title="${supMode ? 'Switch back to machine view' : 'Supervisor mode: view by worker, instant start/done'}">
+        ${supMode ? '👷 Supervisor ON' : '👷 Supervisor'}
+      </button>
+      <button class="btn btn-secondary" style="font-size:12px" onclick="pullForwardOps()" title="Pull future ops forward">⏩ Pull Forward</button>
+    ` : ''}
     <button class="btn btn-secondary" onclick="renderToday()">↻</button>`;
   document.getElementById('content').innerHTML=`<div style="color:var(--muted)">Loading…</div>`;
   const nowISO = istNow().toISOString().slice(0,19);
@@ -83,34 +100,50 @@ async function renderToday(){
       </div>`;
     }
 
-    const byMachine = {};
-    currentOps.forEach(op=>{ (byMachine[op.wc_name]=byMachine[op.wc_name]||[]).push(op); });
-    const machines = Object.keys(byMachine).sort();
+    // ── Grouping: by worker (supervisor mode) OR by machine (normal) ──────
+    const supMode = canControlOps && _supModeOn();
+
+    // Build group map
+    const groupMap = {};
+    if(supMode){
+      currentOps.forEach(op=>{
+        const key = op.worker_name || 'Unassigned';
+        (groupMap[key] = groupMap[key]||[]).push(op);
+      });
+    } else {
+      currentOps.forEach(op=>{ (groupMap[op.wc_name]=groupMap[op.wc_name]||[]).push(op); });
+    }
+    const groupKeys = Object.keys(groupMap).sort();
 
     /* ── MOBILE (≤640px): timeline cards, one per op ────────────────────── */
     html += `<div class="today-mobile-view">`;
-    machines.forEach(m=>{
-      const mops = byMachine[m];
+    groupKeys.forEach(grpKey=>{
+      const gops = groupMap[grpKey];
+      const grpLabel = supMode ? `👷 ${grpKey}` : grpKey;
       html += `<div style="margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <div style="font-size:13px;font-weight:700;color:var(--text)">${m}</div>
-          <div style="font-size:11px;color:var(--muted)">${mops.length} op${mops.length>1?'s':''}</div>
+          <div style="font-size:13px;font-weight:700;color:var(--text)">${grpLabel}</div>
+          <div style="font-size:11px;color:var(--muted)">${gops.length} op${gops.length>1?'s':''}</div>
         </div>
-        ${mops.map(op=>renderTimelineCard(op,nowISO,canControlOps,ownOpsOnly,myWorkerId)).join('')}
+        ${gops.map(op=>renderTimelineCard(op,nowISO,canControlOps,ownOpsOnly,myWorkerId,supMode)).join('')}
       </div>`;
     });
     html += `</div>`;
 
-    /* ── DESKTOP (≥641px): grouped machine cards with compact rows ───────── */
+    /* ── DESKTOP (≥641px): grouped cards with compact rows ──────────────── */
     html += `<div class="today-desktop-view">`;
-    machines.forEach(m=>{
-      const mops = byMachine[m];
+    groupKeys.forEach(grpKey=>{
+      const gops = groupMap[grpKey];
+      const grpLabel = supMode ? `👷 ${grpKey}` : grpKey;
+      const subLabel = supMode
+        ? `<span style="font-size:11px;color:var(--muted);font-weight:400"> — ${[...new Set(gops.map(o=>o.wc_name))].join(', ')}</span>`
+        : '';
       html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
         <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--border)">
-          <span style="font-weight:700;font-size:14px">${m}</span>
-          <span style="font-size:11px;color:var(--muted)">${mops.length} op${mops.length>1?'s':''} today</span>
+          <span style="font-weight:700;font-size:14px">${grpLabel}${subLabel}</span>
+          <span style="font-size:11px;color:var(--muted)">${gops.length} op${gops.length>1?'s':''} today</span>
         </div>
-        ${mops.map(op=>renderOpRow(op,nowISO,canControlOps,ownOpsOnly,myWorkerId)).join('')}
+        ${gops.map(op=>renderOpRow(op,nowISO,canControlOps,ownOpsOnly,myWorkerId,supMode)).join('')}
       </div>`;
     });
     html += `</div>`;
@@ -153,7 +186,7 @@ async function renderToday(){
 }
 
 /* ── MOBILE: timeline card ─────────────────────────────────────────────────── */
-function renderTimelineCard(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerId=null){
+function renderTimelineCard(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerId=null, supMode=false){
   // Determine if this user can act on THIS specific op
   const canActOnThis = canControlOps && (!ownOpsOnly || op.worker_id == myWorkerId);
   const isNow    = op.status === 'in_progress';
@@ -218,14 +251,27 @@ function renderTimelineCard(op, nowISO, canControlOps=true, ownOpsOnly=false, my
         : ''}
     ` : `
       ${op.status==='scheduled'
-        ? `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Start</button>`
+        ? supMode
+          ? `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px;font-weight:700"
+               onclick="instantStart(${op.op_id})">▶ Start Now</button>`
+          : `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px"
+               onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Start</button>`
         : ''}
       ${op.status==='in_progress'
-        ? `<button class="btn btn-secondary" style="flex:1;min-height:44px;font-size:14px" onclick="promptPause(${op.op_id})">⏸ Pause</button>
-           <button class="btn btn-primary" style="flex:1;min-height:44px;font-size:14px" onclick="promptComplete(${op.op_id},'${op.actual_start||''}')">✓ Done</button>`
+        ? `<button class="btn btn-secondary" style="flex:1;min-height:44px;font-size:14px"
+             onclick="promptPause(${op.op_id})">⏸ Pause</button>`
+          + (supMode
+          ? `<button class="btn btn-primary" style="flex:1;min-height:44px;font-size:14px;font-weight:700"
+               onclick="instantDone(${op.op_id},'${op.actual_start||''}')">✓ Done</button>`
+          : `<button class="btn btn-primary" style="flex:1;min-height:44px;font-size:14px"
+               onclick="promptComplete(${op.op_id},'${op.actual_start||''}')">✓ Done</button>`)
         : ''}
       ${op.status==='paused'
-        ? `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Resume</button>`
+        ? supMode
+          ? `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px;font-weight:700"
+               onclick="instantStart(${op.op_id})">▶ Resume Now</button>`
+          : `<button class="btn btn-success" style="flex:1;min-height:44px;font-size:14px"
+               onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶ Resume</button>`
         : ''}
     `}
   </div>` : '';
@@ -254,8 +300,8 @@ function renderTimelineCard(op, nowISO, canControlOps=true, ownOpsOnly=false, my
   </div>`;
 }
 
-/* ── DESKTOP: compact single-line row (unchanged from original) ─────────────── */
-function renderOpRow(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerId=null){
+/* ── DESKTOP: compact single-line row ────────────────────────────────────── */
+function renderOpRow(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerId=null, supMode=false){
   const canActOnThis = canControlOps && (!ownOpsOnly || op.worker_id == myWorkerId);
   const isNow    = op.status === 'in_progress';
   const isPaused = op.status === 'paused';
@@ -298,7 +344,7 @@ function renderOpRow(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerI
         <span style="font-size:13px;font-weight:600">${escHtml(op.op_name)}</span>
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-        ${op.customer}${op.worker_name?' · 👷 '+op.worker_name:''}</div>
+        ${op.customer}${supMode ? (op.wc_name?' · 🔧 '+op.wc_name:'') : (op.worker_name?' · 👷 '+op.worker_name:'')}</div>
       ${isNow&&op.actual_start?`<div style="font-size:10px;color:var(--muted);margin-top:1px">▶ Started ${fmtDT(op.actual_start)}</div>`:''}
       ${isPaused&&op.pause_reason?`<div style="font-size:10px;color:var(--amber);margin-top:1px">⏸ ${pauseReasonLabel(op.pause_reason)}</div>`:''}
     </div>
@@ -308,14 +354,54 @@ function renderOpRow(op, nowISO, canControlOps=true, ownOpsOnly=false, myWorkerI
     </div>
     <div style="display:flex;gap:4px;flex-shrink:0">
       ${canActOnThis ? `
-        ${op.status==='scheduled'?`<button class="btn btn-success" style="padding:5px 10px;font-size:12px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶</button>`:''}
-        ${op.status==='in_progress'?`
-          <button class="btn btn-secondary" style="padding:5px 10px;font-size:12px" onclick="promptPause(${op.op_id})">⏸</button>
-          <button class="btn btn-primary"   style="padding:5px 10px;font-size:12px" onclick="promptComplete(${op.op_id},'${op.actual_start||''}')">✓</button>`:''}
-        ${op.status==='paused'?`<button class="btn btn-success" style="padding:5px 10px;font-size:12px" onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶</button>`:''}
+        ${op.status==='scheduled'
+          ? supMode
+            ? `<button class="btn btn-success" style="padding:5px 14px;font-size:12px;font-weight:700;min-width:68px"
+                 onclick="instantStart(${op.op_id})">▶ Start</button>`
+            : `<button class="btn btn-success" style="padding:5px 10px;font-size:12px"
+                 onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶</button>`
+          : ''}
+        ${op.status==='in_progress'
+          ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px" onclick="promptPause(${op.op_id})">⏸</button>`
+            + (supMode
+              ? `<button class="btn btn-primary" style="padding:5px 14px;font-size:12px;font-weight:700;min-width:68px"
+                   onclick="instantDone(${op.op_id},'${op.actual_start||''}')">✓ Done</button>`
+              : `<button class="btn btn-primary" style="padding:5px 10px;font-size:12px"
+                   onclick="promptComplete(${op.op_id},'${op.actual_start||''}')">✓</button>`)
+          : ''}
+        ${op.status==='paused'
+          ? supMode
+            ? `<button class="btn btn-success" style="padding:5px 14px;font-size:12px;font-weight:700;min-width:68px"
+                 onclick="instantStart(${op.op_id})">▶ Resume</button>`
+            : `<button class="btn btn-success" style="padding:5px 10px;font-size:12px"
+                 onclick="promptStart(${op.op_id},'${op.scheduled_start||''}')">▶</button>`
+          : ''}
       ` : ''}
     </div>
   </div>`;
+}
+
+// ── Supervisor Mode instant actions (no dialog — stamps current IST time) ──────
+async function instantStart(opId){
+  const now = istNow().toISOString().slice(0,16).replace('T',' ');
+  try{
+    await api('PUT',`/api/ops/${opId}/status`,{status:'in_progress', actual_start: now});
+    _refreshWorkPage();
+  }catch(e){ toast(e.message,'error'); }
+}
+
+async function instantDone(opId, actualStart){
+  const now   = istNow().toISOString().slice(0,16).replace('T',' ');
+  // If we have an actual_start already recorded use it, otherwise use now as fallback
+  const start = actualStart ? actualStart.slice(0,16).replace('T',' ') : now;
+  try{
+    await api('PUT',`/api/ops/${opId}/status`,{
+      status:'completed',
+      actual_start: start,
+      actual_end:   now,
+    });
+    _refreshWorkPage();
+  }catch(e){ toast(e.message,'error'); }
 }
 
 async function pullForwardOps(){
