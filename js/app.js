@@ -117,8 +117,12 @@ function applyRoleUI(user) {
 
   // Page aliases: a page that doesn't appear in user's permissions inherits
   // from its "parent" page. Dispatch Sheet is a view onto today's work, so it
-  // inherits the today permission level rather than requiring its own entry.
-  const PAGE_ALIASES = { dispatch: 'today' };
+  // inherits today's permission. Product Schema is an admin sibling to
+  // Routings — anyone who can edit routings should be able to edit the schema.
+  const PAGE_ALIASES = {
+    dispatch: 'today',
+    'product-schema': 'routings',
+  };
 
   function _pageLevel(page) {
     if(typeof pageLevels[page] === 'number') return pageLevels[page];

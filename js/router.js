@@ -43,6 +43,7 @@ const ROUTES = [
   { pattern: /^\/customers$/,                 page: 'customers',    title: 'Customers' },
   { pattern: /^\/tasks$/,                     page: 'tasks',        title: 'Staff Tasks' },
   { pattern: /^\/dispatch$/,                  page: 'dispatch',     title: 'Work Card' },
+  { pattern: /^\/product-schema$/,            page: 'product-schema', title: 'Product Schema' },
 ];
 
 function resolveRoute(path) {
@@ -126,6 +127,7 @@ async function handleRoute() {
       case 'customers':     await renderCustomers(); break;
       case 'tasks':         await renderTasks(); break;
       case 'dispatch':      await renderDispatch(); break;
+      case 'product-schema': await renderProductSchema(); break;
       case 'reports':       await renderReports(); break;
       case 'worker-reports': await renderWorkerReports(); break;
       case 'settings':      await renderSettings(); break;
@@ -198,7 +200,7 @@ function showPage(p) {
     'capacity':'/capacity','floorplan':'/floorplan','routings':'/routings',
     'machines':'/machines','workers':'/workers','customers':'/customers',
     'reports':'/reports','settings':'/settings','routing-stats':'/routing-stats',
-    'quote':'/quote','quotations':'/quotations','users':'/users','tasks':'/tasks','dispatch':'/dispatch',
+    'quote':'/quote','quotations':'/quotations','users':'/users','tasks':'/tasks','dispatch':'/dispatch','product-schema':'/product-schema',
   };
   navigate(map[p] || '/' + p);
 }

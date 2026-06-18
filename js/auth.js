@@ -37,7 +37,7 @@ function authCanAccess(page){
 function authPageLevel(page){
   const perms = _authUser?.permissions || {};
   // Page aliases: dispatch inherits today's permission (it's a view onto today's work)
-  const PAGE_ALIASES = { dispatch: 'today' };
+  const PAGE_ALIASES = { dispatch: 'today', 'product-schema': 'routings' };
   // New granular system
   if(perms.page_levels && typeof perms.page_levels[page] === 'number'){
     return perms.page_levels[page];

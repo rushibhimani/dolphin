@@ -10,7 +10,8 @@ from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
                     Customer, Routing, Operation, SubOperation, Job, ScheduledOp,
                     JobCounter, CustomerOrder, OrderCounter, User, StaffTask, TaskFile,
                     TaskAssignee, TaskActivity, Quotation, QuoteCounter, CompanySetting,
-                    OrderComponent, AssemblyStep, Notification, WorkerDailyReport, now_ist)
+                    OrderComponent, AssemblyStep, Notification, WorkerDailyReport,
+                    ProductType, ProductAttribute, ProductAttributeValue, now_ist)
 import json, os, subprocess, sys
 from auth import (
     create_token, verify_token, hash_password, verify_password,
@@ -1028,6 +1029,12 @@ _PATH_TO_PAGE = [
     ("/api/pull-forward",       "today"),
     ("/api/dispatch",           "today"),
     ("/api/company-logo",       "dashboard"),
+    # Product schema read is needed by anyone who creates jobs — tie it to
+    # the "jobs" page. The Schema admin (writes) is a separate page; write
+    # methods will be checked against the "schema" page level via the alias
+    # system in js/app.js.
+    ("/api/product-schema",     "jobs"),
+    ("/api/product-types",      "jobs"),
 ]
 
 # Read-only (GET) methods are allowed at level >= 1; write methods require level >= 2
@@ -2732,7 +2739,9 @@ def routing_dict(r, db=None):
                     for o in r.operations)
     res = {"id": r.id, "name": r.name, "product_type": r.product_type,
            "description": r.description, "material_lead_days": r.material_lead_days,
-           "is_active": r.is_active, "operations": ops,
+           "is_active": r.is_active,
+           "is_custom": bool(getattr(r, "is_custom", False)),
+           "operations": ops,
            "operation_count": len(ops),
            "total_estimated_hours": round(total_hrs, 2)}
     if db:
@@ -2744,10 +2753,14 @@ def routing_dict(r, db=None):
     return res
 
 @app.get("/api/routings")
-def list_routings(include_inactive: bool = False):
+def list_routings(include_inactive: bool = False, include_custom: bool = False):
     db = SessionLocal()
     q = db.query(Routing)
     if not include_inactive: q = q.filter(Routing.is_active == True)
+    # Custom per-job routings (created when the user defines ops inline) are
+    # hidden from the Routings list by default — they're not reusable templates.
+    if not include_custom:
+        q = q.filter((Routing.is_custom == False) | (Routing.is_custom == None))
     rs = q.order_by(Routing.product_type, Routing.name).all()
     result = [routing_dict(r, db) for r in rs]; db.close(); return result
 
@@ -3011,16 +3024,289 @@ def routings_stats_all():
         })
     db.close(); return {"routings": results}
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PRODUCT SCHEMA  (added in migration 029)
+# User-configurable product types, attributes, and values. Replaces the old
+# hardcoded defaults. The Schema admin page calls these endpoints.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _pt_dict(pt: "ProductType") -> dict:
+    """Serialize a ProductType with all its attributes & values, ordered."""
+    return {
+        "id": pt.id,
+        "name": pt.name,
+        "display_order": pt.display_order or 0,
+        "is_active": bool(pt.is_active),
+        "attributes": [
+            {
+                "id": a.id,
+                "name": a.name,
+                "display_order": a.display_order or 0,
+                "is_required": bool(a.is_required),
+                "is_active": bool(a.is_active),
+                "values": [
+                    {"id": v.id, "value": v.value,
+                     "display_order": v.display_order or 0,
+                     "is_active": bool(v.is_active)}
+                    for v in sorted(a.values, key=lambda x: (x.display_order or 0, x.id))
+                    if v.is_active
+                ],
+            }
+            for a in sorted(pt.attributes, key=lambda x: (x.display_order or 0, x.id))
+            if a.is_active
+        ],
+    }
+
+
+@app.get("/api/product-schema")
+def get_product_schema(user: dict = Depends(require_any)):
+    """Full product schema. Used by the Job form to render attribute inputs
+    dynamically, and by the Schema admin page to display the editor."""
+    db = SessionLocal()
+    try:
+        pts = (db.query(ProductType)
+                 .filter(ProductType.is_active == True)
+                 .order_by(ProductType.display_order, ProductType.id)
+                 .all())
+        return {"product_types": [_pt_dict(p) for p in pts]}
+    finally:
+        db.close()
+
+
+@app.post("/api/product-schema/types")
+def create_product_type(data: dict, user: dict = Depends(require_any)):
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    db = SessionLocal()
+    try:
+        existing = db.query(ProductType).filter(ProductType.name == name).first()
+        if existing:
+            # Re-activate if it was soft-deleted; otherwise it's a duplicate
+            if not existing.is_active:
+                existing.is_active = True
+                db.commit()
+                return _pt_dict(existing)
+            raise HTTPException(400, f"Product type '{name}' already exists")
+        pt = ProductType(
+            name=name,
+            display_order=data.get("display_order", 999),
+            is_active=True,
+        )
+        db.add(pt); db.commit(); db.refresh(pt)
+        return _pt_dict(pt)
+    finally:
+        db.close()
+
+
+@app.put("/api/product-schema/types/{pt_id}")
+def update_product_type(pt_id: int, data: dict, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    try:
+        pt = db.query(ProductType).filter(ProductType.id == pt_id).first()
+        if not pt:
+            raise HTTPException(404, "Product type not found")
+        if "name" in data:
+            new_name = (data["name"] or "").strip()
+            if new_name and new_name != pt.name:
+                if db.query(ProductType).filter(ProductType.name == new_name,
+                                                ProductType.id != pt_id).first():
+                    raise HTTPException(400, f"Product type '{new_name}' already exists")
+                pt.name = new_name
+        if "display_order" in data:
+            pt.display_order = int(data["display_order"] or 0)
+        if "is_active" in data:
+            pt.is_active = bool(data["is_active"])
+        db.commit(); db.refresh(pt)
+        return _pt_dict(pt)
+    finally:
+        db.close()
+
+
+@app.delete("/api/product-schema/types/{pt_id}")
+def delete_product_type(pt_id: int, user: dict = Depends(require_any)):
+    """Soft-delete: marks inactive. Hard-delete prevented if any jobs/routings
+    reference this product type, to preserve historical records."""
+    db = SessionLocal()
+    try:
+        pt = db.query(ProductType).filter(ProductType.id == pt_id).first()
+        if not pt:
+            raise HTTPException(404, "Product type not found")
+        # Soft-delete by default — keeps cascade simple
+        pt.is_active = False
+        db.commit()
+        return {"ok": True, "soft_deleted": True}
+    finally:
+        db.close()
+
+
+@app.post("/api/product-schema/attributes")
+def create_attribute(data: dict, user: dict = Depends(require_any)):
+    pt_id = data.get("product_type_id")
+    name  = (data.get("name") or "").strip()
+    if not pt_id or not name:
+        raise HTTPException(400, "product_type_id and name required")
+    db = SessionLocal()
+    try:
+        if not db.query(ProductType).filter(ProductType.id == pt_id).first():
+            raise HTTPException(404, "Product type not found")
+        # Determine display_order if not provided: end of list
+        if "display_order" not in data:
+            max_order = (db.query(func.max(ProductAttribute.display_order))
+                           .filter(ProductAttribute.product_type_id == pt_id).scalar() or 0)
+            data["display_order"] = max_order + 1
+        a = ProductAttribute(
+            product_type_id=pt_id,
+            name=name,
+            display_order=int(data.get("display_order", 0)),
+            is_required=bool(data.get("is_required", False)),
+            is_active=True,
+        )
+        db.add(a); db.commit(); db.refresh(a)
+        return {"id": a.id, "name": a.name,
+                "display_order": a.display_order,
+                "is_required": bool(a.is_required),
+                "is_active": True, "values": []}
+    finally:
+        db.close()
+
+
+@app.put("/api/product-schema/attributes/{attr_id}")
+def update_attribute(attr_id: int, data: dict, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    try:
+        a = db.query(ProductAttribute).filter(ProductAttribute.id == attr_id).first()
+        if not a:
+            raise HTTPException(404, "Attribute not found")
+        if "name" in data:
+            new_name = (data["name"] or "").strip()
+            if new_name: a.name = new_name
+        if "display_order" in data:
+            a.display_order = int(data["display_order"] or 0)
+        if "is_required" in data:
+            a.is_required = bool(data["is_required"])
+        if "is_active" in data:
+            a.is_active = bool(data["is_active"])
+        db.commit(); db.refresh(a)
+        return {"id": a.id, "name": a.name,
+                "display_order": a.display_order or 0,
+                "is_required": bool(a.is_required),
+                "is_active": bool(a.is_active)}
+    finally:
+        db.close()
+
+
+@app.delete("/api/product-schema/attributes/{attr_id}")
+def delete_attribute(attr_id: int, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    try:
+        a = db.query(ProductAttribute).filter(ProductAttribute.id == attr_id).first()
+        if not a:
+            raise HTTPException(404, "Attribute not found")
+        a.is_active = False
+        db.commit()
+        return {"ok": True, "soft_deleted": True}
+    finally:
+        db.close()
+
+
+@app.post("/api/product-schema/values")
+def create_value(data: dict, user: dict = Depends(require_any)):
+    """Add a new allowed value to an attribute. Also called inline from the
+    Job form when the user types a custom value that isn't in the dropdown
+    yet — `auto_added: True` is honored as a hint but the behavior is the
+    same: if the value already exists (active), return it; if it exists but
+    inactive, re-activate; otherwise create new."""
+    attr_id = data.get("attribute_id")
+    value   = (data.get("value") or "").strip()
+    if not attr_id or not value:
+        raise HTTPException(400, "attribute_id and value required")
+    db = SessionLocal()
+    try:
+        if not db.query(ProductAttribute).filter(ProductAttribute.id == attr_id).first():
+            raise HTTPException(404, "Attribute not found")
+        existing = (db.query(ProductAttributeValue)
+                      .filter(ProductAttributeValue.attribute_id == attr_id,
+                              ProductAttributeValue.value == value).first())
+        if existing:
+            if not existing.is_active:
+                existing.is_active = True
+                db.commit()
+            return {"id": existing.id, "value": existing.value,
+                    "display_order": existing.display_order or 0,
+                    "is_active": True}
+        if "display_order" not in data:
+            max_order = (db.query(func.max(ProductAttributeValue.display_order))
+                           .filter(ProductAttributeValue.attribute_id == attr_id).scalar() or 0)
+            data["display_order"] = max_order + 1
+        v = ProductAttributeValue(
+            attribute_id=attr_id,
+            value=value,
+            display_order=int(data.get("display_order", 0)),
+            is_active=True,
+        )
+        db.add(v); db.commit(); db.refresh(v)
+        return {"id": v.id, "value": v.value,
+                "display_order": v.display_order or 0,
+                "is_active": True}
+    finally:
+        db.close()
+
+
+@app.put("/api/product-schema/values/{val_id}")
+def update_value(val_id: int, data: dict, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    try:
+        v = db.query(ProductAttributeValue).filter(ProductAttributeValue.id == val_id).first()
+        if not v:
+            raise HTTPException(404, "Value not found")
+        if "value" in data:
+            new_val = (data["value"] or "").strip()
+            if new_val: v.value = new_val
+        if "display_order" in data:
+            v.display_order = int(data["display_order"] or 0)
+        if "is_active" in data:
+            v.is_active = bool(data["is_active"])
+        db.commit(); db.refresh(v)
+        return {"id": v.id, "value": v.value,
+                "display_order": v.display_order or 0,
+                "is_active": bool(v.is_active)}
+    finally:
+        db.close()
+
+
+@app.delete("/api/product-schema/values/{val_id}")
+def delete_value(val_id: int, user: dict = Depends(require_any)):
+    db = SessionLocal()
+    try:
+        v = db.query(ProductAttributeValue).filter(ProductAttributeValue.id == val_id).first()
+        if not v:
+            raise HTTPException(404, "Value not found")
+        v.is_active = False
+        db.commit()
+        return {"ok": True, "soft_deleted": True}
+    finally:
+        db.close()
+
+
 @app.get("/api/product-types")
 def list_product_types():
+    """LEGACY endpoint kept for backward compat with any code that still
+    reads it. Now returns the names from the new schema tables."""
     db = SessionLocal()
-    rows = db.query(Routing.product_type).distinct().all()
-    in_use = sorted({r[0] for r in rows if r[0]})
-    defaults = ["Punch","Die Frame","Liner Set","Entry Mould","SFS Mould",
-                "Custom Plate","Base Plate","Ejector Plate","Addon Plate",
-                "Complete Mould","SFS Lower","SFS Upper"]
-    db.close()
-    return {"product_types": sorted(set(in_use + defaults)), "in_use": in_use}
+    try:
+        pts = (db.query(ProductType.name)
+                 .filter(ProductType.is_active == True)
+                 .order_by(ProductType.display_order, ProductType.id)
+                 .all())
+        names = [n[0] for n in pts]
+        # Also include any product_type strings already in use on routings
+        # (defensive, in case schema is missing entries that jobs reference)
+        in_use_rows = db.query(Routing.product_type).distinct().all()
+        in_use = sorted({r[0] for r in in_use_rows if r[0]})
+        return {"product_types": sorted(set(names + in_use)), "in_use": in_use}
+    finally:
+        db.close()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CUSTOMER ORDERS  (new — quantity model)
@@ -3362,10 +3648,49 @@ def create_job(data: dict):
         db.close(); raise HTTPException(400, "Customer required")
 
     inline_ops_raw = data.get("inline_ops")
+
+    # ── Product attribute handling ────────────────────────────────────────
+    # The form may send `product_attrs` as a dict like {"Type":"Plain",
+    # "Mounting":"Upper", "Cavities":"4"}. We:
+    #   • store it raw as JSON for future structured access (filtering, etc.)
+    #   • derive a human-readable `product_variant` string ("Plain Upper 4-cav")
+    #     for the dispatch sheet and other UI surfaces that display variant
+    #     as a single string. If the form provided product_variant directly,
+    #     that wins (back-compat).
+    attrs_raw = data.get("product_attrs") or {}
+    if isinstance(attrs_raw, str):
+        try: attrs_raw = json.loads(attrs_raw)
+        except (ValueError, TypeError): attrs_raw = {}
+    if not isinstance(attrs_raw, dict): attrs_raw = {}
+
+    derived_variant = data.get("product_variant", "")
+    if not derived_variant and attrs_raw:
+        # Build "Plain Upper" style label. Size is excluded since it's
+        # already in its own column. Cavities get "-cav" suffix for readability.
+        parts = []
+        for k, v in attrs_raw.items():
+            if not v or k.strip().lower() == "size":
+                continue
+            v_str = str(v).strip()
+            if k.strip().lower() == "cavities":
+                parts.append(f"{v_str}-cav")
+            else:
+                parts.append(v_str)
+        derived_variant = " ".join(parts)
+
+    # If size wasn't passed but is in attrs, lift it out
+    derived_size = data.get("product_size", "")
+    if not derived_size and attrs_raw:
+        for k, v in attrs_raw.items():
+            if k.strip().lower() == "size" and v:
+                derived_size = str(v).strip()
+                break
+
     j = Job(
         job_number=job_num, customer_name=customer_name, customer_id=customer_id,
         po_number=data.get("po_number",""), product_type=data["product_type"],
-        product_size=data.get("product_size",""), product_variant=data.get("product_variant",""),
+        product_size=derived_size, product_variant=derived_variant,
+        product_attrs=json.dumps(attrs_raw) if attrs_raw else None,
         total_price=float(data["total_price"]) if data.get("total_price") else None,
         due_date=due_date, not_before=parse_dt(data.get("not_before")),
         material_ready_date=parse_dt(data.get("material_ready_date")),

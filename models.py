@@ -150,6 +150,7 @@ class Routing(Base):
     description        = Column(Text, nullable=True)
     material_lead_days = Column(Float, default=2.0)
     is_active          = Column(Boolean, default=True)
+    is_custom          = Column(Boolean, default=False)   # True = per-job throwaway routing, hidden from templates list
     operations         = relationship(
         "Operation", back_populates="routing",
         cascade="all, delete-orphan", order_by="Operation.sequence"
@@ -236,6 +237,7 @@ class Job(Base):
     product_type        = Column(String, nullable=False)
     product_size        = Column(String, nullable=False)
     product_variant     = Column(String, nullable=True)
+    product_attrs       = Column(Text, nullable=True)   # JSON dict of {attr_name: value}
     due_date            = Column(DateTime, nullable=False)
     not_before          = Column(DateTime, nullable=True)
     material_ready_date = Column(DateTime, nullable=True)
@@ -509,3 +511,50 @@ class WorkerDailyReport(Base):
     generated_at    = Column(DateTime, default=now_ist)
     worker          = relationship("Worker")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Product Schema (added in migration 029)
+# User-configurable replacement for hardcoded product type / size / variant
+# dropdowns. The manager can add new product types, attributes per product
+# type, and allowed values per attribute, from the Product Schema admin page.
+# Job tables continue to store the values as strings — see Job.product_attrs.
+# ─────────────────────────────────────────────────────────────────────────────
+class ProductType(Base):
+    __tablename__ = "product_types"
+    id            = Column(Integer, primary_key=True)
+    name          = Column(String, nullable=False, unique=True)
+    display_order = Column(Integer, default=0)
+    is_active     = Column(Boolean, default=True)
+    attributes    = relationship(
+        "ProductAttribute", back_populates="product_type",
+        cascade="all, delete-orphan",
+        order_by="ProductAttribute.display_order",
+    )
+
+
+class ProductAttribute(Base):
+    __tablename__ = "product_attributes"
+    id              = Column(Integer, primary_key=True)
+    product_type_id = Column(Integer, ForeignKey("product_types.id", ondelete="CASCADE"),
+                             nullable=False)
+    name            = Column(String, nullable=False)       # "Size", "Type", "Mounting"
+    display_order   = Column(Integer, default=0)
+    is_required     = Column(Boolean, default=False)
+    is_active       = Column(Boolean, default=True)
+    product_type    = relationship("ProductType", back_populates="attributes")
+    values          = relationship(
+        "ProductAttributeValue", back_populates="attribute",
+        cascade="all, delete-orphan",
+        order_by="ProductAttributeValue.display_order",
+    )
+
+
+class ProductAttributeValue(Base):
+    __tablename__ = "product_attribute_values"
+    id            = Column(Integer, primary_key=True)
+    attribute_id  = Column(Integer, ForeignKey("product_attributes.id", ondelete="CASCADE"),
+                           nullable=False)
+    value         = Column(String, nullable=False)         # "600×600", "Plain", "Carbide"
+    display_order = Column(Integer, default=0)
+    is_active     = Column(Boolean, default=True)
+    attribute     = relationship("ProductAttribute", back_populates="values")

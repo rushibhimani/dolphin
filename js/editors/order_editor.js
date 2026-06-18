@@ -5,9 +5,45 @@
 
 async function renderOrderEditor(editId){
   await loadAll();
-  const PTYPES = ['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate',
-                  'Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
-  const SIZES  = ['600x600','600x900','600x1200','900x900','900x1200','1200x1200'];
+
+  // Pull from schema if available; fall back to legacy hardcoded lists so
+  // the form keeps working on databases that pre-date migration 029.
+  let _orderSchema = { product_types: [] };
+  try { _orderSchema = await api('GET', '/api/product-schema'); } catch(e) { /* fallback */ }
+
+  const schemaTypes = _orderSchema.product_types || [];
+  const PTYPES = schemaTypes.length
+    ? schemaTypes.map(p => p.name)
+    : ['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate',
+       'Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
+
+  // Build the global "all sizes" list — union of every "Size" attribute's
+  // values across product types. Same for variant-ish attributes.
+  const _collectValues = (attrName) => {
+    const seen = new Set();
+    schemaTypes.forEach(pt => {
+      pt.attributes?.forEach(a => {
+        if ((a.name || '').toLowerCase() === attrName.toLowerCase()) {
+          a.values.forEach(v => seen.add(v.value));
+        }
+      });
+    });
+    return [...seen];
+  };
+  const allSizes = _collectValues('Size');
+  const SIZES = allSizes.length
+    ? allSizes
+    : ['600x600','600x900','600x1200','900x900','900x1200','1200x1200'];
+
+  // Variant suggestions = union of Type / Mounting / Liner Type / Cavities
+  // values across all product types, joined into freeform suggestions for
+  // the variant text field. Best-effort: gives the user useful auto-complete.
+  const _variantSuggestions = [
+    ..._collectValues('Type'),
+    ..._collectValues('Mounting'),
+    ..._collectValues('Liner Type'),
+    ..._collectValues('Cavities').map(c => `${c}-cav`),
+  ];
 
   // Fetch existing order if editing
   let editOrder = null;
@@ -99,7 +135,10 @@ async function renderOrderEditor(editId){
       </div>
       <div class="form-group">
         <div class="fld-label">Variant / Type</div>
-        <input id="ord_variant" value="${escHtml(selVariant)}" placeholder="Plain, Carbide, Rustic…">
+        <input id="ord_variant" list="ord_variant_dl" value="${escHtml(selVariant)}" placeholder="Plain, Carbide, Rustic…" autocomplete="off">
+        <datalist id="ord_variant_dl">
+          ${[...new Set(_variantSuggestions)].map(v => `<option value="${escAttr(v)}">`).join('')}
+        </datalist>
       </div>
     </div>
     <div id="ord_size_custom_wrap" style="display:${isCustomSize?'':'none'}" class="form-row cols-1">
