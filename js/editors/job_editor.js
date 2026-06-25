@@ -19,7 +19,7 @@
 // Module-level state — survives between helper invocations on the same page
 let _schema = { product_types: [] };   // from /api/product-schema
 let _routingMode = 'template';         // 'template' | 'custom'
-let _customOps = [];                   // ops being built in custom mode
+const JOB_OPED_KEY = 'jobCustom';      // shared op-editor instance key for custom ops
 
 async function renderJobEditor(editId) {
   await loadAll();
@@ -42,7 +42,7 @@ async function renderJobEditor(editId) {
 
   jobFormOps = [];
   _routingMode = (editJob && !editJob.routing_id && editJob.has_inline_ops) ? 'custom' : 'template';
-  _customOps = [];
+  const opEd = opEditorCreate(JOB_OPED_KEY, { container: 'customOpsWrap', emptyEl: 'customOpsEmpty' });
 
   const defDue = new Date(Date.now() + 14*86400000).toISOString().slice(0,10);
 
@@ -165,12 +165,32 @@ async function renderJobEditor(editId) {
       <div id="f_routing_custom_pane" style="display:${_routingMode==='custom'?'':'none'}">
         <div style="margin-top:8px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
-            Add the operations this job needs, in order. Each row = one operation on one machine.
+            Add the operations this job needs, in order. Same options as a routing template —
+            machines, formula-based time, sub-operations, and outside/vendor steps.
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding:4px 8px 6px;border-bottom:1px solid var(--border);margin-bottom:6px">
+            <span>Name → Machine → Setup(min) → Work(min) | ⚡ = Formula mode</span>
+            <span>☑ = Optional</span>
           </div>
           <div id="customOpsWrap"></div>
+          <div id="customOpsEmpty" style="padding:14px;text-align:center;background:var(--surface);border:1px dashed var(--border);border-radius:6px;color:var(--muted);font-size:12px">
+            No operations yet. Click <b>+ Add Operation</b> to start.
+          </div>
           <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-ghost" style="font-size:12px" onclick="jeAddCustomOp()">+ Add Operation</button>
+            <button class="btn btn-ghost" style="font-size:12px" onclick="opEdAddRow('${JOB_OPED_KEY}')">+ Add Operation</button>
             <button class="btn btn-ghost" style="font-size:12px" onclick="jeStartFromTemplate()" title="Copy ops from a template, then edit">📋 Start from a template…</button>
+          </div>
+          <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+              <input type="checkbox" id="f_save_as_template"
+                     onchange="document.getElementById('f_template_name_wrap').style.display=this.checked?'':'none'"
+                     style="width:14px;height:14px;cursor:pointer;accent-color:var(--accent)">
+              Save these as a reusable routing template
+            </label>
+          </div>
+          <div id="f_template_name_wrap" style="display:none;margin-top:8px">
+            <input type="text" id="f_template_name" placeholder="Template name (e.g. Punch 600×600 — Lower Plain)"
+                   style="width:100%;max-width:400px">
           </div>
         </div>
       </div>
@@ -233,26 +253,23 @@ async function renderJobEditor(editId) {
       } catch(e) {}
     }
   } else if (_routingMode === 'custom') {
-    _renderCustomOps();
+    opEd.setOps(editJob?.inline_ops || []);
+    opEd.render();
   }
 }
 
 // ─── Dynamic attribute inputs ─────────────────────────────────────────────
+// Rendering/collection logic lives in the shared attr_input_widget
+// (js/editors/attr_input_widget.js) so the Order editor gets identical
+// behavior. This file only knows its own container id ('f_attrs_wrap')
+// and pre-fill logic specific to a Job record.
 
-/**
- * Render attribute inputs for the given product type. Each attribute becomes
- * a datalist-backed combo (dropdown of known values + free-text fallback).
- * Typing a new value is allowed and gets auto-saved on submit.
- */
+const JOB_ATTRS_CONTAINER = 'f_attrs_wrap';
+
+/** Pulls existing attrs out of a Job record (product_attrs JSON, falling
+ * back to the legacy product_size string on the Size attribute), then
+ * renders via the shared widget. */
 function _renderAttributeInputs(ptypeName, editJob) {
-  const wrap = document.getElementById('f_attrs_wrap');
-  if (!wrap) return;
-
-  const pt = (_schema.product_types || []).find(p => p.name === ptypeName);
-  if (!pt) { wrap.innerHTML = ''; return; }
-
-  // Pre-fill from product_attrs (new JSON column), falling back to legacy
-  // product_size on the Size attribute.
   let existingAttrs = {};
   if (editJob?.product_attrs) {
     try {
@@ -261,50 +278,7 @@ function _renderAttributeInputs(ptypeName, editJob) {
     } catch(e) {}
   }
   if (editJob?.product_size && !existingAttrs.Size) existingAttrs.Size = editJob.product_size;
-
-  if (!pt.attributes.length) {
-    wrap.innerHTML = `<div style="font-size:12px;color:var(--muted);padding:6px 0">
-      No attributes defined for ${escHtml(ptypeName)}.
-      <a href="#/product-schema" onclick="event.preventDefault();navigate('/product-schema')" style="text-decoration:underline;cursor:pointer;color:var(--accent)">Add some →</a>
-    </div>`;
-    return;
-  }
-
-  // Group attributes into rows of 3 for tidy layout
-  const groups = [];
-  for (let i = 0; i < pt.attributes.length; i += 3) {
-    groups.push(pt.attributes.slice(i, i+3));
-  }
-
-  wrap.innerHTML = groups.map(grp => `
-    <div class="form-row ${grp.length===1?'cols-1':grp.length===2?'cols-2':'cols-3'}">
-      ${grp.map(attr => _renderOneAttrInput(attr, existingAttrs[attr.name] || '')).join('')}
-    </div>
-  `).join('');
-}
-
-function _renderOneAttrInput(attr, currentValue) {
-  const inputId    = `f_attr_${attr.id}`;
-  const datalistId = `f_attr_dl_${attr.id}`;
-  const valueOpts  = attr.values.map(v =>
-    `<option value="${escAttr(v.value)}">`
-  ).join('');
-  const required = attr.is_required;
-
-  return `
-    <div class="form-group">
-      <div class="fld-label">
-        ${escHtml(attr.name)}${required?' <span style="color:var(--red)">*</span>':''}
-      </div>
-      <input id="${inputId}" list="${datalistId}"
-             data-attr-id="${attr.id}"
-             data-attr-name="${escAttr(attr.name)}"
-             data-required="${required?'1':'0'}"
-             value="${escAttr(currentValue)}"
-             placeholder="${attr.values.length ? 'Type or pick…' : 'Type a value…'}"
-             autocomplete="off">
-      <datalist id="${datalistId}">${valueOpts}</datalist>
-    </div>`;
+  attrInputsRender(_schema, ptypeName, JOB_ATTRS_CONTAINER, existingAttrs);
 }
 
 function jeOnProductTypeChange() {
@@ -312,20 +286,13 @@ function jeOnProductTypeChange() {
   if (!ptype) return;
   // Preserve already-typed values where attr names overlap, so switching
   // Punch → Die Frame doesn't wipe a shared "Size" the user already typed.
-  const currentAttrs = _collectAttributeValues();
-  _renderAttributeInputs(ptype, { product_attrs: JSON.stringify(currentAttrs) });
+  const currentAttrs = attrInputsCollect(JOB_ATTRS_CONTAINER);
+  attrInputsRender(_schema, ptype, JOB_ATTRS_CONTAINER, currentAttrs);
   filterRoutingsByType(ptype);
 }
 
 function _collectAttributeValues() {
-  // Returns dict of { attrName: typedValue }
-  const out = {};
-  document.querySelectorAll('[data-attr-name]').forEach(el => {
-    const name = el.dataset.attrName;
-    const val  = (el.value || '').trim();
-    if (val) out[name] = val;
-  });
-  return out;
+  return attrInputsCollect(JOB_ATTRS_CONTAINER);
 }
 
 // ─── Routing mode toggle ──────────────────────────────────────────────────
@@ -342,138 +309,45 @@ function jeSetRoutingMode(mode) {
     const isActive = t.querySelector('input').value === mode;
     t.classList.toggle('active', isActive);
   });
-  if (mode === 'custom') _renderCustomOps();
+  if (mode === 'custom') _opEd(JOB_OPED_KEY)?.render();
 }
 
 // ─── Custom operations editor ─────────────────────────────────────────────
+// Row rendering, formula/sub-op/outside-vendor handling all live in the
+// shared op_editor_widget (js/editors/op_editor_widget.js) — see opEd above.
 
-function _renderCustomOps() {
-  const wrap = document.getElementById('customOpsWrap');
-  if (!wrap) return;
-
-  if (!_customOps.length) {
-    wrap.innerHTML = `
-      <div style="padding:14px;text-align:center;background:var(--surface);border:1px dashed var(--border);border-radius:6px;color:var(--muted);font-size:12px">
-        No operations yet. Click <b>+ Add Operation</b> to start.
-      </div>`;
-    return;
-  }
-
-  const machineOpts = (allMachines || []).filter(m => m.is_active !== false)
-    .map(m => ({ id: m.id, name: m.name, code: m.code }))
-    .sort((a,b) => (a.code||'').localeCompare(b.code||''));
-
-  wrap.innerHTML = `
-    <table class="op-ov-table">
-      <thead><tr>
-        <th style="width:30px">#</th>
-        <th>Operation Name</th>
-        <th>Machine</th>
-        <th style="width:90px">Setup (min)</th>
-        <th style="width:90px">Work (min)</th>
-        <th style="width:30px"></th>
-      </tr></thead>
-      <tbody>
-        ${_customOps.map((op, i) => `
-          <tr>
-            <td class="mono" style="color:var(--muted);text-align:center">${i+1}</td>
-            <td>
-              <input type="text" id="cop_name_${i}" value="${escAttr(op.name||'')}"
-                     placeholder="e.g. Rough Milling" onchange="_customOpEdit(${i},'name',this.value)">
-            </td>
-            <td>
-              <select id="cop_wc_${i}" onchange="_customOpEdit(${i},'work_center_id',this.value)">
-                <option value="">— Pick machine —</option>
-                ${machineOpts.map(m => `
-                  <option value="${m.id}" ${op.work_center_id==m.id?'selected':''}>
-                    ${escHtml(m.name)}${m.code?' ('+m.code+')':''}
-                  </option>
-                `).join('')}
-              </select>
-            </td>
-            <td><input type="number" id="cop_setup_${i}" value="${op.setup_time_mins||0}" min="0" step="5"
-                       onchange="_customOpEdit(${i},'setup_time_mins',this.value)"></td>
-            <td><input type="number" id="cop_work_${i}" value="${op.work_time_mins||0}" min="0" step="10"
-                       onchange="_customOpEdit(${i},'work_time_mins',this.value)"></td>
-            <td>
-              <button class="btn btn-ghost btn-xs" onclick="_customOpRemove(${i})" title="Remove">×</button>
-            </td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-
-    <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <div style="font-size:11px;color:var(--muted)">
-        ${_customOps.length} operation${_customOps.length===1?'':'s'} ·
-        ${_customOps.reduce((a,o)=>a+(+o.setup_time_mins||0)+(+o.work_time_mins||0),0)} min total
-      </div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
-        <input type="checkbox" id="f_save_as_template"
-               onchange="document.getElementById('f_template_name_wrap').style.display=this.checked?'':'none'"
-               style="width:14px;height:14px;cursor:pointer;accent-color:var(--accent)">
-        Save these as a reusable routing template
-      </label>
-    </div>
-    <div id="f_template_name_wrap" style="display:none;margin-top:8px">
-      <input type="text" id="f_template_name" placeholder="Template name (e.g. Punch 600×600 — Lower Plain)"
-             style="width:100%;max-width:400px">
-    </div>`;
-}
-
-function jeAddCustomOp() {
-  _customOps.push({
-    name: '',
-    work_center_id: null,
-    setup_time_mins: 0,
-    work_time_mins: 60,
-  });
-  _renderCustomOps();
-  setTimeout(() => {
-    document.getElementById(`cop_name_${_customOps.length - 1}`)?.focus();
-  }, 30);
-}
-
-function _customOpEdit(i, field, value) {
-  if (!_customOps[i]) return;
-  if (field === 'work_center_id') {
-    _customOps[i][field] = value ? parseInt(value) : null;
-  } else if (field === 'setup_time_mins' || field === 'work_time_mins') {
-    _customOps[i][field] = parseFloat(value) || 0;
-  } else {
-    _customOps[i][field] = value;
-  }
-}
-
-function _customOpRemove(i) {
-  _customOps.splice(i, 1);
-  _renderCustomOps();
-}
-
-async function jeStartFromTemplate() {
+function jeStartFromTemplate() {
   const ptype = document.getElementById('f_ptype')?.value || '';
   const eligible = (allRoutings || []).filter(r => !r.is_custom && (!ptype || r.product_type === ptype));
   if (!eligible.length) {
     toast('No templates available for this product type', 'error');
     return;
   }
-  const choice = prompt(
-    'Pick a template to copy ops from. Type the routing name exactly:\n\n' +
-    eligible.map(r => `• ${r.name}`).join('\n')
+  showModal(
+    'Start from a template',
+    `<div style="font-size:12px;color:var(--muted);margin-bottom:10px">
+       Pick a routing to copy its operations from. You can still edit everything afterward.
+     </div>
+     <div class="form-group">
+       <select id="je_tpl_pick" style="width:100%">
+         ${eligible.map(r => `<option value="${r.id}">${escHtml(r.name)}</option>`).join('')}
+       </select>
+     </div>`,
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-primary" onclick="_jeApplyTemplateChoice()">Load Operations</button>`
   );
-  if (!choice) return;
-  const rt = eligible.find(r => r.name.toLowerCase() === choice.toLowerCase().trim());
-  if (!rt) { toast('Template not found', 'error'); return; }
+}
+
+async function _jeApplyTemplateChoice() {
+  const rid = document.getElementById('je_tpl_pick')?.value;
+  if (!rid) return;
   try {
-    const full = await api('GET', `/api/routings/${rt.id}`);
-    _customOps = (full.operations || []).map(op => ({
-      name: op.name,
-      work_center_id: op.work_center_id,
-      setup_time_mins: op.setup_time_mins || 0,
-      work_time_mins: op.work_time_mins != null ? op.work_time_mins : (op.work_time_hrs||0)*60,
-    }));
-    _renderCustomOps();
-    toast(`Loaded ${_customOps.length} operations from "${rt.name}"`);
+    const full = await api('GET', `/api/routings/${rid}`);
+    const opEd = _opEd(JOB_OPED_KEY);
+    opEd.setOps(full.operations || []);
+    opEd.render();
+    closeModal();
+    toast(`Loaded ${(full.operations||[]).length} operations from "${full.name}"`);
   } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -504,10 +378,7 @@ async function saveJobPage(editId){
   const attrs = _collectAttributeValues();
 
   // Validate required attributes
-  const missing = [];
-  document.querySelectorAll('[data-attr-name][data-required="1"]').forEach(el => {
-    if (!(el.value || '').trim()) missing.push(el.dataset.attrName);
-  });
+  const missing = attrInputsMissingRequired(JOB_ATTRS_CONTAINER);
 
   const due  = document.getElementById('f_due_d')?.value;
   const matD = document.getElementById('f_mat_d')?.value;
@@ -535,34 +406,40 @@ async function saveJobPage(editId){
       included:        document.getElementById(`opchk_${i}`)?.checked ?? true,
     }));
   } else {
-    if (!_customOps.length) { toast('Add at least one operation','error'); return; }
-    const invalid = _customOps.find(o => !o.name?.trim() || !o.work_center_id);
-    if (invalid) { toast('Every operation needs a name and machine','error'); return; }
-    inlineOps = _customOps.map((op, i) => ({
-      sequence: i + 1,
-      name: op.name.trim(),
-      work_center_id: op.work_center_id,
-      setup_time_mins: +op.setup_time_mins || 0,
-      work_time_mins:  +op.work_time_mins || 0,
-      work_time_hrs:   (+op.work_time_mins || 0) / 60,
-      op_type: 'inhouse',
+    const opEd = _opEd(JOB_OPED_KEY);
+    opEd.sync();
+    const customOps = opEd.getOps();
+    if (!customOps.length) { toast('Add at least one operation','error'); return; }
+    const invalid = customOps.find(o => !o.name?.trim() || (o.op_type !== 'outside' && !o.work_center_id));
+    if (invalid) { toast('Every operation needs a name, and a machine unless marked Outside','error'); return; }
+    inlineOps = customOps.map((op, i) => ({
+      sequence:              i + 1,
+      name:                  op.name.trim(),
+      work_center_id:        op.work_center_id || null,
+      setup_time_mins:       +op.setup_time_mins || 0,
+      work_time_mins:        +op.work_time_mins || 0,
+      work_time_hrs:         op.work_time_hrs != null ? +op.work_time_hrs : (+op.work_time_mins || 0) / 60,
+      is_optional:           !!op.is_optional,
+      op_type:               op.op_type || 'inhouse',
+      outside_vendor:        op.outside_vendor || null,
+      outside_transit_days:  op.outside_transit_days || null,
+      formula_type:          op.formula_type || null,
+      mrr:                   op.mrr ?? null,
+      depth_mm:              op.depth_mm ?? null,
+      feed_rate:             op.feed_rate ?? null,
+      dim_x_source:          op.dim_x_source || null,
+      dim_y_source:          op.dim_y_source || null,
+      sub_operations:        op.sub_operations || [],
     }));
   }
 
   // Best-effort: persist any user-typed attribute values that aren't yet
   // in the schema so they appear in future dropdowns.
-  await _autoSaveNewAttributeValues(attrs, ptype);
+  await attrInputsAutoSaveNew(_schema, attrs, ptype);
 
   // Derive product_size + product_variant from the structured attrs for
   // backward compatibility with the dispatch sheet and Jobs list display.
-  const size = attrs.Size || attrs.size || '';
-  const variantParts = [];
-  Object.entries(attrs).forEach(([k, v]) => {
-    if (!v || k.toLowerCase() === 'size') return;
-    if (k.toLowerCase() === 'cavities') variantParts.push(`${v}-cav`);
-    else variantParts.push(String(v));
-  });
-  const variant = variantParts.join(' ');
+  const { size, variant } = attrInputsDeriveLegacy(attrs);
 
   const data = {
     customer_id:         custId,
@@ -608,27 +485,4 @@ async function saveJobPage(editId){
     await loadAll(); navigate('/jobs');
   }catch(e){ toast(e.message,'error'); }
   finally{ setLoading('saveJobBtn', false); }
-}
-
-/**
- * Persist any user-typed attribute values that aren't yet in the schema.
- * Runs in parallel; failures are logged but don't block job creation.
- */
-async function _autoSaveNewAttributeValues(attrs, ptypeName) {
-  const pt = (_schema.product_types || []).find(p => p.name === ptypeName);
-  if (!pt) return;
-  const promises = [];
-  pt.attributes.forEach(attr => {
-    const typed = attrs[attr.name];
-    if (!typed) return;
-    const exists = attr.values.some(v => v.value === typed);
-    if (!exists) {
-      promises.push(
-        api('POST', '/api/product-schema/values', {
-          attribute_id: attr.id, value: typed,
-        }).catch(e => console.warn('Auto-save value failed:', e.message))
-      );
-    }
-  });
-  if (promises.length) await Promise.all(promises);
 }

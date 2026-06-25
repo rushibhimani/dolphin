@@ -11,7 +11,7 @@ from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
                     JobCounter, CustomerOrder, OrderCounter, User, StaffTask, TaskFile,
                     TaskAssignee, TaskActivity, Quotation, QuoteCounter, CompanySetting,
                     OrderComponent, AssemblyStep, Notification, WorkerDailyReport,
-                    ProductType, ProductAttribute, ProductAttributeValue, now_ist)
+                    ProductType, ProductAttribute, ProductAttributeValue, ActivityLog, now_ist)
 import json, os, subprocess, sys
 from auth import (
     create_token, verify_token, hash_password, verify_password,
@@ -574,6 +574,33 @@ def find_next_slot_with_worker(db, work_center_id, total_duration_hrs,
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ACTIVITY LOG HELPER
+# ─────────────────────────────────────────────────────────────────────────────
+def _audit_log(db, request_or_user, action: str,
+                  entity_type: str = None, entity_id: int = None,
+                  entity_label: str = None, details: dict = None):
+    """Write one row to activity_log.  `request_or_user` is either a
+    Starlette Request (reads .state.user) or a plain dict with sub/username."""
+    user = None
+    if hasattr(request_or_user, 'state'):
+        user = getattr(request_or_user.state, 'user', None)
+    elif isinstance(request_or_user, dict):
+        user = request_or_user
+    uid   = int(user.get("sub", 0)) if user else None
+    uname = (user.get("username") or "system") if user else "system"
+    db.add(ActivityLog(
+        timestamp    = now_ist(),
+        user_id      = uid,
+        username     = uname,
+        action       = action,
+        entity_type  = entity_type,
+        entity_id    = entity_id,
+        entity_label = entity_label,
+        details      = json.dumps(details) if details else None,
+    ))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CRITICAL RATIO
 # ─────────────────────────────────────────────────────────────────────────────
 def critical_ratio(job, db):
@@ -607,6 +634,136 @@ def critical_ratio(job, db):
 def get_finish(job):
     ops = [s for s in job.scheduled_ops if s.scheduled_end]
     return max((s.scheduled_end for s in ops), default=None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FLAG-AND-WAIT HEALTH  (no rescheduling — just project + flag)
+# ─────────────────────────────────────────────────────────────────────────────
+# When an op runs long, we do NOT cascade a reschedule. We recompute where the
+# job is now trending to finish (projected_end), compare it to the FROZEN
+# promised_date, and flag it. The supervisor decides whether to replan.
+#
+# "At risk" vs "late":
+#   late     — projected_end is already past the promise.
+#   at_risk  — not yet past, but an in-progress op is overrunning, or the
+#              projected finish is within a small buffer of the promise.
+AT_RISK_BUFFER_HRS = 8.0   # projected finish within this of promise → at risk
+
+# Auto-preemption: pausing a running op to free a worker for an urgent job.
+# OFF for custom mould/die shops — an in-progress cut can't be paused without
+# scrapping the part. The dashboard still shows advisory preemption alerts.
+ENABLE_AUTO_PREEMPTION = False
+
+def _project_job_finish(job, now=None):
+    """
+    Where is this job actually trending to finish, given real progress?
+
+    Returns (projected_end, reason_or_None). Read-only — no DB writes, no
+    rescheduling. For an in-progress op already running past its planned
+    duration, we push the remaining tail of the schedule out by the overrun,
+    so the projection reflects reality rather than the stale plan.
+    """
+    now = now or now_ist()
+    ops = list(job.scheduled_ops)
+    if not ops:
+        return None, None
+
+    # Baseline projection = latest planned end across all not-yet-completed ops
+    # (completed ops use their actual_end). This is the plan's own answer.
+    planned_end = max(
+        (s.actual_end or s.scheduled_end
+         for s in ops if (s.actual_end or s.scheduled_end)),
+        default=None
+    )
+    if planned_end is None:
+        return None, None
+
+    overrun_hrs = 0.0
+    overrun_reason = None
+
+    # Account for an in-progress op that's already past its planned duration.
+    for s in ops:
+        if s.status == "in_progress" and s.actual_start and s.scheduled_end:
+            planned_dur = (s.scheduled_end - s.scheduled_start).total_seconds() / 3600 if s.scheduled_start else (s.work_time_hrs or 0)
+            elapsed = (now - s.actual_start).total_seconds() / 3600
+            if elapsed > planned_dur > 0:
+                over = elapsed - planned_dur
+                if over > overrun_hrs:
+                    overrun_hrs = over
+                    overrun_reason = f"{s.op_name or 'an operation'} running {over:.1f}h over"
+
+    # Account for the most recent completed op that overran its plan — its
+    # tail pushes everything after it (we don't reschedule, but the projection
+    # should reflect the slip that already happened).
+    for s in ops:
+        if s.status == "completed" and s.actual_end and s.scheduled_end:
+            slip = (s.actual_end - s.scheduled_end).total_seconds() / 3600
+            # Only count slip if there are still downstream ops not yet done
+            has_downstream = any(
+                o.sequence and s.sequence and o.sequence > s.sequence and o.status != "completed"
+                for o in ops
+            )
+            if slip > overrun_hrs and has_downstream:
+                overrun_hrs = slip
+                overrun_reason = f"{s.op_name or 'an operation'} ran {slip:.1f}h over"
+
+    projected = add_working_hours(planned_end, overrun_hrs) if overrun_hrs > 0 else planned_end
+    return projected, overrun_reason
+
+
+def _refresh_job_health(db, job, now=None):
+    """
+    Recompute projected_end + schedule_health + health_reason for a job and
+    write them. Does NOT reschedule. Returns the health string.
+
+    Call this whenever a job's schedule or real progress changes:
+    after scheduling, after an op is marked started/done, after an override.
+    """
+    now = now or now_ist()
+
+    if job.status == "completed":
+        job.projected_end   = job.completed_at or get_finish(job)
+        promise = job.promised_date or job.due_date
+        if job.projected_end and promise and job.projected_end > promise:
+            job.schedule_health = "late"
+            job.health_reason   = "Completed after promised date"
+        else:
+            job.schedule_health = "on_track"
+            job.health_reason   = None
+        return job.schedule_health
+
+    projected, reason = _project_job_finish(job, now)
+    job.projected_end = projected
+
+    promise = job.promised_date or job.due_date
+    if projected is None or promise is None:
+        job.schedule_health = "unknown"
+        job.health_reason   = None
+        return job.schedule_health
+
+    if projected > promise:
+        job.schedule_health = "late"
+        slip_hrs = (projected - promise).total_seconds() / 3600
+        job.health_reason = reason or f"Projected to finish {slip_hrs:.0f}h past promise"
+    else:
+        margin_hrs = (promise - projected).total_seconds() / 3600
+        if reason or margin_hrs < AT_RISK_BUFFER_HRS:
+            job.schedule_health = "at_risk"
+            job.health_reason   = reason or f"Only {margin_hrs:.0f}h of slack before promise"
+        else:
+            job.schedule_health = "on_track"
+            job.health_reason   = None
+    return job.schedule_health
+
+
+def _refresh_order_health(db, order):
+    """An order is as healthy as its worst piece. Rolls piece-job health up."""
+    jobs = list(order.jobs)
+    if not jobs:
+        return "unknown"
+    rank = {"late": 3, "at_risk": 2, "unknown": 1, "on_track": 0, None: 0}
+    worst = max(jobs, key=lambda j: rank.get(j.schedule_health, 0))
+    return worst.schedule_health or "unknown"
 
 def check_preemption(db, new_job):
     cr = critical_ratio(new_job, db)
@@ -769,18 +926,40 @@ def _ops_for_job(db, j):
         except Exception:
             return []
         for i, op in enumerate(raw):
-            m_setup = float(op.get("machine_setup_mins", op.get("setup_time_mins", 0)))
-            j_setup = float(op.get("job_setup_mins", 0))
-            work    = float(op.get("work_time_hrs", 0))
+            m_setup = float(op.get("machine_setup_mins", op.get("setup_time_mins", 0)) or 0)
+            j_setup = float(op.get("job_setup_mins", 0) or 0)
+
+            op_type = (op.get("op_type") or "inhouse")
+            transit_days = op.get("outside_transit_days")
+
+            sub_ops = op.get("sub_operations") or []
+            if sub_ops:
+                # Sum included sub-ops' work time, same rule as routing ops:
+                # optional sub-ops are excluded by default.
+                work = sum(
+                    float(s.get("work_time_mins") or 0) / 60.0
+                    for s in sub_ops
+                    if not s.get("is_optional", False)
+                )
+            elif op_type == "outside" and transit_days:
+                # Outside ops: duration is calendar transit time, not work time
+                work = float(transit_days) * 24.0
+            else:
+                work = float(op.get("work_time_hrs", 0) or (float(op.get("work_time_mins", 0) or 0) / 60.0))
+
             ops.append({
                 "name":              op.get("name", f"Step {i+1}"),
-                "work_center_id":    int(op["work_center_id"]),
-                "machine_setup_mins": m_setup,
-                "job_setup_mins":     j_setup,
-                "setup_time_mins":    m_setup + j_setup,
+                "work_center_id":    int(op["work_center_id"]) if op.get("work_center_id") else None,
+                "machine_setup_mins": m_setup if op_type != "outside" else 0,
+                "job_setup_mins":     j_setup if op_type != "outside" else 0,
+                "setup_time_mins":    (m_setup + j_setup) if op_type != "outside" else 0,
                 "work_time_hrs":      work,
                 "is_optional":        bool(op.get("is_optional", False)),
                 "operation_id":       None,   # no DB operation row for inline
+                "has_sub_ops":        bool(sub_ops),
+                "op_type":            op_type,
+                "outside_vendor":     op.get("outside_vendor") or "",
+                "outside_transit_days": transit_days,
             })
 
     return ops
@@ -1035,6 +1214,8 @@ _PATH_TO_PAGE = [
     # system in js/app.js.
     ("/api/product-schema",     "jobs"),
     ("/api/product-types",      "jobs"),
+    ("/api/activity-log",       "activity-log"),
+    ("/api/schedule-all",       "jobs"),
 ]
 
 # Read-only (GET) methods are allowed at level >= 1; write methods require level >= 2
@@ -2727,6 +2908,9 @@ def routing_dict(r, db=None):
             "work_time_hrs": w_hrs,
             "work_time_mins": w_mins,
             "is_optional": o.is_optional,
+            "op_type":             getattr(o, "op_type", "inhouse") or "inhouse",
+            "outside_vendor":      getattr(o, "outside_vendor", None) or "",
+            "outside_transit_days": getattr(o, "outside_transit_days", None),
             "formula_type":  o.formula_type,
             "mrr":           o.mrr,
             "depth_mm":      o.depth_mm,
@@ -2886,7 +3070,23 @@ def update_routing(rid: int, data: dict):
         for op in list(r.operations): db.delete(op)
         db.flush()
         for i, op in enumerate(data["operations"]):
-            wc_id = int(op["work_center_id"])
+            wc_id_raw = op.get("work_center_id")
+            op_type_here = op.get("op_type", "inhouse") or "inhouse"
+            if not wc_id_raw and op_type_here == "outside":
+                # Outside ops don't need a real machine — use first available as FK placeholder
+                first_wc = db.query(WorkCenter).first()
+                wc_id = first_wc.id if first_wc else None
+                if not wc_id:
+                    db.rollback(); db.close()
+                    raise HTTPException(400, "No machines defined — add at least one machine first")
+            else:
+                wc_id = int(wc_id_raw) if wc_id_raw else None
+                if wc_id and not db.query(WorkCenter).filter(WorkCenter.id == wc_id).first():
+                    db.rollback(); db.close()
+                    raise HTTPException(400, f"Step {i+1}: machine {wc_id} not found")
+                if not wc_id and op_type_here != "outside":
+                    db.rollback(); db.close()
+                    raise HTTPException(400, f"Step {i+1}: machine required for in-house operations")
             m_s = float(op.get("machine_setup_mins", op.get("setup_time_mins", 0)) or 0)
             j_s = float(op.get("job_setup_mins", 0) or 0)
             if op.get("work_time_mins") is not None and float(op.get("work_time_mins",0)) > 0:
@@ -2895,13 +3095,21 @@ def update_routing(rid: int, data: dict):
             else:
                 w_hrs  = float(op.get("work_time_hrs", 0) or 0)
                 w_mins = round(w_hrs * 60, 1)
+            op_type = op.get("op_type", "inhouse") or "inhouse"
+            transit_days = float(op["outside_transit_days"]) if op.get("outside_transit_days") else (
+                round(w_hrs / 24.0, 1) if op_type == "outside" and w_hrs > 0 else None
+            )
             new_op = Operation(routing_id=r.id, sequence=i+1,
                                name=(op.get("name") or "").strip(),
                                work_center_id=wc_id,
-                               machine_setup_mins=m_s, job_setup_mins=j_s,
-                               setup_time_mins=m_s+j_s,
+                               machine_setup_mins=m_s if op_type != "outside" else 0,
+                               job_setup_mins=j_s if op_type != "outside" else 0,
+                               setup_time_mins=(m_s+j_s) if op_type != "outside" else 0,
                                work_time_hrs=w_hrs, work_time_mins=w_mins,
                                is_optional=bool(op.get("is_optional", False)),
+                               op_type=op_type,
+                               outside_vendor=op.get("outside_vendor") or None,
+                               outside_transit_days=transit_days,
                                formula_type=op.get("formula_type") or None,
                                mrr=float(op["mrr"]) if op.get("mrr") else None,
                                depth_mm=float(op["depth_mm"]) if op.get("depth_mm") else None,
@@ -2939,13 +3147,30 @@ def duplicate_routing(rid: int):
                  is_active=True)
     db.add(nr); db.flush()
     for op in r.operations:
-        db.add(Operation(routing_id=nr.id, sequence=op.sequence, name=op.name,
+        new_op = Operation(routing_id=nr.id, sequence=op.sequence, name=op.name,
                          work_center_id=op.work_center_id,
                          machine_setup_mins=op.machine_setup_mins,
                          job_setup_mins=op.job_setup_mins,
                          setup_time_mins=op.setup_time_mins,
                          work_time_hrs=op.work_time_hrs,
-                         is_optional=op.is_optional))
+                         work_time_mins=op.work_time_mins,
+                         is_optional=op.is_optional,
+                         op_type=getattr(op, "op_type", "inhouse") or "inhouse",
+                         outside_vendor=getattr(op, "outside_vendor", None),
+                         outside_transit_days=getattr(op, "outside_transit_days", None),
+                         formula_type=op.formula_type,
+                         mrr=op.mrr,
+                         depth_mm=op.depth_mm,
+                         feed_rate=getattr(op, "feed_rate", None),
+                         dim_x_source=op.dim_x_source,
+                         dim_y_source=op.dim_y_source)
+        db.add(new_op); db.flush()
+        for s in sorted(op.sub_operations, key=lambda x: x.sequence):
+            db.add(SubOperation(operation_id=new_op.id, sequence=s.sequence, name=s.name,
+                                 formula_type=s.formula_type, mrr=s.mrr, depth_mm=s.depth_mm,
+                                 feed_rate=s.feed_rate, dim_x_source=s.dim_x_source,
+                                 dim_y_source=s.dim_y_source, work_time_mins=s.work_time_mins,
+                                 work_time_hrs=s.work_time_hrs, is_optional=s.is_optional))
     db.commit(); db.refresh(nr)
     result = {"id": nr.id, "name": nr.name, "msg": f"Duplicated as '{nr.name}'"}
     db.close(); return result
@@ -3319,15 +3544,26 @@ def order_dict(o, db):
     sched   = sum(1 for j in pieces if j.status == "scheduled")
     finishes = [get_finish(j) for j in pieces if get_finish(j)]
     est_finish = max(finishes).isoformat() if finishes else None
+    promise = getattr(o, "promised_date", None) or o.due_date
+    # Roll worst piece-health up to the order
+    rank = {"late": 3, "at_risk": 2, "unknown": 1, "on_track": 0, None: 0}
+    order_health = "unknown"
+    projecteds = [getattr(j, "projected_end", None) for j in pieces if getattr(j, "projected_end", None)]
+    if pieces:
+        worst = max(pieces, key=lambda j: rank.get(getattr(j, "schedule_health", None), 0))
+        order_health = getattr(worst, "schedule_health", None) or "unknown"
+    proj_finish = max(projecteds).isoformat() if projecteds else est_finish
     return {
         "id": o.id, "order_number": o.order_number,
         "customer_id": o.customer_id, "customer_name": o.customer_name,
         "po_number": getattr(o, 'po_number', None),
         "product_type": o.product_type, "product_size": o.product_size,
         "product_variant": o.product_variant,
+        "product_attrs": json.loads(o.product_attrs) if o.product_attrs else None,
         "routing_id": o.routing_id,
         "order_type": getattr(o, 'order_type', 'simple') or 'simple',
         "quantity": o.quantity, "due_date": fmt(o.due_date),
+        "promised_date": fmt(promise),
         "material_ready_date": fmt(pieces[0].material_ready_date) if pieces else None,
         "notes": o.notes, "total_price": o.total_price,
         "status": o.status, "created_at": fmt(o.created_at),
@@ -3335,8 +3571,11 @@ def order_dict(o, db):
         "pieces_scheduled": sched,
         "pieces_pending": o.quantity - done - inprog - sched,
         "est_finish": est_finish,
-        "is_late": bool(est_finish and o.due_date and
-                        max(finishes) > o.due_date) if finishes else False,
+        "projected_finish": proj_finish,
+        "schedule_health": order_health,
+        "is_late": bool(proj_finish and promise and
+                        max(projecteds) > promise) if projecteds else
+                   (bool(est_finish and promise and max(finishes) > promise) if finishes else False),
     }
 
 def piece_dict(j, db):
@@ -3349,6 +3588,10 @@ def piece_dict(j, db):
         "status": j.status, "critical_ratio": round(cr, 2),
         "scheduled_finish": fmt(finish),
         "is_late": bool(finish and finish > j.due_date),
+        "promised_date": fmt(getattr(j, "promised_date", None) or j.due_date),
+        "projected_end": fmt(getattr(j, "projected_end", None) or finish),
+        "schedule_health": getattr(j, "schedule_health", None) or "unknown",
+        "health_reason": getattr(j, "health_reason", None),
         "ops_total": len(j.scheduled_ops),
         "ops_done":  sum(1 for s in j.scheduled_ops if s.status == "completed"),
         "ops_inprog":sum(1 for s in j.scheduled_ops if s.status == "in_progress"),
@@ -3407,6 +3650,11 @@ def create_order(data: dict):
     # Assembly orders don't require a routing (components have their own routings)
 
     order_num = next_order_number(db)
+    attrs_raw = data.get("product_attrs") or {}
+    if isinstance(attrs_raw, str):
+        try: attrs_raw = json.loads(attrs_raw)
+        except (ValueError, TypeError): attrs_raw = {}
+    if not isinstance(attrs_raw, dict): attrs_raw = {}
     order = CustomerOrder(
         order_number  = order_num,
         customer_id   = customer_id,
@@ -3414,11 +3662,13 @@ def create_order(data: dict):
         product_type  = data.get("product_type", ""),
         product_size  = data.get("product_size", ""),
         product_variant = data.get("product_variant", ""),
+        product_attrs = json.dumps(attrs_raw) if attrs_raw else None,
         routing_id    = routing_id,
         order_type    = data.get("order_type", "simple"),
         inline_ops    = json.dumps(data.get("inline_ops", [])) if data.get("inline_ops") else None,
         quantity      = quantity,
         due_date      = due_date,
+        promised_date = parse_dt(data.get("promised_date")) or due_date,
         notes         = data.get("notes", ""),
         total_price   = float(data["total_price"]) if data.get("total_price") else None,
         status        = "pending",
@@ -3443,7 +3693,9 @@ def create_order(data: dict):
             product_type        = order.product_type,
             product_size        = order.product_size or "",
             product_variant     = order.product_variant or "",
+            product_attrs       = order.product_attrs,
             due_date            = due_date,
+            promised_date       = order.promised_date or due_date,
             material_ready_date = material_ready,
             routing_id          = routing_id,
             inline_ops          = order.inline_ops,
@@ -3477,6 +3729,13 @@ def update_order(order_id: int, data: dict):
     if "product_type"    in data: o.product_type    = data["product_type"]
     if "product_size"    in data: o.product_size    = data["product_size"]
     if "product_variant" in data: o.product_variant = data["product_variant"]
+    if "product_attrs"   in data:
+        attrs_raw = data["product_attrs"] or {}
+        if isinstance(attrs_raw, str):
+            try: attrs_raw = json.loads(attrs_raw)
+            except (ValueError, TypeError): attrs_raw = {}
+        if not isinstance(attrs_raw, dict): attrs_raw = {}
+        o.product_attrs = json.dumps(attrs_raw) if attrs_raw else None
     if "routing_id"      in data and data["routing_id"]:
         o.routing_id = int(data["routing_id"])
         for j in o.jobs: j.routing_id = int(data["routing_id"])
@@ -3569,6 +3828,7 @@ def job_dict(j, db):
         "priority_flag": j.priority_flag, "is_frozen": bool(getattr(j, "is_frozen", False)), "is_on_hold": bool(getattr(j, "is_on_hold", False)), "status": j.status,
         "routing_id": j.routing_id,
         "has_inline_ops": bool(j.inline_ops),
+        "inline_ops": json.loads(j.inline_ops) if j.inline_ops else None,
         "notes": j.notes,
         "order_id": j.order_id, "piece_number": j.piece_number,
         "created_at": fmt(j.created_at), "completed_at": fmt(j.completed_at),
@@ -3579,6 +3839,11 @@ def job_dict(j, db):
         "ops_inprog": sum(1 for s in j.scheduled_ops if s.status == "in_progress"),
         "scheduled_finish": fmt(finish),
         "is_late": bool(finish and finish > j.due_date),
+        # Flag-and-wait fields
+        "promised_date":   fmt(getattr(j, "promised_date", None) or j.due_date),
+        "projected_end":   fmt(getattr(j, "projected_end", None) or finish),
+        "schedule_health": getattr(j, "schedule_health", None) or "unknown",
+        "health_reason":   getattr(j, "health_reason", None),
     }
 
 @app.get("/api/jobs")
@@ -3621,7 +3886,7 @@ def check_job_number(num: str):
     db.close(); return {"exists": exists}
 
 @app.post("/api/jobs")
-def create_job(data: dict):
+def create_job(data: dict, request: Request):
     db = SessionLocal()
     provided = (data.get("job_number") or "").strip()
     if provided:
@@ -3693,6 +3958,7 @@ def create_job(data: dict):
         product_attrs=json.dumps(attrs_raw) if attrs_raw else None,
         total_price=float(data["total_price"]) if data.get("total_price") else None,
         due_date=due_date, not_before=parse_dt(data.get("not_before")),
+        promised_date=parse_dt(data.get("promised_date")) or due_date,
         material_ready_date=parse_dt(data.get("material_ready_date")),
         routing_id=data.get("routing_id"),
         inline_ops=json.dumps(inline_ops_raw) if inline_ops_raw else None,
@@ -3701,11 +3967,15 @@ def create_job(data: dict):
         op_overrides=json.dumps(data.get("op_overrides",[])),
     )
     db.add(j); db.commit(); db.refresh(j)
+    _audit_log(db, request, "job_created", entity_type="job",
+                  entity_id=j.id, entity_label=j.job_number,
+                  details={"customer": j.customer_name, "product": j.product_type})
+    db.commit()
     result = {"id": j.id, "job_number": j.job_number, "status": j.status}
     db.close(); return result
 
 @app.put("/api/jobs/{job_id}")
-def update_job(job_id: int, data: dict):
+def update_job(job_id: int, data: dict, request: Request):
     db = SessionLocal()
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j: raise HTTPException(404, "Not found")
@@ -3728,6 +3998,9 @@ def update_job(job_id: int, data: dict):
         else:
             try: setattr(j, k, v)
             except: pass
+    _audit_log(db, request, "job_updated", entity_type="job",
+                  entity_id=j.id, entity_label=j.job_number,
+                  details={"fields": [k for k in data.keys() if k not in ("customer_id",)]})
     db.commit()
     result = {"id": j.id, "job_number": j.job_number, "status": j.status}
     db.close(); return result
@@ -3789,7 +4062,8 @@ def duplicate_job(job_id: int):
     nj = Job(job_number=new_num, customer_name=j.customer_name, customer_id=j.customer_id,
              po_number=j.po_number, product_type=j.product_type,
              product_size=j.product_size, product_variant=j.product_variant,
-             due_date=j.due_date, routing_id=j.routing_id,
+             due_date=j.due_date, promised_date=j.promised_date or j.due_date,
+             routing_id=j.routing_id,
              inline_ops=j.inline_ops, priority_flag=False,
              status="pending", notes=j.notes, op_overrides=j.op_overrides)
     db.add(nj); db.commit(); db.refresh(nj)
@@ -3797,11 +4071,14 @@ def duplicate_job(job_id: int):
     db.close(); return result
 
 @app.delete("/api/jobs/{job_id}")
-def delete_job(job_id: int):
+def delete_job(job_id: int, request: Request):
     db = SessionLocal()
     j = db.query(Job).filter(Job.id == job_id).first()
     if not j: raise HTTPException(404, "Not found")
     order_id = j.order_id
+    job_number = j.job_number
+    _audit_log(db, request, "job_deleted", entity_type="job",
+                  entity_id=job_id, entity_label=job_number)
     db.delete(j); db.commit()
     if order_id: _update_order_status(db, order_id)
     db.close(); return {"ok": True}
@@ -3823,6 +4100,19 @@ def save_inline_as_routing(job_id: int, data: dict):
                 is_active=True)
     db.add(r); db.flush()
     for i, op in enumerate(raw):
+        op_type_here = op.get("op_type", "inhouse") or "inhouse"
+        wc_id_raw = op.get("work_center_id")
+        if not wc_id_raw and op_type_here == "outside":
+            first_wc = db.query(WorkCenter).first()
+            wc_id = first_wc.id if first_wc else None
+            if not wc_id:
+                db.rollback(); db.close()
+                raise HTTPException(400, "No machines defined — add at least one machine first")
+        else:
+            wc_id = int(wc_id_raw) if wc_id_raw else None
+            if not wc_id:
+                db.rollback(); db.close()
+                raise HTTPException(400, f"Step {i+1}: machine required for in-house operations")
         m_s = float(op.get("machine_setup_mins", op.get("setup_time_mins", 0)) or 0)
         j_s = float(op.get("job_setup_mins", 0) or 0)
         if op.get("work_time_mins") is not None and float(op.get("work_time_mins", 0)) > 0:
@@ -3831,13 +4121,29 @@ def save_inline_as_routing(job_id: int, data: dict):
         else:
             w_hrs  = float(op.get("work_time_hrs", 0) or 0)
             w_mins = round(w_hrs * 60, 1)
-        db.add(Operation(routing_id=r.id, sequence=i+1,
+        transit_days = float(op["outside_transit_days"]) if op.get("outside_transit_days") else (
+            round(w_hrs / 24.0, 1) if op_type_here == "outside" and w_hrs > 0 else None
+        )
+        new_op = Operation(routing_id=r.id, sequence=i+1,
                          name=(op.get("name") or f"Step {i+1}"),
-                         work_center_id=int(op["work_center_id"]),
-                         machine_setup_mins=m_s, job_setup_mins=j_s,
-                         setup_time_mins=m_s+j_s,
+                         work_center_id=wc_id,
+                         machine_setup_mins=m_s if op_type_here != "outside" else 0,
+                         job_setup_mins=j_s if op_type_here != "outside" else 0,
+                         setup_time_mins=(m_s+j_s) if op_type_here != "outside" else 0,
                          work_time_hrs=w_hrs, work_time_mins=w_mins,
-                         is_optional=bool(op.get("is_optional", False))))
+                         is_optional=bool(op.get("is_optional", False)),
+                         op_type=op_type_here,
+                         outside_vendor=op.get("outside_vendor") or None,
+                         outside_transit_days=transit_days,
+                         formula_type=op.get("formula_type") or None,
+                         mrr=float(op["mrr"]) if op.get("mrr") else None,
+                         depth_mm=float(op["depth_mm"]) if op.get("depth_mm") else None,
+                         feed_rate=float(op["feed_rate"]) if op.get("feed_rate") else None,
+                         dim_x_source=op.get("dim_x_source") or None,
+                         dim_y_source=op.get("dim_y_source") or None,
+                         )
+        db.add(new_op); db.flush()
+        _save_sub_ops(db, new_op.id, op.get("sub_operations") or [])
     j.routing_id = r.id
     j.inline_ops = None
     db.commit(); db.refresh(r)
@@ -3860,13 +4166,53 @@ def schedule_job(job_id: int):
     if not j.routing_id and not j.inline_ops:
         raise HTTPException(400, "Job has no routing or inline ops")
     ok = _do_schedule(db, j)
+    if ok is not False:
+        _refresh_job_health(db, j)
+        db.commit()
     if j.order_id: _update_order_status(db, j.order_id)
     db.close()
     if not ok: raise HTTPException(400, "Scheduling failed")
     return {"ok": True}
 
+@app.get("/api/schedule-all/preview")
+def schedule_all_preview():
+    """Dry-run: count what schedule-all WOULD do without touching anything."""
+    db = SessionLocal()
+    jobs = db.query(Job).filter(Job.status.in_(["pending", "scheduled"])).all()
+    to_schedule = []
+    frozen = []
+    active_protected = []
+    no_routing = []
+    for j in jobs:
+        if getattr(j, 'is_frozen', False) or getattr(j, 'is_on_hold', False):
+            frozen.append({"id": j.id, "job_number": j.job_number,
+                           "reason": "frozen" if getattr(j, 'is_frozen', False) else "on hold"})
+            continue
+        has_active = any(s.status == "in_progress" for s in j.scheduled_ops)
+        if has_active:
+            active_protected.append({"id": j.id, "job_number": j.job_number})
+            continue
+        if not j.routing_id and not j.inline_ops:
+            no_routing.append({"id": j.id, "job_number": j.job_number})
+            continue
+        existing_ops = sum(1 for s in j.scheduled_ops if s.status in ("pending", "scheduled"))
+        to_schedule.append({
+            "id": j.id, "job_number": j.job_number,
+            "customer_name": j.customer_name or "",
+            "has_existing_schedule": existing_ops > 0,
+        })
+    db.close()
+    return {
+        "to_schedule":      to_schedule,
+        "frozen":           frozen,
+        "active_protected": active_protected,
+        "no_routing":       no_routing,
+        "total_jobs":       len(jobs),
+    }
+
+
 @app.post("/api/schedule-all")
-def schedule_all():
+def schedule_all(request: Request):
     db = SessionLocal()
     jobs = db.query(Job).filter(Job.status.in_(["pending","scheduled"])).all()
 
@@ -3897,6 +4243,7 @@ def schedule_all():
     db.flush()
 
     count = unassigned = skipped = preempted = 0
+    failures = []
     for j in jobs:
         if not j.routing_id and not j.inline_ops:
             continue
@@ -3905,15 +4252,32 @@ def schedule_all():
         if j.id in has_active:
             skipped += 1; continue
         cr = critical_ratio(j, db)
-        if cr < 0.5:
+        # Auto-preemption (pausing an in-progress op to free a worker for an
+        # urgent job) is DISABLED by default: in a custom mould/die shop an
+        # in-progress cut cannot be paused without scrapping the part. The
+        # advisory "preemption alerts" on the dashboard still surface the
+        # opportunity for a human to decide — but the scheduler will never
+        # auto-pause a running operation. Flip ENABLE_AUTO_PREEMPTION to re-enable.
+        if ENABLE_AUTO_PREEMPTION and cr < 0.5:
             for pc in check_preemption(db, j):
                 op_to_pause = db.query(ScheduledOp).filter(ScheduledOp.id == pc["op_id"]).first()
                 if op_to_pause and op_to_pause.status == "in_progress":
                     op_to_pause.status = "paused"; preempted += 1
         try:
-            _do_schedule(db, j); count += 1
-        except Exception:
-            count += 1
+            ok = _do_schedule(db, j)
+            if ok is False:
+                # No ops to schedule (no routing/inline ops) — not a crash,
+                # but the job did NOT get scheduled. Do not count as success.
+                failures.append({"job_number": j.job_number, "reason": "no operations defined"})
+            else:
+                count += 1
+                _refresh_job_health(db, j)
+        except Exception as e:
+            # Real failure (machine down, no qualified worker, no slot in 90d…).
+            # Previously this was silently counted as success — now surfaced.
+            failures.append({"job_number": j.job_number, "reason": str(e)[:200]})
+            j.schedule_health = "unknown"
+            j.health_reason   = f"Could not schedule: {str(e)[:120]}"
         for s in j.scheduled_ops:
             if s.worker_id is None and s.scheduled_start is not None:
                 unassigned += 1
@@ -3926,11 +4290,17 @@ def schedule_all():
         _check_job_urgency(db, j)
     for o in db.query(CustomerOrder).filter(CustomerOrder.status != "completed").all():
         _check_order_due_soon(db, o)
+    # ── Audit trail ──
+    _audit_log(db, request, "schedule_all", entity_type="system", details={
+        "scheduled": count, "skipped": skipped, "frozen": len(frozen_set),
+        "failed": len(failures), "unassigned_ops": unassigned,
+    })
     db.commit()
     db.close()
     return {"scheduled": count, "unassigned_ops": unassigned,
             "skipped_active": skipped, "preempted": preempted,
-            "frozen_count": len(frozen_set)}
+            "frozen_count": len(frozen_set),
+            "failed": len(failures), "failures": failures}
 
 # ── Bulk job operations ────────────────────────────────────────────────────────
 @app.post("/api/jobs/bulk-delete")
@@ -3968,13 +4338,23 @@ def bulk_schedule_jobs(data: dict):
             j._batch_cleared = True
     db.flush()
     count = failed = 0
+    failures = []
     for j in jobs:
-        try: _do_schedule(db, j); count += 1
-        except: failed += 1
+        try:
+            ok = _do_schedule(db, j)
+            if ok is False:
+                failed += 1
+                failures.append({"job_number": j.job_number, "reason": "no operations defined"})
+            else:
+                count += 1
+                _refresh_job_health(db, j)
+        except Exception as e:
+            failed += 1
+            failures.append({"job_number": j.job_number, "reason": str(e)[:200]})
     order_ids = {j.order_id for j in jobs if j.order_id}
     for oid in order_ids: _update_order_status(db, oid)
     db.commit(); db.close()
-    return {"scheduled": count, "failed": failed}
+    return {"scheduled": count, "failed": failed, "failures": failures}
 
 @app.post("/api/orders/bulk-delete")
 def bulk_delete_orders(data: dict):
@@ -4185,6 +4565,7 @@ def add_component(order_id: int, data: dict):
             product_type        = comp.name,
             product_size        = o.product_size or "",
             due_date            = o.due_date,
+            promised_date       = getattr(o, "promised_date", None) or o.due_date,
             routing_id          = comp.routing_id,
             order_id            = order_id,
             material_ready_date = mat_ready,
@@ -4380,6 +4761,7 @@ def update_outside_op(op_id: int, data: dict):
         # NOTIFY: outside op received, next work can start
         job = db.query(Job).filter(Job.id == s.job_id).first()
         if job:
+            _refresh_job_health(db, job)
             _notify(db,
                 event_type = "outside_received",
                 title      = f"📥 Received Back: {s.op_name}",
@@ -4752,6 +5134,8 @@ def update_op_status(op_id: int, data: dict, request: Request):
         elif not s.actual_start:
             s.actual_start = now
         if j.status in ("pending","scheduled"): j.status = "in_progress"
+        # Flag-and-wait: recompute where the job is now trending (no reschedule)
+        _refresh_job_health(db, j, now)
 
     elif new_status == "paused":
         # Store pause reason and notes
@@ -4761,6 +5145,7 @@ def update_op_status(op_id: int, data: dict, request: Request):
                          for op in j.scheduled_ops)
         if all_paused and j.status == "in_progress":
             j.status = "scheduled"
+        _refresh_job_health(db, j, now)
 
     elif new_status == "completed":
         # Manual end time; also allow retroactive actual_start correction
@@ -4776,6 +5161,26 @@ def update_op_status(op_id: int, data: dict, request: Request):
         elif not any_inprog:
             j.status = "in_progress"
         _reactive_reschedule(db, s.work_center_id, s.worker_id, s.actual_end or now)
+        # Flag-and-wait: recompute projection + health AFTER the reactive pull,
+        # so the projected finish reflects the just-completed (possibly late) op.
+        prev_health = j.schedule_health
+        _refresh_job_health(db, j, now)
+        # If this completion just pushed the job from on-track into late/at-risk,
+        # tell the supervisor — this is the early warning the whole feature exists for.
+        if (j.schedule_health in ("late", "at_risk")
+                and prev_health not in ("late", "at_risk")
+                and j.status != "completed"):
+            promise = j.promised_date or j.due_date
+            _notify(db,
+                event_type = "job_at_risk",
+                title      = ("🔴 Now LATE: " if j.schedule_health == "late" else "🟠 At risk: ") + j.job_number,
+                body       = f"{j.product_type} {j.product_size} ({j.customer_name}) — {j.health_reason}. "
+                             f"Promised {promise.strftime('%d %b') if promise else '—'}, "
+                             f"now projected {j.projected_end.strftime('%d %b') if j.projected_end else '—'}.",
+                link       = "/today",
+                job_id     = j.id,
+                order_id   = j.order_id,
+            )
         if j.order_id:
             _update_order_status(db, j.order_id)
             # FIX 1: Auto-sync assembly component status + unlock assembly steps
@@ -4786,6 +5191,13 @@ def update_op_status(op_id: int, data: dict, request: Request):
                     db.flush()
                     _sync_assembly_steps(db, j.order_id)
 
+    # ── Audit trail ──
+    action_map = {"in_progress": "op_started", "paused": "op_paused", "completed": "op_completed"}
+    _audit_log(db, request, action_map.get(new_status, f"op_{new_status}"),
+                  entity_type="scheduled_op", entity_id=op_id,
+                  entity_label=f"{s.op_name} on {s.wc_name} ({j.job_number})",
+                  details={"job_id": j.id, "worker": s.worker_name,
+                           "pause_reason": s.pause_reason if new_status == "paused" else None})
     db.commit(); db.close()
     return {"ok": True}
 
@@ -4803,6 +5215,31 @@ def assign_worker_to_op(op_id: int, data: dict, user: dict = Depends(require_man
         s.worker_id = None; s.worker_name = None
     db.commit(); db.close(); return {"ok": True}
 
+@app.get("/api/activity-log")
+def get_activity_log(limit: int = 50, offset: int = 0, action: str = None,
+                     entity_type: str = None):
+    """Paginated audit trail. Filters optional."""
+    db = SessionLocal()
+    q = db.query(ActivityLog).order_by(ActivityLog.timestamp.desc())
+    if action:      q = q.filter(ActivityLog.action == action)
+    if entity_type: q = q.filter(ActivityLog.entity_type == entity_type)
+    total = q.count()
+    rows = q.offset(offset).limit(min(limit, 200)).all()
+    db.close()
+    return {
+        "total": total,
+        "items": [{
+            "id":           r.id,
+            "timestamp":    r.timestamp.isoformat() if r.timestamp else None,
+            "username":     r.username,
+            "action":       r.action,
+            "entity_type":  r.entity_type,
+            "entity_id":    r.entity_id,
+            "entity_label": r.entity_label,
+            "details":      json.loads(r.details) if r.details else None,
+        } for r in rows],
+    }
+
 @app.get("/api/preemption-alerts")
 def get_preemption_alerts():
     db = SessionLocal()
@@ -4815,6 +5252,55 @@ def get_preemption_alerts():
         if critical_ratio(j, db) < 0.5:
             alerts.extend(check_preemption(db, j))
     db.close(); return alerts
+
+
+@app.get("/api/at-risk")
+def get_at_risk():
+    """
+    Flag-and-wait feed: every active job whose projected finish is trending
+    late or at risk against its FROZEN promised date. This is the screen the
+    supervisor checks — 'what's going wrong that I need to decide about'.
+    Read-only. Does not reschedule anything.
+    """
+    db = SessionLocal()
+    jobs = db.query(Job).filter(
+        Job.status.in_(["pending", "scheduled", "in_progress"]),
+        Job.schedule_health.in_(["late", "at_risk"]),
+    ).all()
+    fmt = lambda dt: dt.isoformat() if dt else None
+    rank = {"late": 0, "at_risk": 1}
+    out = []
+    for j in jobs:
+        promise   = j.promised_date or j.due_date
+        projected = j.projected_end or get_finish(j)
+        slip_hrs  = ((projected - promise).total_seconds() / 3600) if (projected and promise) else None
+        # The op that's the current pain point — running, or the next pending
+        cur = None
+        for s in sorted(j.scheduled_ops, key=lambda x: x.sequence or 0):
+            if s.status == "in_progress":
+                cur = s; break
+        if not cur:
+            for s in sorted(j.scheduled_ops, key=lambda x: x.sequence or 0):
+                if s.status in ("pending", "scheduled"):
+                    cur = s; break
+        out.append({
+            "job_id": j.id, "job_number": j.job_number,
+            "customer_name": j.customer_name,
+            "product_type": j.product_type, "product_size": j.product_size,
+            "order_id": j.order_id, "piece_number": j.piece_number,
+            "health": j.schedule_health,
+            "reason": j.health_reason,
+            "promised_date": fmt(promise),
+            "projected_end": fmt(projected),
+            "slip_hours": round(slip_hrs, 1) if slip_hrs is not None else None,
+            "current_op": cur.op_name if cur else None,
+            "current_machine": cur.wc_name if cur else None,
+            "is_priority": bool(j.priority_flag),
+        })
+    # Worst first: late before at_risk, then biggest slip
+    out.sort(key=lambda x: (rank.get(x["health"], 9), -(x["slip_hours"] or -999)))
+    db.close()
+    return out
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ESTIMATE  (what-if: no DB writes)

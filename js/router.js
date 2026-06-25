@@ -6,6 +6,7 @@ const ROUTES = [
   { pattern: /^\/?$/,                         page: 'dashboard',    title: 'Dashboard' },
   { pattern: /^\/dashboard$/,                 page: 'dashboard',    title: 'Dashboard' },
   { pattern: /^\/today$/,                     page: 'today',        title: "Today's Work" },
+  { pattern: /^\/at-risk$/,                    page: 'at-risk',      title: 'At Risk' },
   { pattern: /^\/past-work$/,                  page: 'past-work',    title: 'Past Work' },
   { pattern: /^\/upcoming$/,                  page: 'upcoming',     title: 'Upcoming' },
   { pattern: /^\/schedule$/,                  page: 'schedule',     title: 'Gantt Schedule' },
@@ -19,6 +20,7 @@ const ROUTES = [
   { pattern: /^\/quotations\/new$/,            page: 'quotation-new',   title: 'New Quotation' },
   { pattern: /^\/quotations\/(\d+)$/,          page: 'quotation-edit',  title: 'Edit Quotation', param: 'quotationId' },
   { pattern: /^\/users$/,                     page: 'users',        title: 'Users' },
+  { pattern: /^\/activity-log$/,             page: 'activity-log', title: 'Activity Log' },
 
   // Jobs
   { pattern: /^\/jobs\/new$/,                 page: 'job-new',      title: 'New Job' },
@@ -44,6 +46,8 @@ const ROUTES = [
   { pattern: /^\/tasks$/,                     page: 'tasks',        title: 'Staff Tasks' },
   { pattern: /^\/dispatch$/,                  page: 'dispatch',     title: 'Work Card' },
   { pattern: /^\/product-schema$/,            page: 'product-schema', title: 'Product Schema' },
+  { pattern: /^\/product-schema\/new$/,        page: 'product-schema-new',  title: 'New Product Type' },
+  { pattern: /^\/product-schema\/(\d+)$/,      page: 'product-schema-edit', title: 'Edit Product Type', param: 'typeId' },
 ];
 
 function resolveRoute(path) {
@@ -102,6 +106,7 @@ async function handleRoute() {
     switch (page) {
       case 'dashboard':     await renderDashboard(); break;
       case 'today':         await renderToday(); break;
+      case 'at-risk':       await renderAtRisk(); break;
       case 'past-work':     await renderPastWork(); break;
       case 'upcoming':      await renderUpcoming(); break;
       case 'jobs':          await renderJobs(); break;
@@ -128,6 +133,8 @@ async function handleRoute() {
       case 'tasks':         await renderTasks(); break;
       case 'dispatch':      await renderDispatch(); break;
       case 'product-schema': await renderProductSchema(); break;
+      case 'product-schema-new':  await renderProductSchemaEditor(null); break;
+      case 'product-schema-edit': await renderProductSchemaEditor(params.typeId); break;
       case 'reports':       await renderReports(); break;
       case 'worker-reports': await renderWorkerReports(); break;
       case 'settings':      await renderSettings(); break;
@@ -136,6 +143,7 @@ async function handleRoute() {
           content.innerHTML = `<div class="empty" style="padding:40px">Access denied — no permission for User Management.</div>`;
         } else { await renderUsers(); }
         break;
+      case 'activity-log': await renderActivityLog(); break;
       default: await renderDashboard();
     }
   } catch (e) {
@@ -164,6 +172,7 @@ function renderTopbarActions(page, params = {}) {
 
   const actions = {
     'dashboard':    ``,
+    'at-risk':      `${canSched?`<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Reschedule All</span></button>`:''}`,
     'jobs':         `${canSched?`<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Schedule All</span></button>`:''}${jobsLevel>=2?`<button class="btn btn-primary" onclick="navigate('/jobs/new')">+ <span class="btn-label-long">New Job</span><span class="btn-label-short" style="display:none">Job</span></button>`:''}`,
     'job-new':      `<button class="btn btn-ghost" onclick="goBack('/jobs')">← <span class="btn-label-long">Back</span></button>`,
     'orders':       `${canSched?`<button class="btn btn-secondary" onclick="scheduleAll()">⚡ <span class="btn-label-long">Schedule All</span></button>`:''}${ordersLevel>=2?`<button class="btn btn-primary" onclick="navigate('/orders/new')">+ <span class="btn-label-long">New Order</span><span class="btn-label-short" style="display:none">Order</span></button>`:''}`,
@@ -176,6 +185,8 @@ function renderTopbarActions(page, params = {}) {
     'customers':    `${custLevel>=2?`<button class="btn btn-primary" onclick="openCustomerModal(null)">+ <span class="btn-label-long">Add Customer</span><span class="btn-label-short" style="display:none">Customer</span></button>`:''}`,
     'routing-new':  `<button class="btn btn-ghost" onclick="goBack('/routings')">← <span class="btn-label-long">Back</span></button>`,
     'routing-edit': `<button class="btn btn-ghost" onclick="goBack('/routings')">← <span class="btn-label-long">Back</span></button>`,
+    'product-schema-new':  `<button class="btn btn-ghost" onclick="goBack('/product-schema')">← <span class="btn-label-long">Back</span></button>`,
+    'product-schema-edit': `<button class="btn btn-ghost" onclick="goBack('/product-schema')">← <span class="btn-label-long">Back</span></button>`,
     'order-new':    `<button class="btn btn-ghost" onclick="goBack('/orders')">← <span class="btn-label-long">Back</span></button>`,
     'order-edit':   `<button class="btn btn-ghost" onclick="goBack('/orders')">← <span class="btn-label-long">Back</span></button>`,
     'job-edit':     `<button class="btn btn-ghost" onclick="goBack('/jobs')">← <span class="btn-label-long">Back</span></button>`,
@@ -188,7 +199,8 @@ function navActive(page) {
     el.classList.toggle('active', el.dataset.page === page ||
       (el.dataset.page === 'routings' && page.startsWith('routing')) ||
       (el.dataset.page === 'orders'   && page.startsWith('order'))   ||
-      (el.dataset.page === 'jobs'     && (page === 'job-edit' || page === 'job-new'))
+      (el.dataset.page === 'jobs'     && (page === 'job-edit' || page === 'job-new')) ||
+      (el.dataset.page === 'product-schema' && page.startsWith('product-schema'))
     );
   });
 }

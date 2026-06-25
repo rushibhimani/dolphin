@@ -3,47 +3,23 @@
  * Full-page editor — routes: #/orders/new, #/orders/:id
  */
 
+let _orderSchema = { product_types: [] };   // from /api/product-schema, module-level so
+                                             // orderOnProductTypeChange() can reach it
+const ORDER_ATTRS_CONTAINER = 'ord_attrs_wrap';
+
 async function renderOrderEditor(editId){
   await loadAll();
 
-  // Pull from schema if available; fall back to legacy hardcoded lists so
-  // the form keeps working on databases that pre-date migration 029.
-  let _orderSchema = { product_types: [] };
-  try { _orderSchema = await api('GET', '/api/product-schema'); } catch(e) { /* fallback */ }
+  // Schema drives the dynamic per-attribute inputs below (same widget the
+  // Job editor uses). If the fetch fails (fresh DB before migration 029),
+  // fall back to a minimal default so the form is still usable.
+  try { _orderSchema = await api('GET', '/api/product-schema'); } catch(e) { _orderSchema = { product_types: [] }; }
 
   const schemaTypes = _orderSchema.product_types || [];
   const PTYPES = schemaTypes.length
     ? schemaTypes.map(p => p.name)
     : ['Punch','Die Frame','Liner Set','Complete Mould','Custom Plate',
        'Base Plate','Ejector Plate','Addon Plate','SFS Lower','SFS Upper'];
-
-  // Build the global "all sizes" list — union of every "Size" attribute's
-  // values across product types. Same for variant-ish attributes.
-  const _collectValues = (attrName) => {
-    const seen = new Set();
-    schemaTypes.forEach(pt => {
-      pt.attributes?.forEach(a => {
-        if ((a.name || '').toLowerCase() === attrName.toLowerCase()) {
-          a.values.forEach(v => seen.add(v.value));
-        }
-      });
-    });
-    return [...seen];
-  };
-  const allSizes = _collectValues('Size');
-  const SIZES = allSizes.length
-    ? allSizes
-    : ['600x600','600x900','600x1200','900x900','900x1200','1200x1200'];
-
-  // Variant suggestions = union of Type / Mounting / Liner Type / Cavities
-  // values across all product types, joined into freeform suggestions for
-  // the variant text field. Best-effort: gives the user useful auto-complete.
-  const _variantSuggestions = [
-    ..._collectValues('Type'),
-    ..._collectValues('Mounting'),
-    ..._collectValues('Liner Type'),
-    ..._collectValues('Cavities').map(c => `${c}-cav`),
-  ];
 
   // Fetch existing order if editing
   let editOrder = null;
@@ -55,23 +31,18 @@ async function renderOrderEditor(editId){
   // Pre-select values for edit mode
   const selCust    = editOrder?.customer_id || '';
   const selPtype   = editOrder?.product_type || PTYPES[0];
-  const selSize    = editOrder?.product_size || SIZES[0];
   const selDue     = editOrder?.due_date ? editOrder.due_date.slice(0,10) : defDue;
   const selQty     = editOrder?.quantity || 1;
   const selPrice   = editOrder?.total_price || '';
-  const selVariant = editOrder?.product_variant || '';
   const selPo      = editOrder?.po_number || '';
   const selNotes   = editOrder?.notes || '';
   const selMatD    = editOrder?.material_ready_date ? editOrder.material_ready_date.slice(0,10) : '';
   const selRouting  = editOrder?.routing_id || '';
   const selOrderType = editOrder?.order_type || 'simple';
-  const isCustomSize = selSize && !SIZES.includes(selSize);
 
   const custOpts = allCustomers.map(c=>`<option value="${c.id}" ${c.id==selCust?'selected':''}>${escHtml(c.name)}</option>`).join('');
   const routingOpts = allRoutings.map(r=>`<option value="${r.id}" ${r.id==selRouting?'selected':''}>${escHtml(r.name)} (${escHtml(r.product_type)})</option>`).join('');
   const ptypeOpts = PTYPES.map(p=>`<option ${p===selPtype?'selected':''}>${p}</option>`).join('');
-  const sizeOpts  = SIZES.map(s=>`<option ${s===selSize&&!isCustomSize?'selected':''}>${s}</option>`).join('')
-    + `<option value="custom" ${isCustomSize?'selected':''}>Custom…</option>`;
 
   orderFormOps = [];
 
@@ -123,30 +94,22 @@ async function renderOrderEditor(editId){
       </div>
     </div>
 
-    <div class="form-section">Product</div>
-    <div class="form-row cols-3">
+    <div class="form-section">
+      Product
+      <a href="#/product-schema" onclick="event.preventDefault();navigate('/product-schema')"
+         style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);margin-left:10px;text-decoration:underline;cursor:pointer">
+         Manage attributes →
+      </a>
+    </div>
+    <div class="form-row cols-1">
       <div class="form-group">
         <div class="fld-label">Product Type <span style="color:var(--red)">*</span></div>
-        <select id="ord_ptype" onchange="filterOrderRouting()">${ptypeOpts}</select>
-      </div>
-      <div class="form-group">
-        <div class="fld-label">Size <span style="color:var(--red)">*</span></div>
-        <select id="ord_size">${sizeOpts}</select>
-      </div>
-      <div class="form-group">
-        <div class="fld-label">Variant / Type</div>
-        <input id="ord_variant" list="ord_variant_dl" value="${escHtml(selVariant)}" placeholder="Plain, Carbide, Rustic…" autocomplete="off">
-        <datalist id="ord_variant_dl">
-          ${[...new Set(_variantSuggestions)].map(v => `<option value="${escAttr(v)}">`).join('')}
-        </datalist>
+        <select id="ord_ptype" onchange="orderOnProductTypeChange()">${ptypeOpts}</select>
       </div>
     </div>
-    <div id="ord_size_custom_wrap" style="display:${isCustomSize?'':'none'}" class="form-row cols-1">
-      <div class="form-group">
-        <div class="fld-label">Custom Size</div>
-        <input id="ord_size_custom" value="${isCustomSize?escHtml(selSize):''}" placeholder="e.g. 750x1000">
-      </div>
-    </div>
+
+    <!-- Dynamic attribute inputs render here — one row per attribute -->
+    <div id="ord_attrs_wrap"></div>
 
     <div class="form-section">Quantity & Schedule</div>
     <div class="form-row cols-3">
@@ -235,12 +198,20 @@ async function renderOrderEditor(editId){
       </div>
     </div>`;
 
-  // Wire size custom input
-  setTimeout(async ()=>{
-    document.getElementById('ord_size')?.addEventListener('change', function(){
-      document.getElementById('ord_size_custom_wrap').style.display = this.value==='custom'?'':'none';
-    });
+  // Render the dynamic per-attribute inputs for the initially selected
+  // product type, pre-filled from the order's existing product_attrs
+  // (falling back to legacy product_size on the Size attribute).
+  let _existingOrderAttrs = {};
+  if (editOrder?.product_attrs) {
+    try {
+      _existingOrderAttrs = typeof editOrder.product_attrs === 'string'
+        ? JSON.parse(editOrder.product_attrs) : editOrder.product_attrs;
+    } catch(e) {}
+  }
+  if (editOrder?.product_size && !_existingOrderAttrs.Size) _existingOrderAttrs.Size = editOrder.product_size;
+  attrInputsRender(_orderSchema, selPtype, ORDER_ATTRS_CONTAINER, _existingOrderAttrs);
 
+  setTimeout(async ()=>{
     // EDIT MODE: load routing ops for existing order
     if(isEdit && selRouting){
       const sel = document.getElementById('ord_routing');
@@ -298,26 +269,26 @@ async function renderOrderEditor(editId){
           const opt = sel && [...sel.options].find(o => o.text === pf.customer_name);
           if (opt) sel.value = opt.value;
         }
+        // The Quote page only knows the legacy flattened product_size /
+        // product_variant strings (it predates the attribute schema too).
+        // Map them onto the new dynamic inputs as best we can: product_size
+        // → the "Size" attribute, product_variant → the first attribute
+        // that looks like a type/variant field, if this product type has one.
         if (pf.product_type) {
           const el = document.getElementById('ord_ptype');
-          if (el) { el.value = pf.product_type; filterOrderRouting(); }
+          if (el) { el.value = pf.product_type; }
         }
-        if (pf.product_size) {
-          const sel = document.getElementById('ord_size');
-          if (sel) {
-            const opt = [...sel.options].find(o => o.value === pf.product_size);
-            sel.value = opt ? pf.product_size : 'custom';
-            if (!opt) {
-              document.getElementById('ord_size_custom_wrap').style.display = '';
-              const ci = document.getElementById('ord_size_custom');
-              if (ci) ci.value = pf.product_size;
-            }
-          }
-        }
+        const ptypeNow = document.getElementById('ord_ptype')?.value || selPtype;
+        const prefillAttrs = {};
+        if (pf.product_size) prefillAttrs.Size = pf.product_size;
         if (pf.product_variant) {
-          const el = document.getElementById('ord_variant');
-          if (el) el.value = pf.product_variant;
+          const pt = (_orderSchema.product_types || []).find(p => p.name === ptypeNow);
+          const variantAttr = pt?.attributes.find(a =>
+            ['type','variant','mounting'].includes((a.name||'').toLowerCase()));
+          if (variantAttr) prefillAttrs[variantAttr.name] = pf.product_variant;
         }
+        attrInputsRender(_orderSchema, ptypeNow, ORDER_ATTRS_CONTAINER, prefillAttrs);
+        filterOrderRouting();
         if (pf.quantity)  { const el = document.getElementById('ord_qty');  if(el) el.value = pf.quantity; }
         if (pf.due_date)  { const el = document.getElementById('ord_due');  if(el) el.value = pf.due_date; }
         if (pf.material_ready_date) {
@@ -348,6 +319,18 @@ async function filterOrderRouting(){
   // Show punch calc panel for punch types
   const punchCalcPanel = document.getElementById('punchCalcPanel');
   if(punchCalcPanel) punchCalcPanel.style.display = ptype.toLowerCase().includes('punch') ? '' : 'none';
+}
+
+/** Product Type changed — re-render the dynamic attribute inputs for the
+ * new type (carrying over any already-typed values for attributes with
+ * the same name, e.g. a shared "Size" field), then refilter the routing
+ * dropdown to that type, same two-step pattern as the Job editor. */
+function orderOnProductTypeChange(){
+  const ptype = document.getElementById('ord_ptype')?.value;
+  if (!ptype) return;
+  const currentAttrs = attrInputsCollect(ORDER_ATTRS_CONTAINER);
+  attrInputsRender(_orderSchema, ptype, ORDER_ATTRS_CONTAINER, currentAttrs);
+  filterOrderRouting();
 }
 
 async function loadOrderOps(){
@@ -648,21 +631,26 @@ function orderTypeChanged(type) {
 async function saveOrder(editId){
   const custId   = document.getElementById('ord_cust').value;
   const ptype    = document.getElementById('ord_ptype').value;
-  const sizeSel  = document.getElementById('ord_size').value;
-  const size     = sizeSel==='custom'
-    ? (document.getElementById('ord_size_custom')?.value||'').trim()
-    : sizeSel;
+  const attrs    = attrInputsCollect(ORDER_ATTRS_CONTAINER);
+  const missing  = attrInputsMissingRequired(ORDER_ATTRS_CONTAINER);
   const qty      = parseInt(document.getElementById('ord_qty').value) || 1;
   const due      = document.getElementById('ord_due').value;
   const routingId= document.getElementById('ord_routing').value;
   const isEdit   = editId && editId !== 'null';
 
   const orderType = document.querySelector('input[name="ord_type"]:checked')?.value || 'simple';
-  if(!custId)    { toast('Select a customer','error');   return; }
-  if(!size)      { toast('Enter product size','error');   return; }
-  if(!due)       { toast('Select a due date','error');    return; }
+  if(!custId)        { toast('Select a customer','error');   return; }
+  if(missing.length) { toast(`Required: ${missing.join(', ')}`,'error'); return; }
+  if(!due)           { toast('Select a due date','error');    return; }
   if(!routingId && orderType === 'simple') { toast('Select a routing','error'); return; }
-  if(qty < 1)    { toast('Quantity must be at least 1','error'); return; }
+  if(qty < 1)         { toast('Quantity must be at least 1','error'); return; }
+
+  // Derive product_size + product_variant from the structured attrs for
+  // backward compatibility with the Orders list display and Quote page.
+  // (Whether Size itself is required is driven by the schema's is_required
+  // flag, already checked above via `missing` — not hardcoded here, since
+  // not every product type necessarily has a Size attribute.)
+  const { size, variant } = attrInputsDeriveLegacy(attrs);
 
   const ovs = orderFormOps.map((op,i)=>({
     operation_id: op.operation_id,
@@ -672,6 +660,10 @@ async function saveOrder(editId){
     included: document.getElementById(`oopchk_${i}`)?.checked??true,
   }));
 
+  // Best-effort: persist any user-typed attribute values that aren't yet
+  // in the schema so they appear in future dropdowns.
+  await attrInputsAutoSaveNew(_orderSchema, attrs, ptype);
+
   const c = allCustomers.find(x=>x.id==custId);
   const data = {
     customer_id:    parseInt(custId),
@@ -679,7 +671,8 @@ async function saveOrder(editId){
     po_number:      document.getElementById('ord_po').value.trim(),
     product_type:   ptype,
     product_size:   size,
-    product_variant:document.getElementById('ord_variant').value.trim(),
+    product_variant:variant,
+    product_attrs:  attrs,
     quantity:       qty,
     due_date:       due + 'T08:00:00',
     material_ready_date: document.getElementById('ord_mat_d')?.value ? document.getElementById('ord_mat_d').value + 'T08:00:00' : null,

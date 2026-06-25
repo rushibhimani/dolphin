@@ -205,10 +205,12 @@ class CustomerOrder(Base):
     product_type    = Column(String, nullable=False)
     product_size    = Column(String, nullable=True)
     product_variant = Column(String, nullable=True)
+    product_attrs   = Column(Text, nullable=True)   # JSON dict of {attr_name: value}
     routing_id      = Column(Integer, ForeignKey("routings.id"), nullable=True)
     inline_ops      = Column(Text, nullable=True)   # JSON — used when no routing
     quantity        = Column(Integer, nullable=False, default=1)
     due_date        = Column(DateTime, nullable=False)
+    promised_date   = Column(DateTime, nullable=True)   # FROZEN customer commitment
     notes           = Column(Text, nullable=True)
     total_price     = Column(Float, nullable=True)  # total for all pieces
     order_type      = Column(String, default="simple")   # simple | assembly
@@ -239,6 +241,10 @@ class Job(Base):
     product_variant     = Column(String, nullable=True)
     product_attrs       = Column(Text, nullable=True)   # JSON dict of {attr_name: value}
     due_date            = Column(DateTime, nullable=False)
+    promised_date       = Column(DateTime, nullable=True)   # FROZEN customer commitment; "late" measured vs this
+    projected_end       = Column(DateTime, nullable=True)   # computed: where the job is trending to finish
+    schedule_health     = Column(String, nullable=True)     # on_track | at_risk | late | unknown
+    health_reason       = Column(String, nullable=True)     # short human explanation of the flag
     not_before          = Column(DateTime, nullable=True)
     material_ready_date = Column(DateTime, nullable=True)
     priority_flag       = Column(Boolean, default=False)
@@ -547,6 +553,20 @@ class ProductAttribute(Base):
         cascade="all, delete-orphan",
         order_by="ProductAttributeValue.display_order",
     )
+
+
+class ActivityLog(Base):
+    """Immutable audit trail — who did what, when, on which entity."""
+    __tablename__ = "activity_log"
+    id          = Column(Integer,  primary_key=True)
+    timestamp   = Column(DateTime, nullable=False)
+    user_id     = Column(Integer,  nullable=True)      # from JWT sub
+    username    = Column(String,   nullable=True)       # display name for quick reads
+    action      = Column(String,   nullable=False)      # schedule_all, op_started, op_completed, op_paused, job_created, job_updated, job_deleted, ...
+    entity_type = Column(String,   nullable=True)       # job, order, scheduled_op, system
+    entity_id   = Column(Integer,  nullable=True)
+    entity_label= Column(String,   nullable=True)       # e.g. "DL-2026-042" or "Facing on VMC"
+    details     = Column(Text,     nullable=True)       # JSON blob with extra context
 
 
 class ProductAttributeValue(Base):

@@ -35,6 +35,7 @@ ALL_PAGES = [
     "jobs", "orders", "quote", "quotations", "schedule",
     "capacity", "floorplan", "routings", "machines", "workers",
     "customers", "reports", "settings", "routing-stats", "users",
+    "activity-log",
 ]
 
 def _full(*pages):
@@ -53,7 +54,7 @@ ROLE_PAGE_LEVELS = {
         **_full("dashboard","today","past-work","tasks","upcoming",
                 "jobs","orders","quote","quotations","schedule",
                 "capacity","floorplan","routings","machines","workers",
-                "customers","reports","settings","routing-stats"),
+                "customers","reports","settings","routing-stats","activity-log"),
         "users": 0,   # managers cannot manage users by default
     },
     "staff": {

@@ -90,10 +90,12 @@ function toast(msg, type = 'success') {
 
 // ── CONFIRM DIALOG ────────────────────────────────────────────────────────────
 
-function confirm2(msg, btnLabel = 'Delete') {
+function confirm2(msg, btnLabel = 'Delete', btnClass = 'btn-danger') {
   return new Promise(res => {
     document.getElementById('confirmMsg').textContent = msg;
-    document.getElementById('confirmOkBtn').textContent = btnLabel;
+    const btn = document.getElementById('confirmOkBtn');
+    btn.textContent = btnLabel;
+    btn.className = 'btn ' + btnClass;
     document.getElementById('confirmOverlay').classList.add('open');
     confirmResolve = (v) => {
       document.getElementById('confirmOverlay').classList.remove('open');
@@ -241,6 +243,19 @@ function sBadge(s) {
   const m = { pending: 'badge-pending', scheduled: 'badge-scheduled', in_progress: 'badge-inprog', completed: 'badge-done' };
   const l = { pending: 'Pending', scheduled: 'Scheduled', in_progress: 'In Prog', completed: 'Done' };
   return `<span class="badge ${m[s] || 'badge-pending'}">${l[s] || s}</span>`;
+}
+
+// Flag-and-wait health badge. `health` is one of on_track | at_risk | late | unknown.
+function healthBadge(health) {
+  const m = {
+    on_track: { c: 'var(--green,#10b981)', t: '● On track', bg: 'rgba(16,185,129,.12)' },
+    at_risk:  { c: 'var(--amber,#f59e0b)', t: '▲ At risk',  bg: 'rgba(245,158,11,.14)' },
+    late:     { c: 'var(--red,#ef4444)',   t: '■ Late',     bg: 'rgba(239,68,68,.14)' },
+    unknown:  { c: 'var(--muted,#888)',    t: '— Unscheduled', bg: 'rgba(136,136,136,.10)' },
+  };
+  const h = m[health] || m.unknown;
+  return `<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;
+    padding:2px 8px;border-radius:11px;color:${h.c};background:${h.bg};white-space:nowrap">${h.t}</span>`;
 }
 
 function escHtml(s) {

@@ -180,16 +180,16 @@ function jobRowHTML(j, inGroup=false){
       </div>
 
       <div style="flex:0 0 80px;text-align:center">
-        <div class="mono" style="font-size:11px;color:var(--muted)">Due</div>
-        <div class="mono" style="font-size:12px">${fmtD(j.due_date)}</div>
+        <div class="mono" style="font-size:11px;color:var(--muted)">Promised</div>
+        <div class="mono" style="font-size:12px">${fmtD(j.promised_date || j.due_date)}</div>
       </div>
 
       <div style="flex:0 0 90px;text-align:center">
-        <div class="mono" style="font-size:11px;color:var(--muted)">Finish</div>
-        <div class="mono" style="font-size:12px;color:${j.is_late?'var(--red)':j.scheduled_finish?'var(--text)':'var(--muted)'}">${j.scheduled_finish?fmtD(j.scheduled_finish):'—'}${j.is_late?' ⚠':''}</div>
+        <div class="mono" style="font-size:11px;color:var(--muted)">Projected</div>
+        <div class="mono" style="font-size:12px;color:${j.schedule_health==='late'?'var(--red)':j.schedule_health==='at_risk'?'var(--amber)':(j.projected_end||j.scheduled_finish)?'var(--text)':'var(--muted)'}">${(j.projected_end||j.scheduled_finish)?fmtD(j.projected_end||j.scheduled_finish):'—'}</div>
       </div>
 
-      <div style="flex:0 0 70px">${sBadge(j.status)} ${blockHtml}</div>
+      <div style="flex:0 0 80px">${sBadge(j.status)}${j.schedule_health&&j.schedule_health!=='unknown'&&j.schedule_health!=='on_track'?`<div style="margin-top:3px">${healthBadge(j.schedule_health)}</div>`:''} ${blockHtml}</div>
 
       <div style="flex:0 0 90px">${crBar(j.critical_ratio)}</div>
 

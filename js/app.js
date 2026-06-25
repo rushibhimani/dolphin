@@ -10,14 +10,53 @@
 
 async function scheduleAll() {
   try {
+    // ── Step 1: Preview what would happen ──
+    const preview = await api('GET', '/api/schedule-all/preview');
+    const toSched  = preview.to_schedule.length;
+    const frozen   = preview.frozen.length;
+    const active   = preview.active_protected.length;
+    const noRoute  = preview.no_routing.length;
+    const resched  = preview.to_schedule.filter(j => j.has_existing_schedule).length;
+
+    if (toSched === 0) {
+      toast('No pending jobs to schedule', 'info');
+      return;
+    }
+
+    // ── Step 2: Build confirmation message ──
+    let lines = [`Schedule ${toSched} job${toSched !== 1 ? 's' : ''}?`];
+    if (resched > 0) lines.push(`• ${resched} will be rescheduled (existing schedule replaced)`);
+    if (frozen > 0)  lines.push(`• ${frozen} frozen/on-hold — skipped`);
+    if (active > 0)  lines.push(`• ${active} with active ops — protected`);
+    if (noRoute > 0) lines.push(`• ${noRoute} have no routing — will fail`);
+    lines.push('');
+    // Show first few job numbers being scheduled
+    const show = preview.to_schedule.slice(0, 8);
+    lines.push('Jobs: ' + show.map(j => j.job_number).join(', ') +
+               (toSched > 8 ? ` … +${toSched - 8} more` : ''));
+
+    const ok = await confirm2(lines.join('\n'), '⚡ Schedule All', 'btn-primary');
+    if (!ok) return;
+
+    // ── Step 3: Execute ──
     const r = await api('POST', '/api/schedule-all');
     let msg = `Scheduled ${r.scheduled} jobs`;
     if (r.skipped_active > 0) msg += ` · ${r.skipped_active} protected`;
     if (r.frozen_count  > 0) msg += ` · 🔒 ${r.frozen_count} frozen`;
     if (r.preempted     > 0) msg += ` · ⚡ ${r.preempted} paused for urgent`;
     if (r.unassigned_ops > 0) msg += ` · ⚠ ${r.unassigned_ops} unassigned`;
-    toast(msg, r.unassigned_ops > 0 ? 'error' : 'success');
+    if (r.failed > 0) msg += ` · ❌ ${r.failed} could NOT schedule`;
+    const hadProblem = r.unassigned_ops > 0 || r.failed > 0;
+    toast(msg, hadProblem ? 'error' : 'success');
+    // Show exactly which jobs failed and why
+    if (r.failures && r.failures.length) {
+      const detail = r.failures.slice(0, 6)
+        .map(f => `• ${f.job_number}: ${f.reason}`).join('\n');
+      const more = r.failures.length > 6 ? `\n…and ${r.failures.length - 6} more` : '';
+      setTimeout(() => toast(`Could not schedule:\n${detail}${more}`, 'error'), 400);
+    }
     await loadAll();
+    if (typeof refreshAtRiskCount === 'function') refreshAtRiskCount();
     handleRoute();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -121,6 +160,7 @@ function applyRoleUI(user) {
   // Routings — anyone who can edit routings should be able to edit the schema.
   const PAGE_ALIASES = {
     dispatch: 'today',
+    'at-risk': 'today',
     'product-schema': 'routings',
   };
 
@@ -245,6 +285,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadAll();
   // Init notification bell (manager/admin only)
   if (typeof initNotifications === 'function') initNotifications();
+  // Flag-and-wait: populate the At Risk nav badge, and keep it fresh
+  if (typeof refreshAtRiskCount === 'function') {
+    refreshAtRiskCount();
+    setInterval(refreshAtRiskCount, 60000);
+  }
   // If at root or no meaningful path, go to dashboard; otherwise honour the URL
   const initPath = window.location.pathname;
   if (!initPath || initPath === '/' || initPath === '/index.html') {
