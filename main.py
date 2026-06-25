@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine, func, or_, and_
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta, date
 from models import (Base, WorkCenter, Worker, WorkerLeave, worker_skills,
@@ -81,10 +81,18 @@ def get_db():
 
 def _notify(db, event_type: str, title: str, body: str,
             link: str = None, job_id: int = None,
-            order_id: int = None, wc_id: int = None):
+            order_id: int = None, wc_id: int = None,
+            target_role: str = None, target_user_id: int = None,
+            target_worker_id: int = None):
     """
     Create a notification. Deduplicates: won't create same event_type + same
-    reference more than once per hour (prevents spam on rapid state changes).
+    reference + same target more than once per hour (prevents spam).
+
+    Targeting:
+      all None → visible to manager/admin only (backward compat)
+      target_role="operator" → all operators see it
+      target_worker_id=5 → only the user linked to worker 5
+      target_user_id=3 → only user 3
     """
     one_hour_ago = now_ist() - timedelta(hours=1)
     existing = db.query(Notification).filter(
@@ -92,25 +100,37 @@ def _notify(db, event_type: str, title: str, body: str,
         Notification.is_read    == False,
         Notification.created_at >= one_hour_ago,
     )
-    if job_id:   existing = existing.filter(Notification.job_id   == job_id)
-    if order_id: existing = existing.filter(Notification.order_id == order_id)
-    if wc_id:    existing = existing.filter(Notification.wc_id    == wc_id)
+    if job_id:            existing = existing.filter(Notification.job_id   == job_id)
+    if order_id:          existing = existing.filter(Notification.order_id == order_id)
+    if wc_id:             existing = existing.filter(Notification.wc_id    == wc_id)
+    if target_worker_id:  existing = existing.filter(Notification.target_worker_id == target_worker_id)
+    if target_user_id:    existing = existing.filter(Notification.target_user_id   == target_user_id)
     if existing.first():
         return   # already notified recently, skip
 
     n = Notification(
-        event_type = event_type,
-        title      = title,
-        body       = body,
-        link       = link,
-        is_read    = False,
-        created_at = now_ist(),
-        job_id     = job_id,
-        order_id   = order_id,
-        wc_id      = wc_id,
+        event_type       = event_type,
+        title            = title,
+        body             = body,
+        link             = link,
+        is_read          = False,
+        created_at       = now_ist(),
+        job_id           = job_id,
+        order_id         = order_id,
+        wc_id            = wc_id,
+        target_role      = target_role,
+        target_user_id   = target_user_id,
+        target_worker_id = target_worker_id,
     )
     db.add(n)
     # No commit here — caller commits
+
+
+def _notify_worker(db, worker_id: int, event_type: str, title: str, body: str,
+                   link: str = None, job_id: int = None):
+    """Convenience: send a notification targeted to a specific worker."""
+    _notify(db, event_type, title, body, link=link, job_id=job_id,
+            target_worker_id=worker_id)
 
 
 def _check_job_urgency(db, job):
@@ -124,7 +144,7 @@ def _check_job_urgency(db, job):
                 event_type = "job_urgent",
                 title      = f"🚨 Urgent: {job.job_number}",
                 body       = f"{job.customer_name} — {job.product_type} {job.product_size}. CR={cr:.2f}",
-                link       = f"/jobs",
+                link       = f"/jobs/{job.id}",
                 job_id     = job.id,
                 order_id   = job.order_id,
             )
@@ -145,7 +165,7 @@ def _check_order_due_soon(db, order):
                     event_type = "order_due_soon",
                     title      = f"⏰ Due Soon: {order.order_number}",
                     body       = f"{order.customer_name} — due in {days_left:.0f} day(s), {pending} job(s) still pending",
-                    link       = f"/orders",
+                    link       = f"/orders/{order.id}",
                     order_id   = order.id,
                 )
     except Exception:
@@ -2048,6 +2068,22 @@ def create_task(data: dict, user: dict = Depends(require_any)):
     _log_activity(db, t.id, user.get("worker_id"), user.get("username",""),
                   "created", f"Task created by {user.get('username','')}")
 
+    # ── Notify assignees ──
+    assignee_worker_ids = set()
+    if t.assigned_to_id:
+        assignee_worker_ids.add(int(t.assigned_to_id))
+    for a in data.get("extra_assignees", []):
+        if a.get("worker_id"):
+            assignee_worker_ids.add(int(a["worker_id"]))
+    creator_wid = user.get("worker_id")
+    for wid in assignee_worker_ids:
+        if creator_wid and int(wid) == int(creator_wid):
+            continue  # don't notify the creator about their own task
+        _notify_worker(db, wid, "task_assigned",
+                       f"📋 Task: {t.title[:60]}",
+                       f"Assigned by {user.get('username','')}",
+                       link="/tasks")
+
     db.commit(); db.refresh(t)
     result = task_dict(t); db.close(); return result
 
@@ -2114,6 +2150,18 @@ def add_task_comment(task_id: int, data: dict, user: dict = Depends(require_any)
     note = (data.get("note") or "").strip()
     if not note: raise HTTPException(400, "Comment cannot be empty")
     _log_activity(db, task_id, user.get("worker_id"), user.get("username",""), "comment", note)
+    # ── Notify other assignees about the comment ──
+    assignee_wids = set()
+    if t.assigned_to_id: assignee_wids.add(int(t.assigned_to_id))
+    for a in t.assignees:
+        if a.worker_id: assignee_wids.add(int(a.worker_id))
+    my_wid = user.get("worker_id")
+    for wid in assignee_wids:
+        if my_wid and int(wid) == int(my_wid): continue
+        _notify_worker(db, wid, "task_comment",
+                       f"💬 {t.title[:50]}",
+                       f"{user.get('username','')}: {note[:80]}",
+                       link="/tasks")
     db.commit(); db.close()
     return {"ok": True}
 
@@ -2139,6 +2187,18 @@ def update_task_assignees(task_id: int, data: dict, user: dict = Depends(require
     _log_activity(db, task_id, user.get("worker_id"), user.get("username",""), "assigned",
                   f"Assignees updated: {t.assigned_to_name or ''}" +
                   (f", {', '.join(names)}" if names else ""))
+    # ── Notify new assignees ──
+    all_wids = set()
+    if t.assigned_to_id: all_wids.add(int(t.assigned_to_id))
+    for a in data.get("assignees", []):
+        if a.get("worker_id"): all_wids.add(int(a["worker_id"]))
+    my_wid = user.get("worker_id")
+    for wid in all_wids:
+        if my_wid and int(wid) == int(my_wid): continue
+        _notify_worker(db, wid, "task_assigned",
+                       f"📋 Task: {t.title[:60]}",
+                       f"Assigned by {user.get('username','')}",
+                       link="/tasks")
     db.commit(); result = task_dict(t); db.close(); return result
 
 @app.delete("/api/tasks/{task_id}")
@@ -4295,6 +4355,21 @@ def schedule_all(request: Request):
         "scheduled": count, "skipped": skipped, "frozen": len(frozen_set),
         "failed": len(failures), "unassigned_ops": unassigned,
     })
+    # ── Notify each affected worker that their schedule changed ──
+    affected_workers = {}  # worker_id → op count
+    for j in jobs:
+        if j.id in frozen_set or j.id in has_active:
+            continue
+        for s in j.scheduled_ops:
+            if s.worker_id and s.status in ("pending", "scheduled"):
+                affected_workers[s.worker_id] = affected_workers.get(s.worker_id, 0) + 1
+    user_info = getattr(request.state, 'user', None)
+    sched_by = (user_info.get("username") or "system") if user_info else "system"
+    for wid, op_count in affected_workers.items():
+        _notify_worker(db, wid, "schedule_changed",
+                       f"📅 Schedule Updated",
+                       f"{op_count} operation(s) rescheduled by {sched_by}",
+                       link="/today")
     db.commit()
     db.close()
     return {"scheduled": count, "unassigned_ops": unassigned,
@@ -4780,10 +4855,12 @@ def update_outside_op(op_id: int, data: dict):
 # ═════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/notifications")
-def get_notifications(unread_only: bool = False, user: dict = Depends(require_manager)):
-    """Get notifications for manager/admin. Returns most recent 50."""
+def get_notifications(unread_only: bool = False, request: Request = None):
+    """Get notifications visible to the current user."""
     db = SessionLocal()
+    user = getattr(request.state, 'user', {}) if request else {}
     q = db.query(Notification).order_by(Notification.created_at.desc())
+    q = _filter_notifs_for_user(q, user)
     if unread_only:
         q = q.filter(Notification.is_read == False)
     notifs = q.limit(50).all()
@@ -4804,16 +4881,27 @@ def get_notifications(unread_only: bool = False, user: dict = Depends(require_ma
 
 
 @app.get("/api/notifications/count")
-def get_notification_count(user: dict = Depends(require_manager)):
-    """Unread notification count — polled every 30s by the bell icon."""
+def get_notification_count(request: Request = None):
+    """Unread notification count — polled by the bell icon.
+    Also runs lazy checks for overdue ops and vendor-late outside ops."""
     db = SessionLocal()
-    count = db.query(Notification).filter(Notification.is_read == False).count()
+    user = getattr(request.state, 'user', {}) if request else {}
+    user_role = user.get("role", "operator")
+
+    # ── Lazy checks (only for manager/admin, max once per 5 min via dedup) ──
+    if user_role in ("admin", "manager"):
+        _check_overdue_ops(db)
+        _check_vendor_late(db)
+
+    q = db.query(Notification).filter(Notification.is_read == False)
+    q = _filter_notifs_for_user(q, user)
+    count = q.count()
     db.close()
     return {"unread": count}
 
 
 @app.put("/api/notifications/{notif_id}/read")
-def mark_notification_read(notif_id: int, user: dict = Depends(require_manager)):
+def mark_notification_read(notif_id: int):
     db = SessionLocal()
     n = db.query(Notification).filter(Notification.id == notif_id).first()
     if not n: db.close(); raise HTTPException(404, "Not found")
@@ -4823,15 +4911,19 @@ def mark_notification_read(notif_id: int, user: dict = Depends(require_manager))
 
 
 @app.put("/api/notifications/read-all")
-def mark_all_read(user: dict = Depends(require_manager)):
+def mark_all_read(request: Request = None):
     db = SessionLocal()
-    db.query(Notification).filter(Notification.is_read == False).update({"is_read": True})
+    user = getattr(request.state, 'user', {}) if request else {}
+    q = db.query(Notification).filter(Notification.is_read == False)
+    q = _filter_notifs_for_user(q, user)
+    for n in q.all():
+        n.is_read = True
     db.commit(); db.close()
     return {"ok": True}
 
 
 @app.delete("/api/notifications/clear-read")
-def clear_read_notifications(user: dict = Depends(require_manager)):
+def clear_read_notifications():
     """Remove all read notifications older than 7 days to keep table small."""
     db = SessionLocal()
     cutoff = now_ist() - timedelta(days=7)
@@ -4841,6 +4933,90 @@ def clear_read_notifications(user: dict = Depends(require_manager)):
     ).delete()
     db.commit(); db.close()
     return {"ok": True}
+
+
+def _filter_notifs_for_user(q, user: dict):
+    """Filter notification query to only show what this user should see."""
+    role      = user.get("role", "operator")
+    user_id   = int(user.get("sub", 0)) if user.get("sub") else None
+    worker_id = int(user.get("worker_id")) if user.get("worker_id") else None
+
+    conditions = []
+    # Global (untargeted) → manager/admin only
+    if role in ("admin", "manager"):
+        conditions.append(and_(
+            Notification.target_role      == None,
+            Notification.target_user_id   == None,
+            Notification.target_worker_id == None,
+        ))
+    # Role-targeted
+    conditions.append(Notification.target_role == role)
+    # User-targeted
+    if user_id:
+        conditions.append(Notification.target_user_id == user_id)
+    # Worker-targeted
+    if worker_id:
+        conditions.append(Notification.target_worker_id == worker_id)
+
+    if conditions:
+        return q.filter(or_(*conditions))
+    return q.filter(False)  # no access
+
+
+def _check_overdue_ops(db):
+    """Create op_overdue notifications for ops past scheduled_end but not done."""
+    now = now_ist()
+    overdue = db.query(ScheduledOp).filter(
+        ScheduledOp.scheduled_end < now,
+        ScheduledOp.status.in_(["pending", "scheduled", "in_progress"]),
+    ).all()
+    for s in overdue:
+        hrs_late = (now - s.scheduled_end).total_seconds() / 3600
+        if hrs_late < 0.5:
+            continue  # grace period
+        j = s.job
+        _notify(db,
+            event_type = "op_overdue",
+            title      = f"⏰ Overdue: {s.op_name}",
+            body       = f"{j.job_number} on {s.wc_name} — {hrs_late:.0f}h past scheduled end",
+            link       = "/today",
+            job_id     = j.id,
+        )
+    if overdue:
+        db.commit()
+
+
+def _check_vendor_late(db):
+    """Create vendor_late notifications for outside ops sent but not returned on time."""
+    now = now_ist()
+    outside = db.query(ScheduledOp).filter(
+        ScheduledOp.op_type == "outside",
+        ScheduledOp.sent_out_at != None,
+        ScheduledOp.received_back_at == None,
+        ScheduledOp.status != "completed",
+    ).all()
+    for s in outside:
+        days_out = (now - s.sent_out_at).total_seconds() / 86400
+        # Use linked operation's transit_days if available, else default 3
+        expected = 3.0
+        if s.operation_id:
+            op = db.query(Operation).filter(Operation.id == s.operation_id).first()
+            if op and getattr(op, 'outside_transit_days', None):
+                expected = float(op.outside_transit_days)
+        if days_out <= expected:
+            continue
+        j = s.job
+        _notify(db,
+            event_type = "vendor_late",
+            title      = f"📦 Vendor Late: {s.op_name}",
+            body       = f"{j.job_number} — sent {days_out:.0f} days ago"
+                         f"{(' to ' + s.outside_vendor) if s.outside_vendor else ''}"
+                         f", expected back in {expected:.0f}",
+            link       = "/today",
+            job_id     = j.id,
+        )
+    if outside:
+        db.commit()
 
 
 @app.get("/api/gantt")
@@ -4976,7 +5152,6 @@ def get_past_work(days: int = 30, user: dict = Depends(require_any)):
     if user.get("role") == "operator" and user.get("worker_id"):
         worker_filter_id = int(user["worker_id"])
 
-    from sqlalchemy import or_
     q = db.query(ScheduledOp).filter(
         or_(
             # Unstarted ops whose scheduled window is entirely in the past
@@ -5158,6 +5333,14 @@ def update_op_status(op_id: int, data: dict, request: Request):
         any_inprog = any(op.status == "in_progress" for op in j.scheduled_ops if op.id != s.id)
         if all_done:
             j.status = "completed"; j.completed_at = s.actual_end or now
+            _notify(db,
+                event_type = "job_completed",
+                title      = f"✅ Completed: {j.job_number}",
+                body       = f"{j.product_type} {j.product_size} ({j.customer_name})",
+                link       = f"/jobs/{j.id}",
+                job_id     = j.id,
+                order_id   = j.order_id,
+            )
         elif not any_inprog:
             j.status = "in_progress"
         _reactive_reschedule(db, s.work_center_id, s.worker_id, s.actual_end or now)
@@ -5177,7 +5360,7 @@ def update_op_status(op_id: int, data: dict, request: Request):
                 body       = f"{j.product_type} {j.product_size} ({j.customer_name}) — {j.health_reason}. "
                              f"Promised {promise.strftime('%d %b') if promise else '—'}, "
                              f"now projected {j.projected_end.strftime('%d %b') if j.projected_end else '—'}.",
-                link       = "/today",
+                link       = f"/jobs/{j.id}",
                 job_id     = j.id,
                 order_id   = j.order_id,
             )

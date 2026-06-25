@@ -469,27 +469,43 @@ class AssemblyStep(Base):
 # ── Notifications ─────────────────────────────────────────────────────────────
 class Notification(Base):
     """
-    Real-time notification for manager/admin users.
+    Real-time notification for all users (manager, staff, operator).
     event_type values:
       assembly_unlocked  — assembly step is now ready to start
       job_urgent         — job CR dropped below 0.5
+      job_completed      — all ops finished
+      job_at_risk        — projected finish past promise
       machine_breakdown  — machine marked as breakdown
       outside_received   — outside operation received back
+      vendor_late        — outside op not returned on time
       order_due_soon     — order due in <= 2 days with pending jobs
       assembly_complete  — all assembly steps done, ready to dispatch
+      op_overdue         — scheduled op past end time, not completed
+      task_assigned      — task assigned to you
+      task_comment       — new comment on your task
+      schedule_changed   — your schedule was modified by Schedule All
+    Targeting:
+      target_role=None, target_user_id=None, target_worker_id=None → manager/admin only (legacy)
+      target_role="operator"  → all operators
+      target_worker_id=5      → only the user linked to worker 5
+      target_user_id=3        → only user 3
     """
     __tablename__ = "notifications"
-    id           = Column(Integer, primary_key=True)
-    event_type   = Column(String, nullable=False)
-    title        = Column(String, nullable=False)
-    body         = Column(String, nullable=False)
-    link         = Column(String, nullable=True)   # frontend route to navigate to
-    is_read      = Column(Boolean, default=False)
-    created_at   = Column(DateTime, default=now_ist)
+    id               = Column(Integer, primary_key=True)
+    event_type       = Column(String, nullable=False)
+    title            = Column(String, nullable=False)
+    body             = Column(String, nullable=False)
+    link             = Column(String, nullable=True)   # frontend route to navigate to
+    is_read          = Column(Boolean, default=False)
+    created_at       = Column(DateTime, default=now_ist)
     # Optional references
-    job_id       = Column(Integer, nullable=True)
-    order_id     = Column(Integer, nullable=True)
-    wc_id        = Column(Integer, nullable=True)
+    job_id           = Column(Integer, nullable=True)
+    order_id         = Column(Integer, nullable=True)
+    wc_id            = Column(Integer, nullable=True)
+    # Targeting (all null = manager/admin global)
+    target_role      = Column(String, nullable=True)    # "operator", "staff", "manager"
+    target_user_id   = Column(Integer, nullable=True)   # specific user
+    target_worker_id = Column(Integer, nullable=True)   # specific worker
 
 # ── Worker Daily Report ────────────────────────────────────────────────────────
 class WorkerDailyReport(Base):

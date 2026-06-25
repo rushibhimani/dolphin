@@ -1,41 +1,52 @@
 /**
- * Dolphin ERP — Notification System
- * Real-time bell icon + panel for manager/admin users only.
- * Polls every 30s. Supports browser push for urgent events.
+ * Dolphin ERP — Notification System (v2)
+ * All-role support: managers see global + targeted, operators/staff see their own.
+ * Bell icon + dropdown panel + browser push + audio chime.
+ * Polls every 15s.
  */
 
 let _notifOpen       = false;
 let _notifPollTimer  = null;
 let _notifLastCount  = 0;
 let _notifPushAsked  = false;
+let _notifSoundCtx   = null;
 
 const NOTIF_ICONS = {
   assembly_unlocked:  '🔧',
+  assembly_complete:  '✅',
   job_urgent:         '🚨',
+  job_completed:      '✅',
+  job_at_risk:        '🟠',
   machine_breakdown:  '🔴',
   outside_received:   '📥',
+  vendor_late:        '📦',
   order_due_soon:     '⏰',
-  assembly_complete:  '✅',
+  op_overdue:         '⏰',
+  task_assigned:      '📋',
+  task_comment:       '💬',
+  schedule_changed:   '📅',
 };
 
 const NOTIF_COLORS = {
   assembly_unlocked:  'var(--accent)',
+  assembly_complete:  'var(--green,#16a34a)',
   job_urgent:         'var(--red,#DC2626)',
+  job_completed:      'var(--green,#16a34a)',
+  job_at_risk:        'var(--amber,#d97706)',
   machine_breakdown:  'var(--red,#DC2626)',
   outside_received:   'var(--green,#16a34a)',
+  vendor_late:        'var(--red,#DC2626)',
   order_due_soon:     'var(--amber,#d97706)',
-  assembly_complete:  'var(--green,#16a34a)',
+  op_overdue:         'var(--red,#DC2626)',
+  task_assigned:      'var(--blue,#3b82f6)',
+  task_comment:       'var(--blue,#3b82f6)',
+  schedule_changed:   'var(--accent)',
 };
 
-// ── Initialise after login ────────────────────────────────────────────────────
+// ── Initialise after login (ALL roles now) ───────────────────────────────────
 function initNotifications() {
   const user = authGetUser();
-  if (!user || !['admin','manager'].includes(user.role)) {
-    // Hide bell for operators/staff
-    const wrap = document.getElementById('notifBellWrap');
-    if (wrap) wrap.style.display = 'none';
-    return;
-  }
+  if (!user) return;
 
   const wrap = document.getElementById('notifBellWrap');
   if (wrap) wrap.style.display = 'flex';
@@ -43,33 +54,34 @@ function initNotifications() {
   // Initial load
   _pollNotifications();
 
-  // Poll every 30 seconds
+  // Poll every 15 seconds (was 30)
   if (_notifPollTimer) clearInterval(_notifPollTimer);
-  _notifPollTimer = setInterval(_pollNotifications, 30000);
+  _notifPollTimer = setInterval(_pollNotifications, 15000);
 
-  // Ask for browser push permission once
+  // Ask for browser push permission once (politely, after 5s)
   if (!_notifPushAsked && 'Notification' in window && Notification.permission === 'default') {
     _notifPushAsked = true;
-    // Ask politely after 5 seconds (not immediately on load)
-    setTimeout(() => {
-      Notification.requestPermission();
-    }, 5000);
+    setTimeout(() => { Notification.requestPermission(); }, 5000);
   }
 }
 
-// ── Poll unread count ─────────────────────────────────────────────────────────
+// ── Poll unread count ────────────────────────────────────────────────────────
 async function _pollNotifications() {
   const user = authGetUser();
-  if (!user || !['admin','manager'].includes(user.role)) return;
+  if (!user) return;
   try {
     const data = await api('GET', '/api/notifications/count');
     const count = data.unread || 0;
     _updateBadge(count);
 
-    // If new notifications arrived since last poll → browser push for urgent ones
-    if (count > _notifLastCount && count > 0) {
+    // New notifications arrived since last poll
+    if (count > _notifLastCount && _notifLastCount >= 0) {
       const newCount = count - _notifLastCount;
-      _tryBrowserPush(newCount);
+      if (newCount > 0 && _notifLastCount > 0) {
+        // Don't chime on first load, only on subsequent increases
+        _playNotifSound();
+        _tryBrowserPush(newCount);
+      }
     }
     _notifLastCount = count;
 
@@ -91,25 +103,46 @@ function _updateBadge(count) {
   }
 }
 
-// ── Browser push ──────────────────────────────────────────────────────────────
+// ── Notification sound (Web Audio — no file needed) ──────────────────────────
+function _playNotifSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // Two-tone chime: C6 then E6
+    const now = ctx.currentTime;
+    [1047, 1319].forEach((freq, i) => {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      osc.type = 'sine';
+      const start = now + i * 0.12;
+      gain.gain.setValueAtTime(0.12, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.25);
+      osc.start(start);
+      osc.stop(start + 0.25);
+    });
+  } catch(e) { /* Audio API not available */ }
+}
+
+// ── Browser push ─────────────────────────────────────────────────────────────
 async function _tryBrowserPush(newCount) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   try {
-    // Fetch latest unread to get the most urgent one
     const notifs = await api('GET', '/api/notifications?unread_only=true');
-    const urgent  = notifs.find(n => ['job_urgent','machine_breakdown'].includes(n.event_type));
+    const urgent  = notifs.find(n => ['job_urgent','machine_breakdown','op_overdue','vendor_late'].includes(n.event_type));
     const first   = urgent || notifs[0];
     if (!first) return;
     new Notification(first.title, {
       body: first.body,
       icon: '/logo.png',
-      tag:  `dolphin-${first.event_type}`,   // replaces previous same-type notification
+      tag:  `dolphin-${first.event_type}-${first.id}`,
       requireInteraction: ['job_urgent','machine_breakdown'].includes(first.event_type),
     });
   } catch(e) { /* ignore */ }
 }
 
-// ── Toggle panel ──────────────────────────────────────────────────────────────
+// ── Toggle panel ─────────────────────────────────────────────────────────────
 function toggleNotifPanel() {
   const panel = document.getElementById('notifPanel');
   if (!panel) return;
@@ -129,7 +162,7 @@ document.addEventListener('click', function(e) {
   }
 });
 
-// ── Load notification list ────────────────────────────────────────────────────
+// ── Load notification list ───────────────────────────────────────────────────
 async function _loadNotifList() {
   const listEl = document.getElementById('notifList');
   if (!listEl) return;
@@ -195,12 +228,12 @@ async function markAllNotifsRead() {
   } catch(e) { toast(e.message, 'error'); }
 }
 
-// ── Time ago helper ───────────────────────────────────────────────────────────
+// ── Time ago helper ──────────────────────────────────────────────────────────
 function _timeAgo(isoStr) {
   if (!isoStr) return '';
   const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
-  if (diff < 60)   return 'just now';
-  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
-  if (diff < 86400)return `${Math.floor(diff/3600)}h ago`;
+  if (diff < 60)    return 'just now';
+  if (diff < 3600)  return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
   return `${Math.floor(diff/86400)}d ago`;
 }

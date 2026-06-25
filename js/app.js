@@ -268,6 +268,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Operator (shop floor): sidebar hidden, go straight to Today's Work
   if(user?.role === 'operator'){
     await loadAll();
+    if (typeof initNotifications === 'function') initNotifications();
     navigate('/today', true);
     setInterval(checkServer, 30000);
     return;
@@ -276,6 +277,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Staff (office): sidebar visible, land on Tasks page
   if(user?.role === 'staff'){
     await loadAll();
+    if (typeof initNotifications === 'function') initNotifications();
     navigate('/tasks', true);
     setInterval(checkServer, 30000);
     return;
@@ -283,7 +285,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Manager / Admin: full app
   await loadAll();
-  // Init notification bell (manager/admin only)
+  // Init notification bell (all roles)
   if (typeof initNotifications === 'function') initNotifications();
   // Flag-and-wait: populate the At Risk nav badge, and keep it fresh
   if (typeof refreshAtRiskCount === 'function') {
